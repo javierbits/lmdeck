@@ -1,0 +1,26 @@
+# EXL3 keeps each bpw on its own branch; `lmdeck pull` fetches the
+# 4.0bpw branch into <models_dir>/turboderp/Qwen3-30B-A3B-exl3-4.0bpw.
+display_name = "Qwen3 30B-A3B (EXL3 4.0bpw)"
+description = "Qwen3 30B-A3B MoE on TabbyAPI / exllamav3. ~16 GB of weights; comfortable on a DGX Spark."
+tags = ["qwen3", "moe", "dgx-spark", "exl3"]
+
+[model]
+repo = "turboderp/Qwen3-30B-A3B-exl3"
+revision = "4.0bpw"
+size_gb = 16.0
+
+[quant]
+format = "exl3"
+bits = 4.0
+label = "4.0bpw"
+
+[engine]
+name = "tabbyapi"
+port = 5000
+ctx = 32768
+args = ["--cache-mode", "Q8"]
+
+[hardware]
+min_memory_gb = 24
+accelerator = ["nvidia"]
+os = ["linux"]

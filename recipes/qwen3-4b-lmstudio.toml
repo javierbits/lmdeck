@@ -1,0 +1,19 @@
+display_name = "Qwen3 4B (LM Studio)"
+description = "Loads the Qwen3 4B GGUF into LM Studio through the `lms` CLI."
+tags = ["qwen3", "small", "lmstudio"]
+
+[model]
+repo = "unsloth/Qwen3-4B-GGUF"
+files = ["Qwen3-4B-Q4_K_M.gguf"]
+size_gb = 2.5
+
+[quant]
+format = "gguf"
+label = "Q4_K_M"
+
+[engine]
+name = "lmstudio"
+ctx = 32768
+
+[hardware]
+min_memory_gb = 4

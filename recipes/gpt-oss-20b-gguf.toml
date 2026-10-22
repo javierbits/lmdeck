@@ -1,0 +1,21 @@
+display_name = "gpt-oss 20B (GGUF Q4_K_M)"
+description = "OpenAI gpt-oss-20b on llama.cpp. Fits a 16 GB GPU, a 24 GB+ Mac, or a DGX Spark."
+tags = ["gpt-oss", "reasoning", "tools"]
+
+[model]
+repo = "unsloth/gpt-oss-20b-GGUF"
+files = ["gpt-oss-20b-Q4_K_M.gguf"]
+size_gb = 11.6
+
+[quant]
+format = "gguf"
+label = "Q4_K_M"
+
+[engine]
+name = "llama.cpp"
+port = 8081
+ctx = 65536
+args = ["--n-gpu-layers", "999", "--jinja"]
+
+[hardware]
+min_memory_gb = 16
