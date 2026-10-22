@@ -1,0 +1,634 @@
+//! Rendering. Everything here is a pure function of [`App`].
+
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Gauge, Padding, Paragraph, Row, Table, TableState, Wrap,
+};
+use ratatui::Frame;
+
+use crate::compat::Level;
+use crate::deck::{RecipeView, Snapshot};
+use crate::runner::Status;
+use crate::tui::app::{App, Mode, Tab};
+use crate::tui::theme::Theme;
+use crate::util::{human_bytes, human_duration, human_gb, now_secs};
+
+pub fn draw(f: &mut Frame, app: &App) {
+    let t = app.theme();
+    let area = f.area();
+    f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.fg)), area);
+    let [header, body, status] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)]).areas(area);
+    draw_header(f, app, header);
+    match &app.snap {
+        None => {
+            let p = Paragraph::new(Line::from(vec![
+                Span::styled("◐ ", Style::new().fg(t.accent)),
+                Span::styled("probing hardware and engines…", Style::new().fg(t.muted)),
+            ]))
+            .alignment(Alignment::Center);
+            let [mid] = Layout::vertical([Constraint::Length(1)]).flex(Flex::Center).areas(body);
+            f.render_widget(p, mid);
+        }
+        Some(s) => match app.tab {
+            Tab::Deck => draw_deck(f, app, s, body),
+            Tab::Machine => draw_machine(f, app, s, body),
+            Tab::Sources => draw_sources(f, app, s, body),
+        },
+    }
+    draw_status(f, app, status);
+    if app.mode == Mode::Help {
+        draw_help(f, app, area);
+    }
+}
+
+// ───────────────────────── building blocks ─────────────────────────
+
+/// A coloured pill: ` text ` on `bg`, with rounded caps when Nerd Font glyphs are on.
+fn pill<'a>(text: impl Into<String>, bg: Color, t: &Theme, nerd: bool) -> Vec<Span<'a>> {
+    let text = text.into();
+    if nerd {
+        vec![
+            Span::styled("\u{e0b6}", Style::new().fg(bg)),
+            Span::styled(text, Style::new().bg(bg).fg(t.on_pill).bold()),
+            Span::styled("\u{e0b4}", Style::new().fg(bg)),
+        ]
+    } else {
+        vec![Span::styled(format!(" {text} "), Style::new().bg(bg).fg(t.on_pill).bold())]
+    }
+}
+
+/// Powerline segments: `[(text, bg)]` joined by arrows (Nerd Font) or flush blocks.
+fn segments<'a>(segs: &[(String, Color)], end_bg: Color, t: &Theme, nerd: bool) -> Vec<Span<'a>> {
+    let mut out = vec![];
+    for (i, (text, bg)) in segs.iter().enumerate() {
+        out.push(Span::styled(format!(" {text} "), Style::new().bg(*bg).fg(t.on_pill).bold()));
+        let next = segs.get(i + 1).map(|s| s.1).unwrap_or(end_bg);
+        if nerd {
+            out.push(Span::styled("\u{e0b0}", Style::new().fg(*bg).bg(next)));
+        }
+    }
+    out
+}
+
+fn panel<'a>(title: Line<'a>, t: &Theme, focused: bool) -> Block<'a> {
+    Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(if focused { t.border_focus } else { t.border }))
+        .title(title)
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.panel))
+}
+
+fn title<'a>(icon: &str, text: impl Into<String>, extra: Option<String>, t: &Theme) -> Line<'a> {
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(icon.to_string(), Style::new().fg(t.accent)),
+        Span::raw(" "),
+        Span::styled(text.into(), Style::new().fg(t.fg).bold()),
+    ];
+    if let Some(e) = extra {
+        spans.push(Span::styled(format!(" · {e}"), Style::new().fg(t.muted)));
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+fn level_color(l: Level, t: &Theme) -> Color {
+    match l {
+        Level::Ok => t.ok,
+        Level::Warn => t.warn,
+        Level::Fail => t.err,
+    }
+}
+
+fn status_pill(r: &RecipeView, busy: bool) -> (&'static str, fn(&Theme) -> Color) {
+    if busy {
+        return ("… busy", |t| t.accent);
+    }
+    match r.status {
+        Status::Loaded => ("● running", |t| t.ok),
+        Status::Loading => ("◐ loading", |t| t.warn),
+        Status::External => ("● extern", |t| t.info),
+        Status::PortBusy => ("! busy", |t| t.warn),
+        Status::Stopped => ("○ stopped", |t| t.dim),
+    }
+}
+
+fn size_text(r: &RecipeView) -> String {
+    if r.downloaded && r.size_bytes > 0 {
+        human_bytes(r.size_bytes)
+    } else {
+        r.size_gb.map(|g| format!("~{}", human_gb(g))).unwrap_or_else(|| "?".into())
+    }
+}
+
+fn kv<'a>(k: &str, v: impl Into<String>, t: &Theme) -> Line<'a> {
+    Line::from(vec![Span::styled(format!("{k:<10}"), Style::new().fg(t.muted)), Span::styled(v.into(), t.fg)])
+}
+
+// ───────────────────────── header & status ─────────────────────────
+
+fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let mut spans = segments(&[("◆ lmdeck".into(), t.accent)], t.bar_bg, t, app.nerd);
+    spans.push(Span::raw(" "));
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let label = format!(" {} {} ", i + 1, tab.title());
+        spans.push(if *tab == app.tab {
+            Span::styled(label, Style::new().fg(t.accent).bg(t.selected_bg).bold())
+        } else {
+            Span::styled(label, Style::new().fg(t.muted))
+        });
+    }
+    let left = Line::from(spans);
+    let mut right = vec![];
+    if let Some(s) = &app.snap {
+        let hw = &s.hardware;
+        let mem = match hw.available_memory_gb {
+            Some(a) => {
+                format!("mem {} / {}", human_gb((hw.total_memory_gb - a).max(0.0)), human_gb(hw.total_memory_gb))
+            }
+            None => format!("mem {}", human_gb(hw.total_memory_gb)),
+        };
+        right.push(Span::styled(format!("{} ", hw.hostname), Style::new().fg(t.muted)));
+        right.extend(segments(&[(hw.platform.clone(), t.seg[1]), (mem, t.seg[2])], t.bar_bg, t, false));
+    }
+    f.render_widget(Block::new().style(Style::new().bg(t.bar_bg)), area);
+    f.render_widget(Paragraph::new(left), area);
+    f.render_widget(Paragraph::new(Line::from(right)).alignment(Alignment::Right), area);
+}
+
+fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let (mode, mode_bg) = match app.mode {
+        Mode::Normal => ("NORMAL", t.accent),
+        Mode::Search => ("SEARCH", t.info),
+        Mode::Help => ("HELP", t.seg[0]),
+    };
+    let mut segs = vec![(mode.to_string(), mode_bg)];
+    if let Some(s) = &app.snap {
+        let shown = app.visible().len();
+        segs.push((format!("{} {shown}", if app.show_all { "all" } else { "deck" }), t.seg[0]));
+        segs.push((format!("▶ {} running", s.running()), t.seg[3]));
+    }
+    if app.only_fit {
+        segs.push(("fits".into(), t.seg[1]));
+    }
+    let mut spans = segments(&segs, t.bar_bg, t, app.nerd);
+    if app.mode == Mode::Search || !app.query.is_empty() {
+        spans.push(Span::styled(" /", Style::new().fg(t.info).bold()));
+        spans.push(Span::styled(app.query.clone(), Style::new().fg(t.fg)));
+        if app.mode == Mode::Search {
+            spans.push(Span::styled("▏", Style::new().fg(t.accent)));
+        }
+    }
+    if let Some(toast) = &app.toast {
+        if toast.at.elapsed().as_secs() < 6 {
+            let icon = match toast.level {
+                Level::Ok => "✓",
+                Level::Warn => "!",
+                Level::Fail => "✗",
+            };
+            spans.push(Span::styled(format!("  {icon} {}", toast.text), Style::new().fg(level_color(toast.level, t))));
+        }
+    }
+    let hints: &[(&str, &str)] = match app.mode {
+        Mode::Search => &[("↵", "keep"), ("esc", "clear"), ("↑↓", "move")],
+        _ => &[("↵", "start/stop"), ("s", "switch"), ("p", "pull"), ("l", "logs"), ("/", "search"), ("?", "help")],
+    };
+    let mut right = vec![];
+    for (k, label) in hints {
+        right.push(Span::styled(format!(" {k}"), Style::new().fg(t.accent).bold()));
+        right.push(Span::styled(format!(" {label} "), Style::new().fg(t.muted)));
+    }
+    f.render_widget(Block::new().style(Style::new().bg(t.bar_bg)), area);
+    let rw = right.iter().map(|s| s.width() as u16).sum::<u16>().min(area.width);
+    let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
+    f.render_widget(Paragraph::new(Line::from(spans)), l);
+    f.render_widget(Paragraph::new(Line::from(right)), r);
+}
+
+// ───────────────────────── deck tab ─────────────────────────
+
+fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+    let [left, right] = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    draw_list(f, app, s, left);
+    if app.logs_max {
+        draw_logs(f, app, right, true);
+    } else {
+        let [top, bottom] = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(right);
+        draw_details(f, app, top);
+        draw_logs(f, app, bottom, false);
+    }
+}
+
+fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+    let t = app.theme();
+    let vis = app.visible();
+    let total = s.recipes.iter().filter(|r| app.show_all || r.listed).count();
+    let extra = if vis.len() == total { format!("{total}") } else { format!("{} of {total}", vis.len()) };
+    let block = panel(title("▤", if app.show_all { "All recipes" } else { "Deck" }, Some(extra), t), t, !app.logs_max);
+    let rows: Vec<Row> = vis
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let busy = app.busy.contains(&r.name);
+            let (label, color) = status_pill(r, busy);
+            let dl = if r.pulling {
+                Span::styled("↓", Style::new().fg(t.accent).bold())
+            } else if r.downloaded {
+                Span::styled("✓", Style::new().fg(t.ok))
+            } else {
+                Span::styled("·", Style::new().fg(t.dim))
+            };
+            let fit = match r.fit {
+                Level::Ok => Span::styled("✓ fits", Style::new().fg(t.ok)),
+                Level::Warn => Span::styled("! tight", Style::new().fg(t.warn)),
+                Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
+            };
+            let name = Line::from(vec![
+                Span::styled(r.name.clone(), Style::new().fg(t.fg).bold()),
+                Span::styled(if r.listed { String::new() } else { format!(" {}", r.origin) }, Style::new().fg(t.dim)),
+            ]);
+            Row::new(vec![
+                Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
+                Cell::from(name),
+                Cell::from(Span::styled(r.engine.clone(), Style::new().fg(t.info))),
+                Cell::from(Span::styled(r.quant.clone(), Style::new().fg(t.seg[0]))),
+                Cell::from(
+                    Line::from(Span::styled(size_text(r), Style::new().fg(t.muted))).alignment(Alignment::Right),
+                ),
+                Cell::from(dl),
+                Cell::from(fit),
+            ])
+            // Row style sits under the cells, so pills keep their colours when selected.
+            .style(if i == app.cursor { Style::new().bg(t.selected_bg) } else { Style::new() })
+        })
+        .collect();
+    let header = Row::new(["status", "recipe", "engine", "quant", "size", "dl", "fit"])
+        .style(Style::new().fg(t.dim))
+        .bottom_margin(0);
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(if app.nerd { 13 } else { 11 }),
+            Constraint::Min(14),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Length(2),
+            Constraint::Length(8),
+        ],
+    )
+    .header(header)
+    .block(block)
+    .column_spacing(1)
+    .highlight_symbol(Span::styled("▎", Style::new().fg(t.accent)));
+    let mut state = TableState::default().with_selected(if vis.is_empty() { None } else { Some(app.cursor) });
+    f.render_stateful_widget(table, area, &mut state);
+    if vis.is_empty() {
+        let msg = if app.query.is_empty() { "no recipes match the filters" } else { "nothing matches that search" };
+        let inner = area.inner(ratatui::layout::Margin::new(2, 3));
+        f.render_widget(Paragraph::new(Span::styled(msg, Style::new().fg(t.muted).italic())), inner);
+    }
+}
+
+fn draw_details(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let Some(r) = app.selected() else {
+        f.render_widget(panel(title("◇", "Details", None, t), t, false), area);
+        return;
+    };
+    let mut lines: Vec<Line> = vec![];
+    let (label, color) = status_pill(r, app.busy.contains(&r.name));
+    let mut head = pill(label, color(t), t, app.nerd);
+    head.push(Span::raw(" "));
+    let (fit_label, fit_bg) = match r.fit {
+        Level::Ok => ("fits", t.ok),
+        Level::Warn => ("tight fit", t.warn),
+        Level::Fail => ("doesn't fit", t.err),
+    };
+    head.extend(pill(fit_label, fit_bg, t, app.nerd));
+    head.push(Span::raw(" "));
+    head.extend(pill(r.engine.clone(), t.seg[1], t, app.nerd));
+    head.push(Span::raw(" "));
+    head.extend(pill(r.quant.clone(), t.seg[0], t, app.nerd));
+    lines.push(Line::from(head));
+    if let Some(d) = &r.description {
+        lines.push(Line::from(Span::styled(d.clone(), Style::new().fg(t.muted).italic())));
+    }
+    lines.push(Line::raw(""));
+    lines.push(kv("recipe", r.reference.clone(), t));
+    if let Some(m) = &r.model {
+        let rev = r.revision.as_deref().map(|v| format!(" @{}", &v[..v.len().min(8)])).unwrap_or_default();
+        lines.push(kv("model", format!("{m}{rev}"), t));
+    }
+    let ctx = r.ctx.map(|c| format!(" · ctx {c}")).unwrap_or_default();
+    lines.push(kv("serve", format!("{} · :{}{ctx}", r.engine, r.port), t));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<10}", "endpoint"), Style::new().fg(t.muted)),
+        Span::styled(r.endpoint.clone(), Style::new().fg(t.info).underlined()),
+    ]));
+    let weights = if r.pulling {
+        "downloading…".to_string()
+    } else if r.downloaded {
+        format!("on disk, {}{}", size_text(r), if r.cached { " (HF cache)" } else { "" })
+    } else {
+        format!("not downloaded ({}) · press p", size_text(r))
+    };
+    lines.push(kv("weights", weights, t));
+    if let Some(need) = r.need_gb {
+        lines.push(kv("memory", format!("needs ~{}", human_gb(need)), t));
+    }
+    if let (Some(pid), Some(at)) = (r.pid, r.started_at) {
+        lines.push(kv("process", format!("pid {pid} · up {}", human_duration(now_secs().saturating_sub(at))), t));
+    }
+    lines.push(Line::raw(""));
+    for c in &r.checks {
+        let mark = match c.level {
+            Level::Ok => "✓",
+            Level::Warn => "!",
+            Level::Fail => "✗",
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{mark} "), Style::new().fg(level_color(c.level, t))),
+            Span::styled(format!("{:<10}", c.what), Style::new().fg(t.muted)),
+            Span::styled(c.detail.clone(), t.fg),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    match (&r.command, &r.plan_error) {
+        (Some(cmd), _) => {
+            lines.push(Line::from(vec![
+                Span::styled("$ ", Style::new().fg(t.accent)),
+                Span::styled(cmd.clone(), Style::new().fg(t.dim)),
+            ]));
+        }
+        (None, Some(e)) => lines.push(Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(t.err)))),
+        _ => {}
+    }
+    let p = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).block(panel(
+        title("◇", r.display_name.clone(), None, t),
+        t,
+        false,
+    ));
+    f.render_widget(p, area);
+}
+
+fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let t = app.theme();
+    let name = app.selected().map(|r| r.name.clone()).unwrap_or_default();
+    let file = app
+        .log_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|f| f.to_string_lossy().into_owned())
+        .filter(|_| !app.logs.is_empty());
+    let extra = match (file, app.log_scroll) {
+        (Some(f), 0) => Some(format!("{f} · live")),
+        (Some(f), n) => Some(format!("{f} · ↑{n}")),
+        (None, _) => None,
+    };
+    let block = panel(title("≡", format!("Logs {name}"), extra, t), t, focused);
+    let inner_h = block.inner(area).height as usize;
+    let lines: Vec<Line> = if app.logs.is_empty() {
+        vec![Line::from(Span::styled("no log yet; start the server with ↵", Style::new().fg(t.dim).italic()))]
+    } else {
+        let end = app.logs.len().saturating_sub(app.log_scroll);
+        let start = end.saturating_sub(inner_h);
+        app.logs[start..end]
+            .iter()
+            .map(|l| {
+                let low = l.to_ascii_lowercase();
+                let color = if low.contains("error") || low.contains("traceback") || low.contains("fatal") {
+                    t.err
+                } else if low.contains("warn") {
+                    t.warn
+                } else if low.contains("ready") || low.contains("listening") || low.contains("started") {
+                    t.ok
+                } else {
+                    t.muted
+                };
+                Line::from(Span::styled(l.clone(), Style::new().fg(color)))
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+// ───────────────────────── machine tab ─────────────────────────
+
+fn gauge<'a>(label: &str, ratio: f64, text: String, color: Color, t: &Theme) -> Gauge<'a> {
+    Gauge::default()
+        .block(Block::new().title(Span::styled(label.to_string(), Style::new().fg(t.muted))))
+        .gauge_style(Style::new().fg(color).bg(t.gauge_bg))
+        .ratio(ratio.clamp(0.0, 1.0))
+        .label(Span::styled(text, Style::new().fg(t.fg).bold()))
+        .use_unicode(true)
+}
+
+fn draw_machine(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+    let t = app.theme();
+    let hw = &s.hardware;
+    let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+    let block = panel(title("◈", "Machine", Some(hw.hostname.clone()), t), t, true);
+    let inner = block.inner(left);
+    f.render_widget(block, left);
+    let gpus = hw.gpus.len() as u16;
+    let rows = Layout::vertical(
+        [Constraint::Length(7), Constraint::Length(2), Constraint::Length(2)]
+            .into_iter()
+            .chain((0..gpus).map(|_| Constraint::Length(2)))
+            .chain([Constraint::Min(0)]),
+    )
+    .split(inner);
+    let mut info = vec![
+        kv("platform", hw.platform.clone(), t),
+        kv("cpu", format!("{} ({} cores)", hw.cpu, hw.cores), t),
+        kv("system", format!("{} / {}", hw.os, hw.arch), t),
+        kv("memory", format!("{}{}", human_gb(hw.total_memory_gb), if hw.unified_memory { " unified" } else { "" }), t),
+    ];
+    info.push(kv("lmdeck", format!("v{}", s.version), t));
+    f.render_widget(Paragraph::new(info).wrap(Wrap { trim: true }), rows[0]);
+
+    let total = hw.total_memory_gb.max(0.001);
+    let used = hw.available_memory_gb.map(|a| (total - a).max(0.0));
+    let (ratio, text) = match used {
+        Some(u) => (u / total, format!("{} used of {}", human_gb(u), human_gb(total))),
+        None => (0.0, format!("{} (free unknown)", human_gb(total))),
+    };
+    let mem_color = if ratio > 0.9 {
+        t.err
+    } else if ratio > 0.7 {
+        t.warn
+    } else {
+        t.ok
+    };
+    f.render_widget(gauge("system memory", ratio, text, mem_color, t), rows[1]);
+    let committed: f64 = s.recipes.iter().filter(|r| r.is_up()).filter_map(|r| r.need_gb).sum();
+    f.render_widget(
+        gauge(
+            "held by running recipes",
+            committed / total,
+            format!("~{} across {} server(s)", human_gb(committed), s.running()),
+            t.seg[0],
+            t,
+        ),
+        rows[2],
+    );
+    for (i, g) in hw.gpus.iter().enumerate() {
+        let mem = g.memory_gb.map(human_gb).unwrap_or_else(|| "shared".into());
+        let cc = g.compute_capability.as_deref().map(|c| format!(" · sm {c}")).unwrap_or_default();
+        let ratio = match (g.memory_gb, hw.unified_memory) {
+            (Some(m), false) => (m / total).min(1.0),
+            _ => 1.0,
+        };
+        f.render_widget(
+            gauge(&format!("gpu {i}: {} {}", g.vendor, g.name), ratio, format!("{mem}{cc}"), t.info, t),
+            rows[3 + i],
+        );
+    }
+
+    let mut lines = vec![Line::from(Span::styled("engines", Style::new().fg(t.accent).bold()))];
+    let tool_line = |name: &str, ok: bool, detail: &str| {
+        Line::from(vec![
+            Span::styled(if ok { "✓ " } else { "✗ " }, Style::new().fg(if ok { t.ok } else { t.dim })),
+            Span::styled(format!("{name:<12}"), Style::new().fg(if ok { t.fg } else { t.muted }).bold()),
+            Span::styled(detail.to_string(), Style::new().fg(t.dim)),
+        ])
+    };
+    for (n, st) in &s.inventory.engines {
+        lines.push(tool_line(n, st.available, &st.detail));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("tools", Style::new().fg(t.accent).bold())));
+    for (n, st) in &s.inventory.tools {
+        lines.push(tool_line(n, st.available, &st.detail));
+    }
+    let fit = s.recipes.iter().filter(|r| r.fits()).count();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{fit}"), Style::new().fg(t.ok).bold()),
+        Span::styled(format!(" of {} known recipes fit this machine", s.recipes.len()), Style::new().fg(t.muted)),
+    ]));
+    let p = Paragraph::new(lines).wrap(Wrap { trim: true }).block(panel(
+        title("⚙", "Doctor", Some("r re-probes".into()), t),
+        t,
+        false,
+    ));
+    f.render_widget(p, right);
+}
+
+// ───────────────────────── sources tab ─────────────────────────
+
+fn draw_sources(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+    let t = app.theme();
+    let [top, bottom] = Layout::vertical([Constraint::Min(6), Constraint::Length(9)]).areas(area);
+    let mut rows: Vec<Row> = vec![];
+    let count = |origin: &str| s.recipes.iter().filter(|r| r.origin == origin).count();
+    for (name, spec, n, age) in [
+        ("deck", "your recipes (~/.config/lmdeck/recipes)".to_string(), count("deck"), None),
+        ("builtin", "shipped with lmdeck".to_string(), count("builtin"), None),
+    ]
+    .into_iter()
+    .chain(s.sources.iter().map(|src| {
+        (
+            src.name.as_str(),
+            src.spec.clone(),
+            src.recipes.unwrap_or(0),
+            Some(
+                src.fetched_at
+                    .map(|at| format!("{} ago", human_duration(now_secs().saturating_sub(at))))
+                    .unwrap_or_else(|| "never fetched".into()),
+            ),
+        )
+    })) {
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(name.to_string(), Style::new().fg(t.fg).bold())),
+            Cell::from(Span::styled(spec, Style::new().fg(t.info))),
+            Cell::from(Line::from(Span::styled(n.to_string(), Style::new().fg(t.accent))).alignment(Alignment::Right)),
+            Cell::from(Span::styled(age.unwrap_or_else(|| "local".into()), Style::new().fg(t.muted))),
+        ]));
+    }
+    let table =
+        Table::new(rows, [Constraint::Length(16), Constraint::Min(20), Constraint::Length(8), Constraint::Length(16)])
+            .header(Row::new(["origin", "spec", "recipes", "fetched"]).style(Style::new().fg(t.dim)))
+            .column_spacing(2)
+            .block(panel(title("⇄", "Sources", Some(format!("{} configured", s.sources.len())), t), t, true));
+    f.render_widget(table, top);
+    let mut lines = vec![];
+    if s.recipe_errors.is_empty() {
+        lines.push(Line::from(Span::styled("✓ every recipe file parsed", Style::new().fg(t.ok))));
+    }
+    for (file, err) in s.recipe_errors.iter().take(4) {
+        lines.push(Line::from(vec![
+            Span::styled("✗ ", Style::new().fg(t.err)),
+            Span::styled(format!("{file}: "), Style::new().fg(t.fg)),
+            Span::styled(err.clone(), Style::new().fg(t.muted)),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    for (cmd, what) in [
+        ("lmdeck source add github:owner/repo", "add a recipe repo"),
+        ("lmdeck source sync", "re-fetch every source"),
+        ("lmdeck recipe add origin/name", "copy a recipe into the deck"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled("$ ", Style::new().fg(t.accent)),
+            Span::styled(format!("{cmd:<40}"), Style::new().fg(t.fg)),
+            Span::styled(what, Style::new().fg(t.dim)),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(panel(title("✎", "Notes", None, t), t, false)),
+        bottom,
+    );
+}
+
+// ───────────────────────── help ─────────────────────────
+
+pub const KEYS: &[(&str, &str)] = &[
+    ("↑ ↓  j k", "move"),
+    ("↵ / space", "start or stop the selected server"),
+    ("s", "switch: stop the others, start this one"),
+    ("x", "stop"),
+    ("p", "pull (download) the weights"),
+    ("l", "expand / collapse the live log"),
+    ("/", "fuzzy search (esc clears)"),
+    ("f", "only recipes that fit this machine"),
+    ("a", "deck ↔ every known recipe"),
+    ("1 2 3  tab", "deck · machine · sources"),
+    ("t", "next theme"),
+    ("r", "refresh now (re-probe engines)"),
+    ("?", "this help"),
+    ("q  esc", "quit (servers keep running)"),
+];
+
+fn draw_help(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let w = 58.min(area.width);
+    let h = (KEYS.len() as u16 + 5).min(area.height);
+    let [v] = Layout::vertical([Constraint::Length(h)]).flex(Flex::Center).areas(area);
+    let [r] = Layout::horizontal([Constraint::Length(w)]).flex(Flex::Center).areas(v);
+    f.render_widget(Clear, r);
+    let mut lines: Vec<Line> = KEYS
+        .iter()
+        .map(|(k, what)| {
+            Line::from(vec![
+                Span::styled(format!("{k:>12}  "), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(*what, Style::new().fg(t.fg)),
+            ])
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(
+        Line::from(Span::styled(format!("theme: {} · any key closes", t.name), Style::new().fg(t.dim)))
+            .alignment(Alignment::Center),
+    );
+    let block = panel(title("?", "Keys", None, t), t, true).padding(Padding::uniform(1));
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}

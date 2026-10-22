@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lmdeck</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#121217; --page:#18181e; --card:#1e1e24; --card2:#24242c; --line:#2e3038; --line2:#3d424a;
+  --fg:#e4e4e7; --muted:#9aa0aa; --dim:#5f6673;
+  --accent:#febc38; --blue:#178fb9; --cyan:#00afaf; --sky:#0088fa;
+  --ok:#89d281; --warn:#e4c00f; --err:#fc3a4b; --pink:#d787af; --violet:#8787af; --purple:#b281d6;
+  --mono:"JetBrains Mono","DejaVu Sans Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:Inter,"Geist","Segoe UI",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page);color:var(--fg);font:14px/1.45 var(--sans)}
+body{min-height:100vh;background:radial-gradient(1200px 500px at 10% -10%,#febc3812,transparent 60%),radial-gradient(900px 400px at 100% 0,#0088fa14,transparent 60%),var(--page)}
+button,input{font:inherit;color:inherit}
+.hidden{display:none!important}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)} .dim{color:var(--dim)}
+
+/* top bar */
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;padding:12px 22px;
+  background:#121217e6;backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:.2px}
+.brand svg{width:26px;height:26px}
+.ver{font:600 11px var(--mono);color:var(--dim);padding:2px 7px;border:1px solid var(--line2);border-radius:99px}
+.segs{display:flex;align-items:center;font:600 12px var(--mono)}
+.seg{padding:4px 12px 4px 16px;color:#121212;clip-path:polygon(0 0,calc(100% - 9px) 0,100% 50%,calc(100% - 9px) 100%,0 100%,9px 50%);margin-left:-5px;white-space:nowrap}
+.seg:first-child{clip-path:polygon(0 0,calc(100% - 9px) 0,100% 50%,calc(100% - 9px) 100%,0 100%);border-radius:99px 0 0 99px;padding-left:12px;margin-left:0}
+.grow{flex:1}
+.gauge{min-width:190px}
+.gauge .lbl{display:flex;justify-content:space-between;font:600 11px var(--mono);color:var(--muted);margin-bottom:4px}
+.bar{height:7px;border-radius:99px;background:var(--line2);overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ok),#5faf5f);transition:width .6s ease}
+.bar.warn>i{background:linear-gradient(90deg,var(--warn),#d7af5f)} .bar.err>i{background:linear-gradient(90deg,var(--err),#d75f5f)}
+.bar.held>i{background:linear-gradient(90deg,var(--pink),var(--purple))}
+
+/* toolbar */
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:16px 22px 6px}
+.search{position:relative;flex:0 1 380px}
+.search input{width:100%;padding:9px 12px 9px 34px;background:var(--card);border:1px solid var(--line2);border-radius:10px;outline:none}
+.search input:focus{border-color:var(--sky);box-shadow:0 0 0 3px #0088fa33}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;opacity:.6}
+.kbd{font:600 11px var(--mono);color:var(--dim);border:1px solid var(--line2);border-radius:5px;padding:0 5px;position:absolute;right:10px;top:50%;transform:translateY(-50%)}
+.toggle{display:inline-flex;background:var(--card);border:1px solid var(--line2);border-radius:10px;padding:3px}
+.toggle button,.chipbtn{border:0;background:none;padding:5px 12px;border-radius:7px;cursor:pointer;color:var(--muted);font-weight:600;font-size:13px}
+.toggle button.on{background:var(--line2);color:var(--fg)}
+.chipbtn{border:1px solid var(--line2);background:var(--card);border-radius:99px}
+.chipbtn.on{border-color:var(--accent);color:var(--accent);background:#febc3814}
+.live{display:inline-flex;align-items:center;gap:7px;font:600 12px var(--mono);color:var(--muted)}
+.live i{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 #89d28166;animation:pulse 2s infinite}
+.live.off i{background:var(--err);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 #89d28166}70%{box-shadow:0 0 0 8px #89d28100}100%{box-shadow:0 0 0 0 #89d28100}}
+
+/* layout */
+main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:12px 22px 120px}
+@media (max-width:1000px){main{grid-template-columns:1fr}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;align-content:start}
+.empty{grid-column:1/-1;padding:50px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px}
+
+/* cards */
+.card{position:relative;display:flex;flex-direction:column;gap:9px;padding:15px 16px 13px;background:linear-gradient(180deg,var(--card2),var(--card));
+  border:1px solid var(--line);border-radius:14px;transition:border-color .2s,transform .2s,box-shadow .2s}
+.card:hover{border-color:var(--line2);transform:translateY(-1px);box-shadow:0 10px 30px #0006}
+.card.up{border-color:#89d28155;box-shadow:0 0 0 1px #89d28122,0 8px 30px #89d28110}
+.card.loading{border-color:#e4c00f55}
+.card::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;background:var(--line2)}
+.card.up::before{background:var(--ok)} .card.loading::before{background:var(--warn)} .card.nofit::before{background:#fc3a4b88}
+.r1{display:flex;align-items:center;gap:6px}
+.pill{display:inline-flex;align-items:center;gap:6px;font:700 11px var(--mono);padding:3px 9px;border-radius:99px;color:#121212;text-transform:lowercase}
+.pill.loaded{background:var(--ok)} .pill.loading{background:var(--warn)} .pill.external{background:var(--cyan)}
+.pill.port-busy{background:var(--warn)} .pill.stopped{background:var(--line2);color:var(--muted)} .pill.busy{background:var(--accent)}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.loaded .dot,.pill.loading .dot{animation:blink 1.4s infinite}
+@keyframes blink{50%{opacity:.35}}
+.fit{font:700 11px var(--mono);padding:2px 8px;border-radius:99px;border:1px solid}
+.fit.ok{color:var(--ok);border-color:#89d28155} .fit.warn{color:var(--warn);border-color:#e4c00f55} .fit.fail{color:var(--err);border-color:#fc3a4b55}
+.port{font:600 12px var(--mono);color:var(--dim)}
+.card h3{margin:2px 0 0;font:700 15px var(--mono);letter-spacing:-.2px;word-break:break-all}
+.sub{color:var(--muted);font-size:12.5px;margin-top:-6px}
+.desc{margin:0;color:#b8bcc6;font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font:600 11.5px var(--mono);padding:2px 8px;border-radius:6px;background:#ffffff0a;color:var(--muted);border:1px solid var(--line)}
+.tag.eng{color:var(--cyan);border-color:#00afaf44;background:#00afaf12}
+.tag.q{color:var(--pink);border-color:#d787af44;background:#d787af12}
+.tag.disk{color:var(--ok);border-color:#89d28144}
+.tag.remote{color:var(--dim)}
+.need{display:flex;align-items:center;gap:9px;font:600 11px var(--mono);color:var(--muted)}
+.need .bar{flex:1;height:5px}
+details.checks{font-size:12.5px}
+details.checks summary{cursor:pointer;color:var(--muted);font-weight:600;list-style:none}
+details.checks summary::-webkit-details-marker{display:none}
+details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].checks summary::before{content:"▾ "}
+.chk{display:grid;grid-template-columns:14px 78px 1fr;gap:4px;margin-top:4px;font-family:var(--mono);font-size:11.5px}
+.chk .ok{color:var(--ok)} .chk .warn{color:var(--warn)} .chk .fail{color:var(--err)}
+.cmd{margin-top:6px;padding:8px 10px;border-radius:8px;background:#0e0e12;color:var(--dim);font:11.5px/1.5 var(--mono);word-break:break-all}
+.cmd b{color:var(--accent)}
+.actions{display:flex;gap:7px;margin-top:3px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:9px;border:1px solid var(--line2);background:#ffffff08;cursor:pointer;font-weight:600;font-size:12.5px;transition:background .15s,border-color .15s}
+.btn:hover{background:#ffffff14;border-color:#5f6673}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.primary{background:var(--accent);color:#121212;border-color:var(--accent)}
+.btn.primary:hover{background:#ffcb5c}
+.btn.danger{background:#fc3a4b1c;color:#ff7b86;border-color:#fc3a4b55}
+.btn.icon{padding:7px 9px;margin-left:auto}
+.spin{width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* side */
+.side{display:flex;flex-direction:column;gap:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.box h4{margin:0 0 10px;font:700 12px var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--accent)}
+.kv{display:grid;grid-template-columns:82px 1fr;gap:3px 8px;font-size:12.5px}
+.kv span:nth-child(odd){color:var(--muted)}
+.tool{display:flex;gap:8px;align-items:baseline;font:12px var(--mono);padding:3px 0;border-bottom:1px dashed #ffffff0a}
+.tool .n{min-width:84px;font-weight:700} .tool .d{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool.ok .m{color:var(--ok)} .tool.no .m,.tool.no .n{color:var(--dim)}
+
+/* logs drawer */
+.drawer{position:fixed;left:0;right:0;bottom:0;z-index:8;height:42vh;display:flex;flex-direction:column;background:#0e0e12f2;backdrop-filter:blur(12px);
+  border-top:1px solid var(--blue);box-shadow:0 -20px 50px #0008;transform:translateY(105%);transition:transform .25s ease}
+.drawer.open{transform:none}
+.drawer header{display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid var(--line)}
+.drawer header b{font:700 13px var(--mono)}
+.drawer pre{flex:1;margin:0;padding:12px 18px;overflow:auto;font:12px/1.55 var(--mono);color:#b8bcc6;white-space:pre-wrap;word-break:break-all}
+.drawer pre .e{color:#ff7b86} .drawer pre .w{color:var(--warn)} .drawer pre .g{color:var(--ok)}
+
+/* toasts & modal */
+#toasts{position:fixed;right:18px;bottom:18px;z-index:9;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.toast{padding:10px 14px;border-radius:10px;background:var(--card2);border:1px solid var(--line2);box-shadow:0 10px 30px #0008;font-size:13px;max-width:460px;animation:in .2s ease}
+.toast.ok{border-left:3px solid var(--ok)} .toast.err{border-left:3px solid var(--err)}
+@keyframes in{from{opacity:0;transform:translateY(6px)}}
+.modal{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:#000a}
+.modal .box{width:380px}
+.modal input{width:100%;margin:10px 0;padding:9px 11px;background:#0e0e12;border:1px solid var(--line2);border-radius:8px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 64 64"><path d="M32 4 60 32 32 60 4 32Z" fill="#febc38"/><path d="M32 19 45 32 32 45 19 32Z" fill="#18181e"/></svg>
+    lmdeck <span class="ver" id="ver">v…</span>
+  </div>
+  <div class="segs" id="segs"></div>
+  <div class="grow"></div>
+  <div class="gauge"><div class="lbl"><span>memory</span><span id="memtxt">…</span></div><div class="bar" id="membar"><i style="width:0"></i></div></div>
+  <div class="gauge"><div class="lbl"><span>held by servers</span><span id="heldtxt">…</span></div><div class="bar held" id="heldbar"><i style="width:0"></i></div></div>
+</header>
+
+<section class="toolbar">
+  <label class="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" placeholder="Search recipes, engines, quants…" autocomplete="off" spellcheck="false">
+    <span class="kbd">/</span>
+  </label>
+  <div class="toggle" id="scope"><button data-v="deck" class="on">Deck</button><button data-v="all">All</button></div>
+  <button class="chipbtn" data-f="fits">Fits this machine</button>
+  <button class="chipbtn" data-f="running">Running</button>
+  <button class="chipbtn" data-f="disk">On disk</button>
+  <div class="grow"></div>
+  <span class="live" id="live"><i></i><span>live</span></span>
+</section>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="side">
+    <div class="box"><h4>Machine</h4><div class="kv" id="mach"></div></div>
+    <div class="box"><h4>Engines</h4><div id="engines"></div></div>
+    <div class="box"><h4>Sources</h4><div id="sources"></div></div>
+  </div>
+</main>
+
+<div class="drawer" id="drawer">
+  <header>
+    <span class="pill loaded" id="logpill"><span class="dot"></span>live</span>
+    <b id="logname">logs</b><span class="dim mono" id="logpath"></span>
+    <div class="grow"></div>
+    <label class="muted" style="font-size:12px"><input type="checkbox" id="follow" checked> follow</label>
+    <button class="btn" id="logclear">Clear</button>
+    <button class="btn" id="logclose">Close ✕</button>
+  </header>
+  <pre id="log"></pre>
+</div>
+<div id="toasts"></div>
+<div class="modal hidden" id="auth"><div class="box"><h4>Token required</h4>
+  <div class="muted">This lmdeck server was started with <span class="mono">--token</span>.</div>
+  <input id="tok" type="password" placeholder="paste the token" autocomplete="off">
+  <button class="btn primary" id="tokgo">Unlock</button></div></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const st = {snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null};
+
+// token: #token=… in the URL, else remembered
+(function(){ const m = location.hash.match(/token=([^&]+)/); if (m) { localStorage.setItem("lmdeck-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); } })();
+const token = () => localStorage.getItem("lmdeck-token") || "";
+async function api(path, opts={}) {
+  const h = Object.assign({}, opts.headers || {});
+  if (token()) h["Authorization"] = "Bearer " + token();
+  if (opts.method === "POST") { h["X-Lmdeck"] = "1"; h["Content-Type"] = "application/json"; }
+  const r = await fetch("/api/" + path, Object.assign({}, opts, {headers:h}));
+  if (r.status === 401) { $("#auth").classList.remove("hidden"); throw new Error("token required"); }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+$("#tokgo").onclick = () => { localStorage.setItem("lmdeck-token", $("#tok").value.trim()); $("#auth").classList.add("hidden"); refresh(); };
+
+function gb(x){ if (x == null) return "?"; return x >= 100 ? x.toFixed(0) + " GB" : x.toFixed(1) + " GB"; }
+function bytes(b){ return gb(b / 1073741824); }
+function ago(s){ const d = Math.max(0, Date.now()/1000 - s); if (d < 90) return Math.round(d) + "s"; if (d < 5400) return Math.round(d/60) + "m"; if (d < 172800) return Math.round(d/3600) + "h"; return Math.round(d/86400) + "d"; }
+function setBar(el, ratio){ el.querySelector("i").style.width = (Math.max(0, Math.min(1, ratio)) * 100).toFixed(1) + "%"; el.classList.toggle("warn", ratio > .7 && ratio <= .9); el.classList.toggle("err", ratio > .9); }
+
+function fuzzy(q, text){
+  text = text.toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every(w => { let i = 0; for (const c of w) { i = text.indexOf(c, i); if (i < 0) return false; i++; } return true; });
+}
+function visible(){
+  if (!st.snap) return [];
+  return st.snap.recipes.filter(r =>
+    (st.scope === "all" || r.listed) &&
+    (!st.f.has("fits") || r.fit !== "fail") &&
+    (!st.f.has("running") || ["loaded","loading","external"].includes(r.status)) &&
+    (!st.f.has("disk") || r.downloaded) &&
+    (!st.q || fuzzy(st.q, [r.name, r.display_name, r.engine, r.quant, r.model, r.origin, (r.tags||[]).join(" ")].join(" "))))
+    .sort((a, b) => up(b) - up(a)); // running first; sort is stable
+}
+const up = r => ["loaded","loading","external"].includes(r.status);
+const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port busy", stopped:"stopped"};
+
+function card(r){
+  const total = st.snap.hardware.total_memory_gb || 1;
+  const busy = st.busy.has(r.reference);
+  const cls = ["card", up(r) ? (r.status === "loading" ? "loading" : "up") : "", r.fit === "fail" ? "nofit" : ""].join(" ");
+  const pill = busy ? `<span class="pill busy"><span class="spin"></span>working</span>`
+                    : `<span class="pill ${r.status}"><span class="dot"></span>${statusLabel[r.status]}</span>`;
+  const fit = {ok:["ok","fits"], warn:["warn","tight"], fail:["fail","doesn't fit"]}[r.fit];
+  const size = r.downloaded && r.size_bytes ? bytes(r.size_bytes) : (r.size_gb ? "~" + gb(r.size_gb) : "size ?");
+  const need = r.need_gb ? `<div class="need"><span>needs ${gb(r.need_gb)}</span><div class="bar ${r.need_gb/total>.9?"err":r.need_gb/total>.7?"warn":""}"><i style="width:${Math.min(100, r.need_gb/total*100).toFixed(1)}%"></i></div><span>${Math.round(r.need_gb/total*100)}%</span></div>` : "";
+  const checks = (r.checks||[]).map(c => `<span class="${c.level}">${c.level==="ok"?"✓":c.level==="warn"?"!":"✗"}</span><span class="muted">${esc(c.what)}</span><span>${esc(c.detail)}</span>`).join("");
+  const cmd = r.command ? `<div class="cmd"><b>$</b> ${esc(r.command)}</div>` : r.plan_error ? `<div class="cmd" style="color:#ff7b86">${esc(r.plan_error)}</div>` : "";
+  const ref = esc(r.reference);
+  const toggle = up(r) ? `<button class="btn danger" data-act="stop" data-ref="${ref}" ${busy?"disabled":""}>■ Stop</button>`
+                       : `<button class="btn primary" data-act="start" data-ref="${ref}" ${busy?"disabled":""}>▶ Start</button>`;
+  return `<article class="${cls}">
+    <div class="r1">${pill}<span class="fit ${fit[0]}">${fit[1]}</span><span class="grow"></span><span class="port">:${r.port}</span></div>
+    <h3>${esc(r.name)}</h3>
+    <div class="sub">${esc(r.display_name !== r.name ? r.display_name : (r.model || ""))} <span class="dim">· ${esc(r.origin)}</span></div>
+    ${r.description ? `<p class="desc">${esc(r.description)}</p>` : ""}
+    <div class="tags"><span class="tag eng">${esc(r.engine)}</span><span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
+      ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}
+      ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}</div>
+    ${need}
+    <details class="checks" data-ref="${ref}" ${st.open.has(r.reference)?"open":""}><summary>${(r.checks||[]).length} checks · launch command</summary><div class="chk">${checks}</div>${cmd}</details>
+    <div class="actions">${toggle}
+      <button class="btn" data-act="switch" data-ref="${ref}" title="stop the others, start this one" ${busy||up(r)?"disabled":""}>⇄ Switch</button>
+      <button class="btn" data-act="pull" data-ref="${ref}" ${busy||r.pulling||!r.model?"disabled":""}>↓ Pull</button>
+      <button class="btn" data-act="logs" data-ref="${ref}">≡ Logs</button>
+      <button class="btn icon" data-act="copy" data-url="${esc(r.endpoint)}" title="copy ${esc(r.endpoint)}">⧉</button></div>
+  </article>`;
+}
+
+function render(){
+  const s = st.snap; if (!s) return;
+  const hw = s.hardware;
+  $("#ver").textContent = "v" + s.version;
+  const segs = [[hw.platform,"#d787af"],[hw.hostname,"#00afaf"],[hw.os + "/" + hw.arch,"#8787af"],[s.recipes.filter(up).length + " running","#5faf5f"]];
+  $("#segs").innerHTML = segs.map(([t,c]) => `<span class="seg" style="background:${c}">${esc(t)}</span>`).join("");
+  const total = hw.total_memory_gb || 1, used = hw.available_memory_gb == null ? null : total - hw.available_memory_gb;
+  $("#memtxt").textContent = used == null ? gb(total) : `${gb(used)} / ${gb(total)}`;
+  setBar($("#membar"), used == null ? 0 : used / total);
+  const held = s.recipes.filter(up).reduce((a, r) => a + (r.need_gb || 0), 0);
+  $("#heldtxt").textContent = "~" + gb(held);
+  $("#heldbar").querySelector("i").style.width = Math.min(100, held / total * 100).toFixed(1) + "%";
+
+  const v = visible();
+  $("#grid").innerHTML = v.length ? v.map(card).join("") :
+    `<div class="empty">${st.q ? "Nothing matches “" + esc(st.q) + "”." : "No recipes match these filters."}<br><span class="dim">Try All, or clear the filters.</span></div>`;
+
+  const gpus = (hw.gpus||[]).map(g => `${esc(g.vendor)} ${esc(g.name)}${g.memory_gb ? " · " + gb(g.memory_gb) : ""}`).join("<br>") || "none";
+  $("#mach").innerHTML = [["host",hw.hostname],["platform",hw.platform],["cpu",`${hw.cpu} (${hw.cores})`],["memory",gb(total) + (hw.unified_memory ? " unified" : "")]]
+    .map(([k,x]) => `<span>${k}</span><span>${esc(x)}</span>`).join("") + `<span>gpu</span><span>${gpus}</span><span>fits</span><span>${s.recipes.filter(r => r.fit !== "fail").length} of ${s.recipes.length} recipes</span>`;
+  const tool = t => `<div class="tool ${t.available?"ok":"no"}"><span class="m">${t.available?"✓":"✗"}</span><span class="n">${esc(t.name)}</span><span class="d" title="${esc(t.detail)}">${esc(t.detail)}</span></div>`;
+  $("#engines").innerHTML = Object.values(s.inventory.engines).map(tool).join("") + `<div style="height:8px"></div>` + Object.values(s.inventory.tools).map(tool).join("");
+  const count = o => s.recipes.filter(r => r.origin === o).length;
+  $("#sources").innerHTML = [["deck","your recipes",count("deck")],["builtin","shipped with lmdeck",count("builtin")]]
+    .concat(s.sources.map(x => [x.name, x.spec + (x.fetched_at ? " · " + ago(x.fetched_at) + " ago" : " · never fetched"), x.recipes ?? 0]))
+    .map(([n,d,c]) => `<div class="tool ok"><span class="n">${esc(n)}</span><span class="d" title="${esc(d)}">${esc(d)}</span><span class="grow"></span><span style="color:var(--accent)">${c}</span></div>`).join("");
+}
+
+let failing = false;
+async function refresh(){
+  try { st.snap = await api("snapshot"); render(); if (failing) { failing = false; $("#live").classList.remove("off"); $("#live span").textContent = "live"; } }
+  catch (e) { failing = true; $("#live").classList.add("off"); $("#live span").textContent = "offline"; }
+}
+
+function toast(msg, ok=true){
+  const t = document.createElement("div"); t.className = "toast " + (ok ? "ok" : "err"); t.textContent = msg;
+  $("#toasts").appendChild(t); setTimeout(() => t.remove(), ok ? 3500 : 7000);
+}
+
+async function act(verb, ref){
+  st.busy.add(ref); render();
+  try { const j = await api(`${verb}/${ref}`, {method:"POST", body:"{}"}); toast(j.message); if (verb !== "stop") openLogs(ref); }
+  catch (e) { toast(e.message, false); }
+  finally { st.busy.delete(ref); await refresh(); }
+}
+
+function openLogs(ref){
+  if (st.es) st.es.close();
+  st.logRef = ref; $("#log").textContent = ""; $("#logname").textContent = ref; $("#logpath").textContent = "";
+  $("#drawer").classList.add("open");
+  const q = token() ? "?token=" + encodeURIComponent(token()) : "";
+  const es = new EventSource(`/api/logs/${ref}/stream${q}`); st.es = es;
+  const pre = $("#log");
+  es.addEventListener("reset", e => { const d = JSON.parse(e.data); $("#logpath").textContent = d.path; if (!d.first) pre.textContent = ""; });
+  es.onmessage = e => {
+    const line = document.createElement("span"); const l = e.data.toLowerCase();
+    if (/error|traceback|fatal/.test(l)) line.className = "e"; else if (/warn/.test(l)) line.className = "w"; else if (/ready|listening|started/.test(l)) line.className = "g";
+    line.textContent = e.data + "\n"; pre.appendChild(line);
+    while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
+    if ($("#follow").checked) pre.scrollTop = pre.scrollHeight;
+  };
+  es.onopen = () => { $("#logpill").className = "pill loaded"; $("#logpill").lastChild.textContent = "live"; };
+  es.onerror = () => { $("#logpill").className = "pill stopped"; $("#logpill").lastChild.textContent = "reconnecting"; };
+}
+$("#logclose").onclick = () => { $("#drawer").classList.remove("open"); if (st.es) st.es.close(); st.es = null; };
+$("#logclear").onclick = () => { $("#log").textContent = ""; };
+
+$("#grid").addEventListener("click", e => {
+  const b = e.target.closest("button[data-act]"); if (!b) return;
+  const ref = b.dataset.ref, a = b.dataset.act;
+  if (a === "logs") return openLogs(ref);
+  if (a === "copy") { navigator.clipboard?.writeText(b.dataset.url).then(() => toast("copied " + b.dataset.url)); return; }
+  act(a, ref);
+});
+$("#grid").addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details.checks")) { d.open ? st.open.add(d.dataset.ref) : st.open.delete(d.dataset.ref); } }, true);
+$("#q").addEventListener("input", e => { st.q = e.target.value.trim(); render(); });
+$("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; st.scope = b.dataset.v; [...$("#scope").children].forEach(x => x.classList.toggle("on", x === b)); render(); });
+document.querySelectorAll(".chipbtn").forEach(b => b.onclick = () => { const f = b.dataset.f; st.f.has(f) ? st.f.delete(f) : st.f.add(f); b.classList.toggle("on"); render(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement !== $("#q")) { e.preventDefault(); $("#q").focus(); }
+  if (e.key === "Escape") { if (document.activeElement === $("#q")) { $("#q").value = ""; st.q = ""; $("#q").blur(); render(); } else $("#logclose").click(); }
+});
+const params = new URLSearchParams(location.search);
+if (params.get("scope") === "all") $("#scope [data-v=all]").click();
+if (params.get("logs")) openLogs(params.get("logs"));
+refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 2500);
+</script>
+</body>
+</html>

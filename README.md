@@ -45,8 +45,120 @@ lmdeck switch qwen3-4b-gguf   # stop the others, start this one
 lmdeck stop --all
 ```
 
-Run `lmdeck` with no arguments to get the wordmark and the deck table. On a
-terminal you can then type a row number to toggle that recipe on or off.
+Run `lmdeck` with no arguments in a terminal to open the [TUI](#tui). When
+stdout isn't a terminal, or with `--plain`, you get the wordmark and the deck
+table instead, and can type a row number to toggle that recipe on or off.
+
+![lmdeck TUI, deck tab](docs/screenshots/tui-deck.png)
+
+## TUI
+
+`lmdeck` (or `lmdeck tui`) opens a full-screen dashboard. Its look borrows from
+[oh-my-pi](https://github.com/can1357/oh-my-pi): powerline segments, status
+pills, rounded panels, and a status bar with key hints.
+
+- **Deck**: your recipes with status pills (running, loading, stopped, pulling),
+  download state (✓ on disk, ↓ pulling, · not yet) and fit (✓ fits, ! tight,
+  ✗ no fit). Next to the list are a details pane with the checks and the exact
+  launch command, and the live log of the selected recipe.
+- **Machine**: platform, CPU and memory gauges, the memory held by running
+  recipes, per-GPU memory, and which engines and tools are installed.
+- **Sources**: the deck, the built-ins and every recipe source, with recipe
+  counts and when each source was last fetched.
+
+The screen refreshes every 2 s in the background. Starting, stopping and
+pulling run off the UI thread, so nothing freezes while a server loads.
+Quitting leaves servers running.
+
+| key | action |
+|---|---|
+| `↑ ↓` / `j k`, `PgUp PgDn`, `g G` | move |
+| `↵` / `space` | start or stop the selected recipe |
+| `s` | switch: stop the others, start this one |
+| `x` | stop |
+| `p` | pull the weights (runs in the background; the log pane shows progress) |
+| `l` | expand the log pane (`j k` then scroll it) |
+| `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
+| `f` | only recipes that fit this machine |
+| `a` | deck ↔ every known recipe |
+| `1 2 3`, `tab` | deck · machine · sources |
+| `t` | next theme |
+| `r` | refresh now (re-probes engines) |
+| `?` | help |
+| `q`, `esc`, `ctrl-c` | quit |
+
+Themes: `omp` (default, the oh-my-pi palette), `catppuccin` (mocha) and
+`tokyo-night`. Pick one with `lmdeck tui --theme catppuccin` or
+`LMDECK_THEME=tokyo-night`. If your terminal font is a Nerd Font, `--nerd` (or
+`LMDECK_NERD_FONT=1`) draws rounded powerline caps on the pills.
+
+| | |
+|---|---|
+| ![machine tab](docs/screenshots/tui-machine.png) | ![catppuccin theme](docs/screenshots/tui-catppuccin.png) |
+
+## Web dashboard
+
+```sh
+lmdeck serve                    # http://127.0.0.1:7979/
+lmdeck serve --port 8800
+lmdeck serve --host 0.0.0.0 --token "$(openssl rand -hex 16)"   # see the warning below
+```
+
+`lmdeck serve` runs the same controls in a browser: a card for each recipe
+with status, fit, size, a memory bar, checks and the launch command; Start /
+Stop / Switch / Pull buttons; search and filters (fits, running, on disk);
+machine, engine and source panels; and a live log drawer. The page and its
+JSON API are compiled into the binary, so nothing is fetched from a CDN.
+
+![web dashboard](docs/screenshots/web-dashboard.png)
+
+![web dashboard with the live log drawer](docs/screenshots/web-logs.png)
+
+> [!WARNING]
+> **Binding to anything other than localhost (for example `--host 0.0.0.0`)
+> lets anyone who can reach that port start and stop servers and download
+> models on this machine.** lmdeck refuses to do that without a token: if
+> you don't pass `--token` (or set `LMDECK_TOKEN`), it generates one and
+> prints the URL with it. There's no TLS, so on an untrusted network put it
+> behind a reverse proxy with HTTPS, or use an SSH tunnel
+> (`ssh -L 7979:127.0.0.1:7979 host`) and keep the default bind.
+
+API (JSON unless noted):
+
+| method | path | what it does |
+|---|---|---|
+| `GET` | `/api/health` | `{ok, version}`; never needs the token |
+| `GET` | `/api/snapshot` | everything below in one document |
+| `GET` | `/api/recipes` | every recipe, with status, download state, size, fit, checks and the launch command |
+| `GET` | `/api/status` | running and deck recipes: status, port, endpoint |
+| `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors |
+| `GET` | `/api/sources` | the deck, built-ins and sources with recipe counts |
+| `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
+| `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
+| `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks. |
+
+`{recipe}` is a name or an `origin/name` reference. Start and switch return as
+soon as the server process is launched; poll `/api/status` to see it come up.
+
+Guards:
+
+- `POST` requests need an `X-Lmdeck: 1` header. A cross-site form or `<img>`
+  can't add one.
+- When bound to loopback, the `Host` header must be `localhost`, `127.0.0.1`
+  or `[::1]`. That blocks DNS-rebinding pages.
+- With a token, every `/api` route except `/api/health` needs
+  `Authorization: Bearer <token>` or `?token=<token>` (for EventSource). The
+  dashboard reads the token from the `#token=` part of the URL it prints and
+  keeps it in the browser's local storage.
+
+```sh
+curl -s localhost:7979/api/status
+curl -s -X POST -H 'X-Lmdeck: 1' localhost:7979/api/switch/qwen3-4b-gguf
+curl -N localhost:7979/api/logs/qwen3-4b-gguf/stream
+```
+
+The screenshots come from a CPU-only Linux VM. The running recipe is a small
+`custom` stub server, and its log lines are synthetic.
 
 ## Commands
 
@@ -64,6 +176,8 @@ terminal you can then type a row number to toggle that recipe on or off.
 | `lmdeck source add <spec> [--name N] [--no-fetch]` / `list` / `update [name]` / `remove <name>` | Manages recipe sources. |
 | `lmdeck doctor [--json]` | Shows the platform (GB10, Apple Silicon, NVIDIA, CPU), memory, GPUs and compute capability, which engines are installed, paths, sources, and a per-recipe fit table. |
 | `lmdeck init [--models-dir DIR]` | Writes `~/.config/lmdeck/config.toml`. |
+| `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. |
+| `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
 (`ai-models/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from

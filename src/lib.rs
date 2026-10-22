@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod compat;
 pub mod config;
+pub mod deck;
 pub mod engine;
 pub mod hardware;
 pub mod models;
@@ -11,5 +12,7 @@ pub mod paths;
 pub mod recipe;
 pub mod runner;
 pub mod sources;
+pub mod tui;
 pub mod ui;
 pub mod util;
+pub mod web;

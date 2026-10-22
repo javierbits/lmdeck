@@ -10,6 +10,7 @@ use std::time::Duration;
 use lmdeck::catalog::{self, Catalog, BUILTIN, DECK};
 use lmdeck::compat::{self, Level, Report};
 use lmdeck::config::{Config, SourceEntry};
+use lmdeck::deck::{self, listed, memory_need_gb, resolve, status_word, Deck};
 use lmdeck::engine::{self, Inventory, PlanCtx};
 use lmdeck::hardware::{which, Hardware};
 use lmdeck::models::{self, hf_cache_dir, Presence};
@@ -26,6 +27,9 @@ struct Cli {
     /// Disable coloured output (also honours NO_COLOR).
     #[arg(long, global = true)]
     no_color: bool,
+    /// Bare `lmdeck`: print the table and number prompt instead of the full-screen TUI.
+    #[arg(long, global = true)]
+    plain: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -72,6 +76,19 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Full-screen dashboard (also what bare `lmdeck` opens in a terminal).
+    Tui(TuiArgs),
+    /// Serve the web dashboard and JSON API (localhost only by default).
+    Serve {
+        /// Interface to bind. Anything but loopback exposes start/stop to the network.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(short, long, default_value_t = lmdeck::web::DEFAULT_PORT)]
+        port: u16,
+        /// Require `Authorization: Bearer <token>` (generated automatically off-localhost).
+        #[arg(long, env = "LMDECK_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
     /// Write a default config file.
     Init {
         /// Where model weights live (default ~/models).
@@ -81,6 +98,32 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Args, Default)]
+struct TuiArgs {
+    /// omp (default), catppuccin or tokyo-night. Also LMDECK_THEME.
+    #[arg(long, env = "LMDECK_THEME")]
+    theme: Option<String>,
+    /// Rounded powerline caps (needs a Nerd Font). Also LMDECK_NERD_FONT=1.
+    #[arg(long)]
+    nerd: bool,
+    /// Start with every known recipe instead of just the deck.
+    #[arg(short, long)]
+    all: bool,
+    /// Render one frame to an HTML file instead (for screenshots).
+    #[arg(long, hide = true)]
+    render_html: Option<PathBuf>,
+    /// Render one frame as plain text to stdout instead.
+    #[arg(long, hide = true)]
+    render_text: bool,
+    #[arg(long, hide = true, default_value_t = 150)]
+    width: u16,
+    #[arg(long, hide = true, default_value_t = 40)]
+    height: u16,
+    /// Tab for --render-*: deck, machine or sources.
+    #[arg(long, hide = true, default_value = "deck")]
+    tab: String,
 }
 
 #[derive(Args)]
@@ -231,7 +274,18 @@ fn main() {
 fn run(cli: Cli) -> Result<()> {
     let ctx = Ctx::load()?;
     match cli.cmd {
+        None if !cli.plain
+            && std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && std::env::var("TERM").map_or(true, |t| t != "dumb") =>
+        {
+            tui(ctx, TuiArgs::default())
+        }
         None => home(&ctx),
+        Some(Cmd::Tui(a)) => tui(ctx, a),
+        Some(Cmd::Serve { host, port, token }) => {
+            lmdeck::web::run(Deck::new(ctx.paths, ctx.cfg), lmdeck::web::WebOptions { host, port, token })
+        }
         Some(Cmd::List(a)) => list(&ctx, &a),
         Some(Cmd::Use(a)) => use_recipe(&ctx, &a),
         Some(Cmd::Switch(a)) => use_recipe(&ctx, &UseArgs { only: true, ..a }),
@@ -245,25 +299,32 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+// ───────────────────────────── tui ─────────────────────────────
+
+fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
+    let nerd = a.nerd || std::env::var("LMDECK_NERD_FONT").is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
+    let opts = lmdeck::tui::Options { theme: a.theme, nerd, all: a.all };
+    let deck = Deck::new(ctx.paths, ctx.cfg);
+    if a.render_html.is_some() || a.render_text {
+        let tab = match a.tab.as_str() {
+            "deck" => lmdeck::tui::Tab::Deck,
+            "machine" | "doctor" => lmdeck::tui::Tab::Machine,
+            "sources" => lmdeck::tui::Tab::Sources,
+            other => bail!("unknown tab '{other}'"),
+        };
+        let buf = lmdeck::tui::render_snapshot(&deck, &opts, a.width, a.height, tab);
+        if let Some(p) = a.render_html {
+            std::fs::write(&p, lmdeck::tui::buffer_html(&buf, "lmdeck tui"))?;
+        }
+        if a.render_text {
+            print!("{}", lmdeck::tui::buffer_text(&buf));
+        }
+        return Ok(());
+    }
+    lmdeck::tui::run(deck, opts)
+}
+
 // ───────────────────────────── list ─────────────────────────────
-
-/// The recipes `list` numbers: the deck, or the built-ins while the deck is empty.
-fn listed(cat: &Catalog) -> Vec<&Found> {
-    let deck: Vec<&Found> = cat.deck().collect();
-    if deck.is_empty() {
-        cat.entries.iter().filter(|f| f.origin == BUILTIN).collect()
-    } else {
-        deck
-    }
-}
-
-fn resolve<'a>(cat: &'a Catalog, target: &str) -> Result<&'a Found> {
-    if let Ok(n) = target.parse::<usize>() {
-        let l = listed(cat);
-        return l.get(n.wrapping_sub(1)).copied().ok_or_else(|| anyhow!("no recipe #{n} (the list has {})", l.len()));
-    }
-    cat.resolve(target)
-}
 
 fn status_cell(s: &Status) -> String {
     match s {
@@ -298,16 +359,6 @@ fn downloaded_cell(p: &Presence) -> String {
         (true, _) => green("✓"),
         (_, true) => green("✓ hf"),
         _ => dim("✗"),
-    }
-}
-
-fn status_word(s: &Status) -> &'static str {
-    match s {
-        Status::Loaded => "loaded",
-        Status::Loading => "loading",
-        Status::External => "external",
-        Status::PortBusy => "port-busy",
-        Status::Stopped => "stopped",
     }
 }
 
@@ -500,15 +551,6 @@ fn list_downloaded(ctx: &Ctx, json_out: bool) -> Result<()> {
 
 // ───────────────────────────── use / stop ─────────────────────────────
 
-fn memory_need_gb(r: &Recipe, hw: &Hardware, p: &Presence) -> Option<f64> {
-    if let Some(frac) = compat::reserved_fraction(r) {
-        if hw.unified_memory || hw.gpus.is_empty() {
-            return Some(frac * hw.total_memory_gb);
-        }
-    }
-    compat::required_memory_gb(r, p.present().then_some(p.size))
-}
-
 fn print_report(rep: &Report) {
     for c in &rep.checks {
         let mark = match c.level {
@@ -688,79 +730,17 @@ fn logs(ctx: &Ctx, target: &str, lines: usize) -> Result<()> {
 
 // ───────────────────────────── pull ─────────────────────────────
 
-fn pull_command(ctx: &Ctx, r: &Recipe) -> Result<Vec<String>> {
-    let repo = r.model.repo.clone().ok_or_else(|| anyhow!("{} has no Hugging Face repo to pull", r.name))?;
-    if r.engine.name == Engine::LmStudio {
-        // LM Studio keeps its own model library; let it download.
-        let lms = engine::PlanCtx::new(&ctx.cfg, false).bins.get("lmstudio").cloned().unwrap_or_else(|| "lms".into());
-        return Ok(vec![lms, "get".into(), repo]);
-    }
-    if r.engine.name == Engine::TensorFold {
-        // `tensorfold pull` fills the HF cache, checks every file against the Hub and
-        // refuses checkpoints whose model_type has no native family.
-        let tf = r
-            .engine
-            .bin
-            .clone()
-            .or_else(|| ctx.cfg.engines.tensorfold.clone())
-            .or_else(|| engine::PlanCtx::new(&ctx.cfg, false).bins.get("tensorfold").cloned())
-            .unwrap_or_else(|| "tensorfold".into());
-        let target = match &r.model.revision {
-            Some(rev) => format!("{repo}@{rev}"),
-            None => repo,
-        };
-        return Ok(vec![tf, "pull".into(), target]);
-    }
-    let bin = if which("hf").is_some() {
-        "hf"
-    } else if which("huggingface-cli").is_some() {
-        "huggingface-cli"
-    } else {
-        "hf"
-    };
-    let mut argv = vec![bin.to_string(), "download".into(), repo.clone()];
-    if let Some(rev) = &r.model.revision {
-        argv.extend(["--revision".into(), rev.clone()]);
-    }
-    for f in &r.model.files {
-        argv.extend(["--include".into(), f.clone()]);
-        if let Some((_, n)) = models::gguf_shard(f) {
-            // Split GGUF: fetch every shard.
-            if let Some((head, _)) = f.rsplit_once("-00001-of-") {
-                argv.extend(["--include".into(), format!("{head}-*-of-{n:05}.gguf")]);
-            }
-        }
-    }
-    let local = r.local_path(&ctx.models_dir());
-    let dir = match (r.engine.name, local) {
-        (Engine::LlamaCpp, Some(p)) => p.parent().map(Path::to_path_buf),
-        (Engine::TabbyApi, Some(p)) => Some(p),
-        _ => None,
-    };
-    if let Some(d) = dir {
-        argv.extend(["--local-dir".into(), d.display().to_string()]);
-    }
-    Ok(argv)
-}
-
 fn pull(ctx: &Ctx, target: &str, dry_run: bool) -> Result<()> {
     let cat = ctx.catalog();
     let r = &resolve(&cat, target)?.recipe;
-    let argv = pull_command(ctx, r)?;
+    let argv = deck::pull_argv(&ctx.cfg, r)?;
     let line = shlex::try_join(argv.iter().map(String::as_str)).unwrap_or_else(|_| argv.join(" "));
     if dry_run {
         println!("{line}");
         return Ok(());
     }
     if which(&argv[0]).is_none() {
-        let hint = if r.engine.name == Engine::LmStudio {
-            "LM Studio's `lms` CLI was not found (open LM Studio once, or run ~/.lmstudio/bin/lms bootstrap)"
-        } else if r.engine.name == Engine::TensorFold {
-            "TensorFold was not found (curl -fsSL https://tensorfold.dev/install.sh | sh, or on a Mac \
-             brew install ashhart/tensorfold/tensorfold)"
-        } else {
-            "the Hugging Face CLI is not installed (`pip install -U huggingface_hub`)"
-        };
+        let hint = deck::pull_tool_hint(r);
         bail!("{hint}; then run:\n  {line}");
     }
     println!("{} {}", cyan("↓"), dim(&line));
