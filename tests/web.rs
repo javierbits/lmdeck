@@ -68,8 +68,9 @@ fn serve(extra: &[&str], setup: impl FnOnce(&std::path::Path)) -> Served {
     let child = lmdeck_cmd(root.path())
         .args(["serve", "--port", &port.to_string()])
         .args(extra)
+        .env("LMDECK_DEBUG", "1")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(fs::File::create(root.path().join("serve.err")).unwrap())
         .spawn()
         .unwrap();
     let base = format!("http://127.0.0.1:{port}");
@@ -208,6 +209,10 @@ fn start_stream_logs_and_stop_a_server() {
             let direct = ureq::get(&format!("http://127.0.0.1:{port}/v1/models")).call();
             let logs = s.get("/api/logs/web").unwrap_or_default();
             let list = s.lmdeck().args(["list", "-a"]).output().unwrap();
+            let t1 = Instant::now();
+            let again = s.get("/api/status");
+            eprintln!("status again after {:?}: {again:?}", t1.elapsed());
+            eprintln!("serve stderr:\n{}", fs::read_to_string(s.path("serve.err")).unwrap_or_default());
             panic!(
                 "never loaded: {row}\ndirect probe: {direct:?}\nlogs: {logs}\nlist: {}{}",
                 String::from_utf8_lossy(&list.stdout),

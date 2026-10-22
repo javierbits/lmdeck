@@ -116,7 +116,12 @@ pub fn probe(port: u16, timeout: Duration) -> Probe {
             Probe::Up(ids)
         }
         Err(ureq::Error::Status(_, _)) => Probe::Up(vec![]),
-        Err(_) => Probe::Down,
+        Err(e) => {
+            if std::env::var_os("LMDECK_DEBUG").is_some() {
+                eprintln!("lmdeck: probe {url}: {e}");
+            }
+            Probe::Down
+        }
     }
 }
 
