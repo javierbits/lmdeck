@@ -20,6 +20,8 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
     ("qwen3.6-35b-a3b-nvfp4-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-nvfp4-spark.toml")),
     ("qwen3-4b-mlx.toml", include_str!("../recipes/qwen3-4b-mlx.toml")),
     ("qwen3-4b-lmstudio.toml", include_str!("../recipes/qwen3-4b-lmstudio.toml")),
+    ("qwen3.5-2b-tensorfold.toml", include_str!("../recipes/qwen3.5-2b-tensorfold.toml")),
+    ("qwen3.6-35b-a3b-mtp-tensorfold-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-mtp-tensorfold-spark.toml")),
 ];
 
 pub fn builtin() -> Vec<Found> {

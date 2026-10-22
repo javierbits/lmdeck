@@ -1,0 +1,23 @@
+# TensorFold docs/recipes/qwen3.6-moe.md: native CUDA only (the Metal binary has no qwen3_5_moe family yet).
+# Tested revision 81169a9 (20.9 GB); the server peaked at 31.3 GiB on one DGX Spark with 64k-token prompts.
+display_name = "Qwen3.6 35B-A3B (MLX 4-bit + MTP, TensorFold)"
+description = "TensorFold's Qwen3.6 35B-A3B checkpoint with its MTP drafter layer, on one DGX Spark / NVIDIA GPU."
+tags = ["qwen3.6", "moe", "tensorfold", "mtp", "dgx-spark"]
+
+[model]
+repo = "TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP"
+revision = "81169a9bc511a27c1b4eedb77a2cd98ced431847"
+size_gb = 20.9
+
+[quant]
+format = "mlx"
+bits = 4.0
+
+[engine]
+name = "tensorfold"
+port = 8087
+
+[hardware]
+min_memory_gb = 32
+os = ["linux"]
+accelerator = ["nvidia"]

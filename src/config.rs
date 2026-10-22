@@ -46,6 +46,9 @@ pub struct EngineOverrides {
     pub lms: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mlx_server: Option<String>,
+    /// TensorFold binary (`tensorfold`, or the release archive's `tensorfold-native`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensorfold: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docker: Option<String>,
     /// LM Studio's server port (default 1234).

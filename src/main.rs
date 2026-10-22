@@ -584,7 +584,8 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         }
         eprintln!("{} {why}", yellow("warning:"));
     }
-    if r.engine.name.needs_local_weights() && !p.local && !a.force {
+    let missing = if r.engine.name.needs_local_weights() { !p.local } else { !p.present() };
+    if r.engine.name.needs_downloaded_weights() && missing && !a.force {
         bail!("{}'s weights are not on disk yet; run `lmdeck pull {}` first", r.name, r.name);
     }
 
@@ -694,6 +695,22 @@ fn pull_command(ctx: &Ctx, r: &Recipe) -> Result<Vec<String>> {
         let lms = engine::PlanCtx::new(&ctx.cfg, false).bins.get("lmstudio").cloned().unwrap_or_else(|| "lms".into());
         return Ok(vec![lms, "get".into(), repo]);
     }
+    if r.engine.name == Engine::TensorFold {
+        // `tensorfold pull` fills the HF cache, checks every file against the Hub and
+        // refuses checkpoints whose model_type has no native family.
+        let tf = r
+            .engine
+            .bin
+            .clone()
+            .or_else(|| ctx.cfg.engines.tensorfold.clone())
+            .or_else(|| engine::PlanCtx::new(&ctx.cfg, false).bins.get("tensorfold").cloned())
+            .unwrap_or_else(|| "tensorfold".into());
+        let target = match &r.model.revision {
+            Some(rev) => format!("{repo}@{rev}"),
+            None => repo,
+        };
+        return Ok(vec![tf, "pull".into(), target]);
+    }
     let bin = if which("hf").is_some() {
         "hf"
     } else if which("huggingface-cli").is_some() {
@@ -738,6 +755,9 @@ fn pull(ctx: &Ctx, target: &str, dry_run: bool) -> Result<()> {
     if which(&argv[0]).is_none() {
         let hint = if r.engine.name == Engine::LmStudio {
             "LM Studio's `lms` CLI was not found (open LM Studio once, or run ~/.lmstudio/bin/lms bootstrap)"
+        } else if r.engine.name == Engine::TensorFold {
+            "TensorFold was not found (curl -fsSL https://tensorfold.dev/install.sh | sh, or on a Mac \
+             brew install ashhart/tensorfold/tensorfold)"
         } else {
             "the Hugging Face CLI is not installed (`pip install -U huggingface_hub`)"
         };

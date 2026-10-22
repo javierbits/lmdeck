@@ -1,0 +1,19 @@
+# TensorFold's own quick-start model, "checked on Metal and a GB10" (github.com/ashhart/TensorFold, v1.1.2).
+display_name = "Qwen3.5 2B (MLX 4-bit, TensorFold)"
+description = "TensorFold's quick-start checkpoint at its pinned revision; serves on Apple Silicon (Metal) or an NVIDIA GPU (CUDA)."
+tags = ["qwen3.5", "small", "tensorfold", "mlx", "mac", "dgx-spark"]
+
+[model]
+repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
+revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+size_gb = 1.75
+
+[quant]
+format = "mlx"
+bits = 4.0
+
+[engine]
+name = "tensorfold"
+port = 8086
+ctx = 8192
+args = ["--no-thinking"]

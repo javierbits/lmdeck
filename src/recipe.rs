@@ -31,18 +31,21 @@ pub enum Engine {
     LmStudio,
     /// Apple MLX via `mlx_lm.server`.
     Mlx,
+    /// TensorFold (github.com/ashhart/TensorFold): native Zig server for Apple Metal and NVIDIA CUDA.
+    TensorFold,
     /// Anything else: `engine.command` is run verbatim.
     Custom,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 7] = [
+    pub const ALL: [Engine; 8] = [
         Engine::LlamaCpp,
         Engine::Vllm,
         Engine::Sglang,
         Engine::TabbyApi,
         Engine::LmStudio,
         Engine::Mlx,
+        Engine::TensorFold,
         Engine::Custom,
     ];
 
@@ -54,6 +57,7 @@ impl Engine {
             Engine::TabbyApi => "tabbyapi",
             Engine::LmStudio => "lmstudio",
             Engine::Mlx => "mlx",
+            Engine::TensorFold => "tensorfold",
             Engine::Custom => "custom",
         }
     }
@@ -61,7 +65,7 @@ impl Engine {
     /// Port used when a recipe does not set one (each engine's own default).
     pub fn default_port(&self) -> u16 {
         match self {
-            Engine::LlamaCpp | Engine::Mlx | Engine::Custom => 8080,
+            Engine::LlamaCpp | Engine::Mlx | Engine::TensorFold | Engine::Custom => 8080,
             Engine::Vllm => 8000,
             Engine::Sglang => 30000,
             Engine::TabbyApi => 5000,
@@ -72,6 +76,12 @@ impl Engine {
     /// Engines that need weights on local disk (cannot stream from a repo id).
     pub fn needs_local_weights(&self) -> bool {
         matches!(self, Engine::TabbyApi)
+    }
+
+    /// Engines that load from local disk or the Hugging Face cache but never
+    /// download at startup, so `lmdeck pull` must run first.
+    pub fn needs_downloaded_weights(&self) -> bool {
+        matches!(self, Engine::TabbyApi | Engine::TensorFold)
     }
 }
 
@@ -91,6 +101,7 @@ impl FromStr for Engine {
             "tabbyapi" | "tabby" | "exllamav3" | "exl3" => Engine::TabbyApi,
             "lmstudio" | "lm-studio" | "lms" => Engine::LmStudio,
             "mlx" | "mlx-lm" | "mlx_lm" => Engine::Mlx,
+            "tensorfold" | "tensor-fold" | "tensorfold-native" | "tf" => Engine::TensorFold,
             "custom" => Engine::Custom,
             other => {
                 bail!("unknown engine '{other}' (expected one of: {})", Engine::ALL.map(|e| e.as_str()).join(", "))

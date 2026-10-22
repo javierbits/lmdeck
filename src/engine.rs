@@ -146,6 +146,25 @@ impl Inventory {
                 (None, false) => found("mlx", None, "mlx_lm not installed"),
             },
         );
+        let tf = find_tensorfold(o);
+        engines.insert(
+            "tensorfold".into(),
+            ToolStatus {
+                name: "tensorfold".into(),
+                available: tf.is_some(),
+                detail: match &tf {
+                    Some(p) => match tensorfold_version(p) {
+                        Some(v) => format!("{} ({v})", p.display()),
+                        None => p.display().to_string(),
+                    },
+                    None => {
+                        "tensorfold / tensorfold-native not found (curl -fsSL https://tensorfold.dev/install.sh | sh, \
+                             or brew install ashhart/tensorfold/tensorfold; or set engines.tensorfold)"
+                            .into()
+                    }
+                },
+            },
+        );
 
         tools.insert("docker".into(), docker);
         let hf = which("hf").or_else(|| which("huggingface-cli"));
@@ -197,6 +216,30 @@ fn find_lms(o: &EngineOverrides) -> Option<PathBuf> {
     })
 }
 
+/// TensorFold installs as `tensorfold` (Homebrew, or a symlink in `~/.tensorfold/bin` from
+/// install.sh); the Linux release archive ships the same binary as `tensorfold-native`.
+fn find_tensorfold(o: &EngineOverrides) -> Option<PathBuf> {
+    if let Some(b) = &o.tensorfold {
+        return which(&expand(b).to_string_lossy());
+    }
+    which("tensorfold").or_else(|| which("tensorfold-native")).or_else(|| {
+        let h = home_dir();
+        [h.join(".tensorfold/bin/tensorfold")].into_iter().find(|p| which(&p.to_string_lossy()).is_some())
+    })
+}
+
+/// `tensorfold-native 1.1.2` → `1.1.2`. `--version` needs no model or GPU driver.
+fn tensorfold_version(bin: &Path) -> Option<String> {
+    let out = run_with_timeout(Command::new(bin).arg("--version"), Duration::from_secs(5))?;
+    parse_tensorfold_version(&out)
+}
+
+fn parse_tensorfold_version(out: &str) -> Option<String> {
+    let line = out.lines().next()?.trim();
+    let (name, v) = line.rsplit_once(' ')?;
+    (name.starts_with("tensorfold") && v.chars().next().is_some_and(|c| c.is_ascii_digit())).then(|| v.to_string())
+}
+
 /// Inputs to [`plan`].
 #[derive(Debug, Clone)]
 pub struct PlanCtx {
@@ -218,6 +261,9 @@ impl PlanCtx {
         }
         if let Some(p) = find_lms(&cfg.engines) {
             bins.insert("lmstudio".into(), p.display().to_string());
+        }
+        if let Some(p) = find_tensorfold(&cfg.engines) {
+            bins.insert("tensorfold".into(), p.display().to_string());
         }
         if let Some(p) = find_tabbyapi(&cfg.engines) {
             bins.insert("tabbyapi_dir".into(), p.display().to_string());
@@ -513,6 +559,31 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             plan.argv = a;
             plan.env = env;
         }
+        Engine::TensorFold => {
+            // `tensorfold serve` takes a repo id already in the HF cache (`tensorfold pull`
+            // put it there, at the recipe's revision) or a checkpoint directory. It never
+            // downloads, so there is no revision flag here.
+            if model_arg.is_empty() {
+                bail!("tensorfold recipe '{}' has neither an hf repo nor a local checkpoint path", r.name);
+            }
+            let mut a =
+                vec![bin_or(Engine::TensorFold, &ctx.overrides.tensorfold, "tensorfold"), "serve".into(), model_arg];
+            if !has_flag(&args, &["--name"]) {
+                a.extend(["--name".into(), r.name.clone()]);
+            }
+            if !has_flag(&args, &["--host"]) {
+                a.extend(["--host".into(), host.clone()]);
+            }
+            if !has_flag(&args, &["--port"]) {
+                a.extend(["--port".into(), port.to_string()]);
+            }
+            if let Some(c) = ctx_len.filter(|_| !has_flag(&args, &["--context"])) {
+                a.extend(["--context".into(), c.to_string()]);
+            }
+            a.extend(args);
+            plan.argv = a;
+            plan.env = env;
+        }
         Engine::Custom => {
             let mut a: Vec<String> = r.engine.command.iter().map(|c| substitute(c, &vars)).collect();
             a.extend(args);
@@ -691,6 +762,47 @@ mod tests {
         );
         let r = recipe("[model]\nrepo=\"a/b\"\n[engine]\nname=\"custom\"\nport=9001\ncommand=[\"srv\",\"--m\",\"{model}\",\"-p\",\"{port}\",\"{name}\"]\n");
         assert_eq!(plan(&r, &ctx(false)).unwrap().argv, ["srv", "--m", "a/b", "-p", "9001", "test"]);
+    }
+
+    #[test]
+    fn tensorfold_serves_cached_repo_or_local_dir() {
+        let r = recipe("[model]\nrepo=\"mlx-community/Qwen3.5-2B-MLX-4bit\"\nrevision=\"93760be\"\n[engine]\nname=\"tensorfold\"\nctx=8192\nargs=[\"--no-thinking\"]\n");
+        let p = plan(&r, &ctx(false)).unwrap();
+        assert_eq!(
+            p.argv,
+            [
+                "tensorfold",
+                "serve",
+                "mlx-community/Qwen3.5-2B-MLX-4bit",
+                "--name",
+                "test",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8080",
+                "--context",
+                "8192",
+                "--no-thinking"
+            ]
+        );
+        assert!(!p.oneshot && p.container.is_none() && p.stop.is_none());
+        assert!(!p.argv.iter().any(|a| a.contains("93760be")), "serve takes no revision");
+
+        let r = recipe("[model]\nsource=\"local\"\npath=\"~/models/nemotron-living\"\n[engine]\nname=\"tf\"\nport=8091\nbin=\"/opt/tf/bin/tensorfold-native\"\nargs=[\"--name\",\"local-model\",\"--host=127.0.0.1\"]\n");
+        assert_eq!(r.engine.name, Engine::TensorFold);
+        let p = plan(&r, &ctx(true)).unwrap();
+        assert_eq!(p.argv[0], "/opt/tf/bin/tensorfold-native");
+        assert_eq!(p.argv[1], "serve");
+        assert!(p.argv[2].ends_with("models/nemotron-living"), "{:?}", p.argv);
+        assert_eq!(&p.argv[3..], ["--port", "8091", "--name", "local-model", "--host=127.0.0.1"]);
+    }
+
+    #[test]
+    fn tensorfold_version_parsing() {
+        assert_eq!(parse_tensorfold_version("tensorfold-native 1.1.2\n").as_deref(), Some("1.1.2"));
+        assert_eq!(parse_tensorfold_version("tensorfold 1.0.8").as_deref(), Some("1.0.8"));
+        assert_eq!(parse_tensorfold_version("usage: something"), None);
+        assert_eq!(parse_tensorfold_version(""), None);
     }
 
     #[test]

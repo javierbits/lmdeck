@@ -15,7 +15,8 @@ a recipe fits the machine you're on.
 
 Supported engines: **llama.cpp** (`llama-server`), **vLLM** (native or Docker),
 **SGLang** (native or Docker), **TabbyAPI / exllamav3** (EXL3), **LM Studio**
-(`lms`), **MLX** (`mlx_lm.server`), plus `custom` for anything with an
+(`lms`), **MLX** (`mlx_lm.server`), **TensorFold** (`tensorfold serve`, Metal + CUDA),
+plus `custom` for anything with an
 OpenAI-compatible `/v1/models`.
 
 It reads [lmswitch](https://github.com/jvr0x/lmswitch) YAML recipes as-is, and
@@ -55,7 +56,7 @@ terminal you can then type a row number to toggle that recipe on or off.
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`. |
-| `lmdeck pull <ref> [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead. |
+| `lmdeck pull <ref> [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. |
 | `lmdeck logs <ref> [-n N]` | Prints the tail of the server log. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
 | `lmdeck recipe add <ref\|file\|url> [--name N] [--force]` | Copies a recipe into your deck as TOML. |
@@ -119,7 +120,7 @@ bits   = 4.0
 label  = "4.0bpw"
 
 [engine]
-name  = "tabbyapi"     # llama.cpp | vllm | sglang | tabbyapi | lmstudio | mlx | custom
+name  = "tabbyapi"     # llama.cpp | vllm | sglang | tabbyapi | lmstudio | mlx | tensorfold | custom
 port  = 5000
 ctx   = 32768
 args  = ["--cache-mode", "Q8"]            # appended last; placeholders below
@@ -158,7 +159,59 @@ default.
 | `tabbyapi` | `python3 main.py --model-dir … --model-name … --backend exllamav3 --max-seq-len …`, run in the TabbyAPI checkout. Weights must be local: `lmdeck pull` puts EXL3 branches in `<models_dir>/<repo>-<revision>`. |
 | `lmstudio` | `lms server start`, then `lms load <model> --identifier <name>`. `stop` runs `lms unload`. |
 | `mlx` | `mlx_lm.server --model <repo or path> --host --port`. |
+| `tensorfold` | `tensorfold serve <repo or checkpoint dir> --name <name> --host --port [--context <ctx>]`. See [TensorFold](#tensorfold) below. |
 | `custom` | Your `command`. |
+
+### TensorFold
+
+[TensorFold](https://github.com/ashhart/TensorFold) (Apache-2.0, by ashhart) is an
+LLM inference server built as one Zig binary. It runs Metal kernels on Apple-silicon Macs
+and CUDA kernels on Linux NVIDIA GPUs (x86_64, or aarch64 for GB10 / DGX Spark). It needs
+no Python or MLX. It serves an OpenAI-compatible API (chat completions, completions,
+Responses) and Anthropic Messages. `GET /v1/models` lists the `--name` you serve, so
+lmdeck's readiness and status checks work as they do for the other engines. It is not
+on PyPI.
+
+- **Install:** `curl -fsSL https://tensorfold.dev/install.sh | sh` puts it in
+  `~/.tensorfold/bin`. On a Mac, `brew install ashhart/tensorfold/tensorfold`. You can
+  also unpack a [release archive](https://github.com/ashhart/TensorFold/releases), which
+  on Linux ships the binary as `tensorfold-native`. `lmdeck doctor` finds `tensorfold`,
+  `tensorfold-native` or `~/.tensorfold/bin/tensorfold`, and shows its version. Set
+  `engines.tensorfold` if yours is somewhere else.
+- **Weights:** TensorFold never downloads when it starts. Run `lmdeck pull <recipe>`
+  first. That runs `tensorfold pull <repo>[@<revision>]`, which fills the Hugging Face
+  cache, checks each file against the Hub, and refuses model types TensorFold has no
+  native family for. `lmdeck use` refuses a TensorFold recipe whose weights aren't
+  cached yet. A local checkpoint directory (`source = "local"`, `path = …`) is served
+  directly.
+- **Formats:** TensorFold serves its own model families: Qwen3.5/3.6/3.8, Nemotron,
+  GLM, LFM, Gemma 4 and Kolibri. The checkpoint formats are MLX affine 4/6/8-bit, NVIDIA
+  NVFP4, block FP8 and BF16. EXL3/TR3 and EXLR8 work only on the multi-machine
+  setups listed in TensorFold's README. lmdeck's fit check fails `gguf`, `exl2`, `awq`
+  and `gptq` recipes on this engine. It also fails any machine that isn't an
+  Apple-silicon Mac or Linux with an NVIDIA GPU. `tensorfold capabilities --json` lists
+  exactly what your binary supports.
+- **Flags:** lmdeck adds `--name`, `--host`, `--port` (default 8080) and `--context`,
+  unless your `args` already set them. Put anything else in `args`, such as
+  `--no-thinking`, `--parallel 8`, `--drafter <repo>`, `--prompt-cache-gib 8` or
+  `--api-key-file <file>`. `stop` sends SIGTERM to the process group, like every
+  native engine.
+
+```toml
+[model]
+repo     = "mlx-community/Qwen3.5-2B-MLX-4bit"
+revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"   # used by `pull`; serve takes the repo name
+
+[quant]
+format = "mlx"
+bits   = 4.0
+
+[engine]
+name = "tensorfold"    # aliases: tf, tensorfold-native
+port = 8086
+ctx  = 8192
+args = ["--no-thinking"]
+```
 
 ### lmswitch compatibility
 
@@ -205,6 +258,7 @@ host = "0.0.0.0"
 # tabbyapi_dir = "~/tabbyAPI"
 # python = "~/venvs/vllm/bin/python"
 # lms = "~/.lmstudio/bin/lms"
+# tensorfold = "~/.tensorfold/bin/tensorfold"
 # docker = "docker"
 
 [[sources]]
@@ -225,6 +279,8 @@ is empty. Every Hugging Face id below was checked against the Hub.
 | `qwen3.6-35b-a3b-nvfp4-spark` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | vllm (Docker) | DGX Spark / Blackwell |
 | `qwen3-4b-mlx` | `mlx-community/Qwen3-4B-4bit` | mlx | Apple Silicon |
 | `qwen3-4b-lmstudio` | `unsloth/Qwen3-4B-GGUF` | lmstudio | LM Studio |
+| `qwen3.5-2b-tensorfold` | `mlx-community/Qwen3.5-2B-MLX-4bit` @ `93760be` | tensorfold | Apple Silicon or NVIDIA (TensorFold's quick-start model) |
+| `qwen3.6-35b-a3b-mtp-tensorfold-spark` | `TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP` @ `81169a9` | tensorfold | NVIDIA / DGX Spark (CUDA only) |
 
 ## Development
 

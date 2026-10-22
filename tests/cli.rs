@@ -82,7 +82,7 @@ fn doctor_json_reports_hardware_and_recipes() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
     assert!(v["inventory"]["engines"]["llama.cpp"].is_object());
-    assert_eq!(v["recipes"].as_array().unwrap().len(), 6);
+    assert_eq!(v["recipes"].as_array().unwrap().len(), 8);
     assert!(v["paths"]["config"].as_str().unwrap().ends_with("config/config.toml"));
     // Human output too.
     assert!(e.run(&["doctor"]).contains("engines"));
@@ -147,6 +147,39 @@ fn local_source_with_lmswitch_yaml() {
     e.run(&["source", "remove", "mine"]);
     assert!(!e.run(&["source", "list"]).contains("mine"));
     assert!(e.run(&["recipe", "list"]).contains("builtin"));
+}
+
+#[test]
+fn tensorfold_recipe_plan_pull_and_doctor() {
+    let e = Env::new();
+    let plan = e.run(&["use", "qwen3.5-2b-tensorfold", "--dry-run"]);
+    assert!(
+        plan.contains(
+            "serve mlx-community/Qwen3.5-2B-MLX-4bit --name qwen3.5-2b-tensorfold --host 0.0.0.0 --port 8086 \
+             --context 8192 --no-thinking"
+        ),
+        "{plan}"
+    );
+    let pull = e.run(&["pull", "qwen3.5-2b-tensorfold", "--dry-run"]);
+    assert!(pull.contains("pull mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3"), "{pull}");
+    assert!(!pull.contains("hf download"), "{pull}");
+    let found = e.run(&["recipe", "search", "--engine", "tf", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&found).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 2, "{found}");
+    // A stand-in `tensorfold-native` (the Linux archive's binary name) is detected with its version.
+    let bin = e.path("bin");
+    write(&bin, "tensorfold-native", "#!/bin/sh\necho 'tensorfold-native 1.1.2'\n");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(bin.join("tensorfold-native"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let out = e.cmd().env("PATH", &path).args(["doctor", "--json"]).assert().success().get_output().stdout.clone();
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let tf = &doc["inventory"]["engines"]["tensorfold"];
+    assert_eq!(tf["available"], true, "{tf}");
+    assert!(tf["detail"].as_str().unwrap().ends_with("tensorfold-native (1.1.2)"), "{tf}");
+    let out = e.cmd().env("PATH", &path).args(["pull", "qwen3.5-2b-tensorfold", "--dry-run"]).assert().success();
+    let pull = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(pull.contains("bin/tensorfold-native pull mlx-community/"), "{pull}");
 }
 
 #[test]

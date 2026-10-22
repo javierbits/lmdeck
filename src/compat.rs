@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::engine::Inventory;
 use crate::hardware::{cmp_version, normalize_arch, normalize_os, Hardware};
-use crate::recipe::Recipe;
+use crate::recipe::{Engine, Recipe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +146,11 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
             format!("spans {} machines; lmdeck v0.1 launches single-node recipes only", r.nodes()),
         );
     }
+    if r.engine.name == Engine::TensorFold {
+        for (level, what, detail) in tensorfold_checks(r, hw) {
+            push(level, what, detail);
+        }
+    }
     if let Some(inv) = inv {
         match inv.can_launch(r) {
             Ok(()) => push(Level::Ok, "engine", format!("{} available", r.engine.name)),
@@ -153,6 +158,35 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
         }
     }
     Report { checks }
+}
+
+/// TensorFold's published scope: Apple-silicon Macs (Metal) and Linux with an NVIDIA
+/// GPU (CUDA, x86_64 or aarch64). It reads MLX, NVFP4, FP8, BF16 and EXL3/EXLR8
+/// checkpoints of its native families; it has no GGUF, EXL2, AWQ or GPTQ path.
+fn tensorfold_checks(r: &Recipe, hw: &Hardware) -> Vec<(Level, &'static str, String)> {
+    let mut out = vec![];
+    let arch = normalize_arch(&hw.arch);
+    let metal = hw.os == "macos" && arch == "aarch64";
+    let cuda = hw.os == "linux" && hw.accelerator().eq_ignore_ascii_case("nvidia");
+    if !metal && !cuda {
+        out.push((
+            Level::Fail,
+            "tensorfold",
+            format!(
+                "runs on Apple-silicon macOS or Linux with an NVIDIA GPU; this is {} {} ({})",
+                hw.os,
+                arch,
+                hw.accelerator()
+            ),
+        ));
+    }
+    if let Some(q) = &r.quant {
+        let f = q.format.to_ascii_lowercase();
+        if ["gguf", "exl2", "awq", "gptq"].contains(&f.as_str()) {
+            out.push((Level::Fail, "quant", format!("TensorFold does not load {f} checkpoints")));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -224,6 +258,31 @@ mod tests {
         assert_eq!(check(&rec, &spark(), None, Some(100 * GIB)).level(), Level::Fail);
         assert_eq!(check(&rec, &spark(), None, Some(92 * GIB)).level(), Level::Warn);
         assert_eq!(check(&rec, &spark(), None, Some(20 * GIB)).level(), Level::Ok);
+    }
+
+    #[test]
+    fn tensorfold_platform_and_format() {
+        let tf = |extra: &str| {
+            Recipe::parse(
+                &format!("[model]\nrepo=\"a/b\"\n{extra}[engine]\nname=\"tensorfold\"\n[hardware]\nmin_memory_gb=4\n"),
+                Format::Toml,
+                "t",
+            )
+            .unwrap()
+        };
+        let mlx = tf("[quant]\nformat=\"mlx\"\nbits=4\n");
+        assert_eq!(check(&mlx, &spark(), None, None).level(), Level::Ok);
+        assert_eq!(check(&mlx, &mac(), None, None).level(), Level::Ok);
+        let cpu_box =
+            Hardware::assemble("linux".into(), "x86_64".into(), "box".into(), "".into(), 8, 64.0, Some(32.0), vec![]);
+        let rep = check(&mlx, &cpu_box, None, None);
+        assert!(!rep.compatible());
+        assert!(rep.reasons(false)[0].starts_with("tensorfold: runs on Apple-silicon macOS"), "{:?}", rep);
+        let gguf = tf("[quant]\nformat=\"gguf\"\n");
+        assert_eq!(
+            check(&gguf, &spark(), None, None).reasons(false),
+            vec!["quant: TensorFold does not load gguf checkpoints"]
+        );
     }
 
     #[test]
