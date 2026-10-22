@@ -204,7 +204,16 @@ fn start_stream_logs_and_stop_a_server() {
         if row["status"] == "loaded" {
             break;
         }
-        assert!(t0.elapsed() < Duration::from_secs(20), "never loaded: {row}");
+        if t0.elapsed() > Duration::from_secs(20) {
+            let direct = ureq::get(&format!("http://127.0.0.1:{port}/v1/models")).call();
+            let logs = s.get("/api/logs/web").unwrap_or_default();
+            let list = s.lmdeck().args(["list", "-a"]).output().unwrap();
+            panic!(
+                "never loaded: {row}\ndirect probe: {direct:?}\nlogs: {logs}\nlist: {}{}",
+                String::from_utf8_lossy(&list.stdout),
+                String::from_utf8_lossy(&list.stderr)
+            );
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
     let again = s.post("/api/start/web").unwrap();
