@@ -166,9 +166,31 @@ fn token_is_required_when_set() {
 fn start_stream_logs_and_stop_a_server() {
     let port = free_port();
     let s = serve(&[], |root| {
+        // A minimal OpenAI-ish stub. It skips http.server's server_bind, which
+        // calls getfqdn() and can stall for ~20 s on macOS CI runners.
+        let stub = root.join("stub.py");
+        fs::write(
+            &stub,
+            "import http.server, json, socketserver, sys\n\
+             class S(http.server.ThreadingHTTPServer):\n    \
+                 def server_bind(self):\n        \
+                     socketserver.TCPServer.server_bind(self)\n        \
+                     self.server_name, self.server_port = 'localhost', self.server_address[1]\n\
+             class H(http.server.BaseHTTPRequestHandler):\n    \
+                 def do_GET(self):\n        \
+                     body = json.dumps({'object': 'list', 'data': [{'id': 'web'}]}).encode()\n        \
+                     self.send_response(200)\n        \
+                     self.send_header('Content-Type', 'application/json')\n        \
+                     self.end_headers()\n        \
+                     self.wfile.write(body)\n\
+             print('hello-from-stub', flush=True)\n\
+             S(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n",
+        )
+        .unwrap();
         let recipe = format!(
-            "name = \"web\"\ndisplay_name = \"Stub server\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\ncommand = [\"sh\", \"-c\", \"echo hello-from-stub; exec python3 -m http.server {port} --bind 127.0.0.1\"]\n",
-            root.join("models").display()
+            "name = \"web\"\ndisplay_name = \"Stub server\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\ncommand = [\"python3\", \"-u\", \"{}\", \"{{port}}\"]\n",
+            root.join("models").display(),
+            stub.display()
         );
         let dir = root.join("home/config/recipes");
         fs::create_dir_all(&dir).unwrap();
@@ -205,7 +227,7 @@ fn start_stream_logs_and_stop_a_server() {
         if row["status"] == "loaded" {
             break;
         }
-        if t0.elapsed() > Duration::from_secs(20) {
+        if t0.elapsed() > Duration::from_secs(45) {
             let direct = ureq::get(&format!("http://127.0.0.1:{port}/v1/models")).call();
             let logs = s.get("/api/logs/web").unwrap_or_default();
             let list = s.lmdeck().args(["list", "-a"]).output().unwrap();
