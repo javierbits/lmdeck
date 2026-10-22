@@ -166,7 +166,7 @@ fn start_stream_logs_and_stop_a_server() {
     let port = free_port();
     let s = serve(&[], |root| {
         let recipe = format!(
-            "name = \"web\"\ndisplay_name = \"Stub server\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\ncommand = [\"python3\", \"-u\", \"-c\", \"print('hello-from-stub', flush=True); import http.server as h; h.test(HandlerClass=h.SimpleHTTPRequestHandler, port={port}, bind='127.0.0.1')\"]\n",
+            "name = \"web\"\ndisplay_name = \"Stub server\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\ncommand = [\"sh\", \"-c\", \"echo hello-from-stub; exec python3 -m http.server {port} --bind 127.0.0.1\"]\n",
             root.join("models").display()
         );
         let dir = root.join("home/config/recipes");
