@@ -396,6 +396,10 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             if !has_flag(&args, &["--n-gpu-layers", "-ngl", "--gpu-layers"]) {
                 a.extend(["--n-gpu-layers".into(), "99".into()]);
             }
+            // Prometheus /metrics, so telemetry can show real tokens/s.
+            if !has_flag(&args, &["--metrics"]) {
+                a.push("--metrics".into());
+            }
             a.extend(args);
             plan.argv = a;
             plan.env = env;
@@ -637,6 +641,7 @@ mod tests {
                 "32768",
                 "--n-gpu-layers",
                 "99",
+                "--metrics",
                 "-fa",
                 "on",
                 "--mmproj",

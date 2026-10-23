@@ -12,6 +12,7 @@ pub mod paths;
 pub mod recipe;
 pub mod runner;
 pub mod sources;
+pub mod telemetry;
 pub mod tui;
 pub mod ui;
 pub mod util;
