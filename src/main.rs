@@ -13,11 +13,13 @@ use lmdeck::config::{Config, SourceEntry};
 use lmdeck::deck::{self, listed, memory_need_gb, resolve, status_word, Deck};
 use lmdeck::engine::{self, Inventory, PlanCtx};
 use lmdeck::hardware::{which, Hardware};
+use lmdeck::hosts::{self, HostView, HostsFile};
 use lmdeck::models::{self, hf_cache_dir, Presence};
 use lmdeck::paths::Paths;
 use lmdeck::recipe::{valid_name, Engine, Format, Recipe};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
+use lmdeck::telemetry::{Collector, History, Sample};
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
 
@@ -71,6 +73,9 @@ enum Cmd {
     /// Manage recipe sources (GitHub / Hugging Face repos, local dirs).
     #[command(subcommand)]
     Source(SourceCmd),
+    /// Other machines running `lmdeck serve` (DGX Sparks, Macs) to watch.
+    #[command(subcommand, visible_alias = "hosts")]
+    Host(HostCmd),
     /// Detect hardware and engines and check which recipes fit.
     Doctor {
         #[arg(long)]
@@ -233,6 +238,31 @@ enum SourceCmd {
     Remove { name: String },
 }
 
+#[derive(Subcommand)]
+enum HostCmd {
+    /// Add (or replace) a host: `lmdeck host add spark1 http://spark1:7979 --token …`.
+    Add {
+        name: String,
+        /// Base URL of the host's `lmdeck serve`, scheme and port included.
+        url: String,
+        /// The token that host's `lmdeck serve --token` expects.
+        #[arg(long)]
+        token: Option<String>,
+        /// Save without contacting the host.
+        #[arg(long)]
+        no_check: bool,
+    },
+    /// Poll every host once and show what it reports.
+    #[command(visible_aliases = ["ls", "check"])]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Forget a host.
+    #[command(visible_alias = "rm")]
+    Remove { name: String },
+}
+
 struct Ctx {
     paths: Paths,
     cfg: Config,
@@ -294,8 +324,103 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Logs { target, lines }) => logs(&ctx, &target, lines),
         Some(Cmd::Recipe(c)) => recipe_cmd(&ctx, c),
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
+        Some(Cmd::Host(c)) => host_cmd(&ctx, c),
         Some(Cmd::Doctor { json }) => doctor(&ctx, json),
         Some(Cmd::Init { models_dir, force }) => init(ctx, models_dir, force),
+    }
+}
+
+// ───────────────────────────── hosts ─────────────────────────────
+
+fn host_row(h: &HostView) -> Vec<String> {
+    let t = h.telemetry.as_ref();
+    let opt = |v: Option<String>| v.unwrap_or_else(|| dim("-"));
+    let status = if h.online {
+        green(&format!("● up {}ms", h.latency_ms.unwrap_or(0)))
+    } else {
+        red(&format!("○ {}", h.error.as_deref().unwrap_or("offline")))
+    };
+    vec![
+        bold(&h.name),
+        h.url.clone().unwrap_or_else(|| dim("this machine")),
+        status,
+        opt(t.map(|t| t.platform.clone()).filter(|p| !p.is_empty())),
+        opt(t.and_then(|t| Some(format!("{:.0}/{:.0}G", t.mem_used_gb?, t.mem_total_gb)))),
+        opt(t.and_then(|t| t.temp()).map(|c| format!("{c:.0}°C"))),
+        opt(t.and_then(|t| t.power()).map(|w| format!("{w:.0}W"))),
+        opt(t.and_then(|t| t.gpu_util()).map(|u| format!("{u:.0}%"))),
+        opt(t
+            .map(|t| t.models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(","))
+            .filter(|s| !s.is_empty())),
+    ]
+}
+
+fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
+    let mut file = HostsFile::load(&ctx.paths)?;
+    match c {
+        HostCmd::Add { name, url, token, no_check } => {
+            let e = file.add(&name, &url, token)?;
+            let path = file.save(&ctx.paths)?;
+            println!("{} added host {} {} {}", green("✓"), bold(&e.name), e.url, dim(&format!("({})", path.display())));
+            if !no_check {
+                match hosts::fetch(&e, u64::MAX, hosts::FETCH_TIMEOUT) {
+                    Ok((r, ms)) => {
+                        let t = r.telemetry.unwrap_or_default();
+                        println!("  {} reachable in {ms} ms: {} · {}", green("●"), t.hostname, t.platform);
+                    }
+                    Err(err) => println!(
+                        "  {} not reachable yet: {err}\n  {}",
+                        yellow("○"),
+                        dim("on that machine run `lmdeck serve --host <its tailscale/LAN IP> --token <token>`")
+                    ),
+                }
+            }
+            Ok(())
+        }
+        HostCmd::Remove { name } => {
+            if !file.remove(&name) {
+                bail!("no host named '{name}'");
+            }
+            file.save(&ctx.paths)?;
+            println!("{} removed host {}", green("✓"), bold(&name));
+            Ok(())
+        }
+        HostCmd::List { json } => {
+            let mut collector = Collector::new();
+            let local = collector.collect(&ctx.paths);
+            let mut hist = History::default();
+            hist.push(Sample::from(&local));
+            let views = if collector.demo {
+                hosts::demo_hosts(&local, &hist, local.at)
+            } else {
+                hosts::Aggregator::default().refresh(&file.hosts, &local, &hist)
+            };
+            if json {
+                let mut v = serde_json::to_value(&views)?;
+                for h in v.as_array_mut().into_iter().flatten() {
+                    h.as_object_mut().map(|o| o.remove("history"));
+                }
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if collector.demo {
+                println!("{}", yellow("DEMO DATA (LMDECK_DEMO is set): these numbers are synthetic"));
+            }
+            let mut t = Table::new(&["host", "url", "status", "platform", "mem", "temp", "power", "gpu", "models"])
+                .right(&[4, 5, 6, 7])
+                .max_width(8, 40);
+            for h in &views {
+                t.row(host_row(h));
+            }
+            print!("{}", t.render());
+            if file.hosts.is_empty() {
+                println!(
+                    "{}",
+                    dim("no other hosts; add one with `lmdeck host add spark1 http://spark1:7979 --token …`")
+                );
+            }
+            Ok(())
+        }
     }
 }
 

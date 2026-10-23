@@ -8,6 +8,8 @@
 //! - `POST /api/{start,stop,switch,pull}/{recipe}`  body optional `{"force":true}`
 //! - `GET  /api/logs/{recipe}?n=200`
 //! - `GET  /api/logs/{recipe}/stream`  Server-Sent Events, one `data:` per line
+//! - `GET  /api/telemetry[?history=1&since=<unix ms>]`  this machine, live
+//! - `GET  /api/hosts`                 this machine plus every `hosts.toml` entry
 //!
 //! `{recipe}` is a name or `origin/name`. With a token, send
 //! `Authorization: Bearer <token>` (or `?token=` for EventSource).
@@ -25,6 +27,8 @@ use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::deck::{tail_lines, Deck, Snapshot};
+use crate::hosts::Sampler;
+use crate::telemetry::{demo_mode, now_ms};
 
 const INDEX_HTML: &str = include_str!("web/index.html");
 const FAVICON: &str = include_str!("web/favicon.svg");
@@ -43,11 +47,13 @@ pub struct State {
     /// Only accept these Host headers (DNS-rebinding guard) when bound to loopback.
     pub loopback: bool,
     cache: Mutex<Option<(Instant, Arc<Snapshot>)>>,
+    pub sampler: Sampler,
 }
 
 impl State {
     pub fn new(deck: Deck, token: Option<String>, loopback: bool) -> State {
-        State { deck: Arc::new(deck), token, loopback, cache: Mutex::new(None) }
+        let sampler = Sampler::spawn(deck.paths.clone(), true);
+        State { deck: Arc::new(deck), token, loopback, cache: Mutex::new(None), sampler }
     }
 
     fn snapshot(&self) -> Arc<Snapshot> {
@@ -263,6 +269,16 @@ fn handle(st: &State, mut req: Request) {
                 )
             }
             "sources" => json_reply(req, 200, &json!(st.snapshot().sources)),
+            "telemetry" => {
+                st.sampler.wait_first(Duration::from_secs(8));
+                let history = query_param(&query, "history").is_some_and(|v| v == "1" || v == "true");
+                let since = query_param(&query, "since").and_then(|v| v.parse().ok()).unwrap_or(0);
+                json_reply(req, 200, &json!(st.sampler.reply(history, since)))
+            }
+            "hosts" => {
+                st.sampler.wait_first(Duration::from_secs(8));
+                json_reply(req, 200, &json!({"at": now_ms(), "demo": demo_mode(), "hosts": st.sampler.hosts()}))
+            }
             _ => {
                 if let Some(rest) = api.strip_prefix("logs/") {
                     if let Some(target) = rest.strip_suffix("/stream") {

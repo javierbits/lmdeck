@@ -7,6 +7,7 @@ pub mod config;
 pub mod deck;
 pub mod engine;
 pub mod hardware;
+pub mod hosts;
 pub mod models;
 pub mod paths;
 pub mod recipe;

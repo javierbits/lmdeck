@@ -29,7 +29,8 @@ impl Env {
             .env("LMDECK_MODELS_DIR", self.path("models"))
             .env("HF_HUB_CACHE", self.path("hf"))
             .env("NO_COLOR", "1")
-            .env_remove("HF_TOKEN");
+            .env_remove("HF_TOKEN")
+            .env_remove("LMDECK_DEMO");
         c
     }
 
@@ -248,4 +249,27 @@ fn crashing_server_reports_log() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("kaboom-from-server").and(predicate::str::contains("exited during startup")));
+}
+
+#[test]
+fn host_add_list_remove() {
+    let env = Env::new();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let out = env.run(&["host", "add", "spark9", &format!("http://127.0.0.1:{dead}/"), "--token", "t0k"]);
+    assert!(out.contains("added host spark9") && out.contains("not reachable yet: connection refused"), "{out}");
+    let file = std::fs::read_to_string(env.path("home/config/hosts.toml")).unwrap();
+    assert!(file.contains(&format!("url = \"http://127.0.0.1:{dead}\"")) && file.contains("token = \"t0k\""), "{file}");
+    let out = env.cmd().args(["host", "add", "x", "spark1:7979"]).output().unwrap();
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("http://spark1:7979"));
+
+    let list = env.run(&["host", "list"]);
+    assert!(list.contains("local") && list.contains("spark9") && list.contains("connection refused"), "{list}");
+    let json: serde_json::Value = serde_json::from_str(&env.run(&["hosts", "ls", "--json"])).unwrap();
+    assert_eq!(json[0]["online"], true);
+    assert_eq!(json[1]["online"], false);
+    assert!(json[1].get("history").is_none());
+    assert!(!json.to_string().contains("t0k"), "tokens are never printed");
+
+    assert!(env.run(&["host", "rm", "spark9"]).contains("removed host spark9"));
+    assert!(env.run(&["host", "list"]).contains("no other hosts"));
 }

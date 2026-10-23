@@ -55,6 +55,7 @@ fn lmdeck_cmd(root: &std::path::Path) -> Command {
         .env("HF_HUB_CACHE", root.join("hf"))
         .env("NO_COLOR", "1")
         .env_remove("LMDECK_TOKEN")
+        .env_remove("LMDECK_DEMO")
         .env_remove("HF_TOKEN");
     c
 }
@@ -280,4 +281,53 @@ fn non_loopback_bind_generates_a_token() {
     let _ = std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err);
     assert!(err.contains("exposes start/stop controls"), "{err}");
     let _ = child.wait();
+}
+
+#[test]
+fn telemetry_and_hosts_aggregate_real_servers() {
+    let a = serve(&["--token", "tok-a"], |_| {});
+    let dead = free_port();
+    let a_base = a.base.clone();
+    let b = serve(&[], move |root| {
+        let cfg = root.join("home/config");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(
+            cfg.join("hosts.toml"),
+            format!(
+                "[[host]]\nname = \"a\"\nurl = \"{a_base}\"\ntoken = \"tok-a\"\n\n\
+                 [[host]]\nname = \"wrong\"\nurl = \"{a_base}\"\ntoken = \"nope\"\n\n\
+                 [[host]]\nname = \"dead\"\nurl = \"http://127.0.0.1:{dead}\"\n"
+            ),
+        )
+        .unwrap();
+    });
+
+    // A's telemetry needs its token, and is real (not demo) data.
+    let url = format!("{}/api/telemetry?history=1", a.base);
+    assert_eq!(status(ureq::get(&url).call().unwrap_err()), 401);
+    let t: serde_json::Value =
+        ureq::get(&url).set("Authorization", "Bearer tok-a").call().unwrap().into_json().unwrap();
+    assert_eq!(t["telemetry"]["demo"], false);
+    assert!(t["telemetry"]["mem_total_gb"].as_f64().unwrap() > 0.0, "{t}");
+    assert!(t["history"].as_array().unwrap().len() <= 1);
+
+    let t0 = Instant::now();
+    let hosts = loop {
+        let h = b.get("/api/hosts").unwrap();
+        if h["hosts"][1]["online"] == true || t0.elapsed() > Duration::from_secs(15) {
+            break h;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let list = hosts["hosts"].as_array().unwrap();
+    let names: Vec<&str> = list.iter().map(|h| h["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["local", "a", "wrong", "dead"], "{hosts}");
+    assert_eq!(hosts["demo"], false);
+    assert!(list[0]["local"] == true && list[0]["online"] == true);
+    assert_eq!(list[1]["online"], true, "{hosts}");
+    assert!(list[1]["telemetry"]["mem_total_gb"].as_f64().unwrap() > 0.0);
+    assert_eq!(list[2]["online"], false);
+    assert!(list[2]["error"].as_str().unwrap().contains("token"), "{hosts}");
+    assert_eq!(list[3]["online"], false);
+    assert!(list[3]["telemetry"].is_null());
 }

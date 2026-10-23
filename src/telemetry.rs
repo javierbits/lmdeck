@@ -568,6 +568,7 @@ pub struct Collector {
     prev_cpu: Option<(u64, u64)>,
     prev_tokens: HashMap<String, (f64, Instant)>,
     nvidia_smi: Option<bool>,
+    hw: Option<Hardware>,
     pub sys_root: std::path::PathBuf,
     pub demo: bool,
     started: Instant,
@@ -585,6 +586,7 @@ impl Collector {
             prev_cpu: None,
             prev_tokens: HashMap::new(),
             nvidia_smi: None,
+            hw: None,
             sys_root: "/sys".into(),
             demo: demo_mode(),
             started: Instant::now(),
@@ -595,7 +597,8 @@ impl Collector {
         if self.demo {
             return demo::local(self.started.elapsed().as_secs_f64(), now_ms());
         }
-        let hw = Hardware::detect();
+        // Static facts (platform, hostname, cores) are detected once.
+        let hw = self.hw.get_or_insert_with(Hardware::detect).clone();
         let mut t = Telemetry {
             hostname: hw.hostname.clone(),
             platform: hw.platform.clone(),
@@ -648,7 +651,10 @@ impl Collector {
     }
 
     fn collect_macos(&mut self, t: &mut Telemetry, hw: &Hardware) {
-        if let Some(avail) = hw.available_memory_gb {
+        let avail = run_with_timeout(&mut Command::new("vm_stat"), Duration::from_secs(2))
+            .and_then(|s| crate::hardware::parse_vm_stat(&s))
+            .or(hw.available_memory_gb);
+        if let Some(avail) = avail {
             t.mem_available_gb = Some(avail);
             t.mem_used_gb = Some((t.mem_total_gb - avail).max(0.0));
             t.sources.push("vm_stat".into());
