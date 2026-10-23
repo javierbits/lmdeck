@@ -51,7 +51,7 @@ pub fn plan_rows(deck: &Deck, reference: &str) -> Vec<RunOnRow> {
     }
     keys.into_iter()
         .map(|host| {
-            let label = if host == crate::hosts::LOCAL { format!("{node} ⌂ this machine") } else { host.clone() };
+            let label = if host == crate::hosts::LOCAL { format!("⌂ {node} (this machine)") } else { host.clone() };
             match crate::placement::plan(&deck.paths, &deck.cfg, &recipe, &host, false) {
                 Ok(p) => {
                     let mut parts = vec![match (&p.mode[..], &p.home) {
@@ -66,7 +66,7 @@ pub fn plan_rows(deck: &Deck, reference: &str) -> Vec<RunOnRow> {
                         parts.push(l.kind.as_str().to_string());
                     }
                     if let Some(e) = &p.estimate {
-                        parts.push(format!("load ≈{}", crate::placement::human_secs(e.secs)));
+                        parts.push(format!("load {}", crate::placement::human_secs(e.secs)));
                     }
                     if let (Some(need), Some(have)) = (p.need_gb, p.run_mem_gb) {
                         parts.push(format!("{need:.0}/{have:.0} GB"));

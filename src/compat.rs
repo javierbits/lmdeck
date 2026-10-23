@@ -139,19 +139,31 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
             );
         }
     }
-    if r.nodes() > 1 {
+    if !r.nodes.is_empty() {
+        let mut hosts: Vec<&str> = r.nodes.iter().map(|n| n.host.as_str()).collect();
+        hosts.dedup();
         push(
-            Level::Fail,
+            Level::Ok,
             "nodes",
-            format!("spans {} machines; lmdeck v0.1 launches single-node recipes only", r.nodes()),
+            format!("{} nodes on {}, started in order (each host runs its own share)", r.nodes.len(), hosts.join(", ")),
         );
+    } else if r.nodes() > 1 {
+        push(Level::Fail, "nodes", format!("spans {} machines but has no [[nodes]] saying what runs where", r.nodes()));
     }
     if r.engine.name == Engine::TensorFold {
         for (level, what, detail) in tensorfold_checks(r, hw) {
             push(level, what, detail);
         }
     }
-    if let Some(inv) = inv {
+    if !r.nodes.is_empty() {
+        // Only this machine's nodes can be checked here; remote nodes are checked by their host.
+        for n in r.nodes.iter().filter(|n| n.host == crate::hosts::LOCAL) {
+            let bin = n.command.first().map(String::as_str).unwrap_or("");
+            if !bin.is_empty() && !bin.contains('/') && crate::hardware::which(bin).is_none() {
+                push(Level::Warn, "engine", format!("node {}: command '{bin}' not found", n.name));
+            }
+        }
+    } else if let Some(inv) = inv {
         match inv.can_launch(r) {
             Ok(()) => push(Level::Ok, "engine", format!("{} available", r.engine.name)),
             Err(e) => push(Level::Warn, "engine", e),
@@ -294,5 +306,17 @@ mod tests {
         let rep = check(&rec, &spark(), None, None);
         assert!(!rep.compatible());
         assert!(rep.checks.iter().any(|c| c.what == "reserve" && c.level == Level::Warn));
+
+        // With [[nodes]] saying where each part runs, the span itself is fine.
+        let duo = Recipe::parse(
+            "[model]\nrepo=\"a/b\"\n[engine]\nname=\"custom\"\n[hardware]\nnodes=2\nmin_memory_gb=10\n\
+             [[nodes]]\nname=\"head\"\nrole=\"head\"\nhost=\"local\"\ncommand=[\"sh\"]\n\
+             [[nodes]]\nname=\"w1\"\nrole=\"worker\"\nhost=\"b\"\ncommand=[\"sh\"]\n",
+            "t",
+        )
+        .unwrap();
+        let rep = check(&duo, &spark(), None, None);
+        assert!(rep.compatible(), "{:?}", rep.checks);
+        assert!(rep.checks.iter().any(|c| c.what == "nodes" && c.detail.contains("local, b")));
     }
 }

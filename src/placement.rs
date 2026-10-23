@@ -94,7 +94,7 @@ impl Estimate {
 
     pub fn describe(&self) -> String {
         format!(
-            "≈{} to stream {} at {} Gb/s{}",
+            "{} to stream {} at {} Gb/s{}",
             human_secs(self.secs),
             crate::util::human_bytes(self.bytes),
             self.gbps,
@@ -103,11 +103,14 @@ impl Estimate {
     }
 }
 
+/// `≈N s` / `≈N.N min`, or `under 1 s`.
 pub fn human_secs(s: f64) -> String {
-    if s < 90.0 {
-        format!("{s:.0} s")
+    if s < 1.0 {
+        "under 1 s".into()
+    } else if s < 90.0 {
+        format!("≈{s:.0} s")
     } else {
-        format!("{:.1} min", s / 60.0)
+        format!("≈{:.1} min", s / 60.0)
     }
 }
 

@@ -192,6 +192,38 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 .thitem .ck{width:12px;color:var(--accent);font-weight:700}
 .thfoot{padding:8px 9px 4px;font-size:11.5px;color:var(--dim);border-top:1px solid var(--line);margin-top:4px}
 .thfoot a{color:var(--muted)}
+
+/* weights, nodes, run-on, remote controls */
+.tag.wt{color:var(--sky);border-color:color-mix(in srgb,var(--sky) 30%,transparent);background:color-mix(in srgb,var(--sky) 7%,transparent)}
+.tag.on{color:var(--violet);border-color:color-mix(in srgb,var(--violet) 35%,transparent);background:color-mix(in srgb,var(--violet) 8%,transparent)}
+.nodes{display:flex;flex-direction:column;gap:3px;font:12px var(--mono);padding:7px 9px;border-radius:9px;background:color-mix(in srgb,var(--fg) 3%,transparent);border:1px solid var(--line)}
+.nodes .n{display:flex;gap:8px;align-items:center} .nodes .n b{min-width:56px} .nodes .n .h{color:var(--sky)} .nodes .n .r{color:var(--dim);min-width:50px}
+.nodes .n .s{margin-left:auto;font-weight:700} .s.loaded,.s.running{color:var(--ok)} .s.loading{color:var(--warn)} .s.offline{color:var(--err)} .s.stopped,.s.unknown{color:var(--dim)}
+.nodes .hd{display:flex;justify-content:space-between;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+select.runon{padding:6px 8px;border-radius:9px;border:1px solid var(--line2);background:var(--card);color:var(--fg);font:600 12.5px var(--sans);cursor:pointer;width:100%}
+select.runon:hover{border-color:var(--violet)}
+.modal .box.wide{width:min(640px,92vw)}
+.plan{font:12px/1.6 var(--mono);white-space:pre-wrap;color:var(--muted);background:var(--bg);border-radius:8px;padding:10px 12px;max-height:46vh;overflow:auto;margin:10px 0}
+.plan .k{color:var(--fg);font-weight:700} .plan .w{color:var(--warn)} .plan .e{color:var(--err)}
+.mbtns{display:flex;gap:8px;justify-content:flex-end}
+.host .models .m b{white-space:nowrap}
+.host .models .m .acts{display:inline-flex;gap:4px;margin-left:6px}
+.host .models .m .acts button{padding:2px 8px;font-size:11px;border-radius:7px}
+.host .runrow{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
+.host .runrow select{max-width:none;flex:1}
+/* topology */
+.topo{padding:16px 22px 0}
+.topo h2{display:flex;align-items:center;gap:10px;margin:0 0 10px;font:700 12px var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--accent)}
+.topo h2 .dim{text-transform:none;letter-spacing:0;font-weight:600}
+.topobox{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:14px;padding:10px 12px}
+.topobox svg{display:block;width:100%;height:auto}
+.topobox .legend{display:flex;gap:16px;flex-wrap:wrap;font:600 11.5px var(--mono);color:var(--muted);padding:4px 6px}
+.topobox .legend i{display:inline-block;width:22px;height:0;border-top:3px solid;vertical-align:middle;margin-right:6px}
+.links{width:100%;border-collapse:collapse;font:12px var(--mono);margin-top:6px}
+.links td,.links th{padding:4px 8px;text-align:left;border-top:1px solid var(--line)} .links th{color:var(--dim);font-weight:600}
+.links .ok{color:var(--ok)} .links .bad{color:var(--err)} .links .busy{color:var(--ok);font-weight:700}
+@keyframes flow{to{stroke-dashoffset:-24}}
+.edge.busy{stroke-dasharray:10 6;animation:flow 1s linear infinite}
 </style>
 <script>
 // Apply the last theme before first paint, so there is no flash of the default.
@@ -219,6 +251,15 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
 <section class="hosts hidden" id="hostsec">
   <h2>Hosts <span class="dim" id="hostsum"></span><span class="demo hidden" id="demo" title="LMDECK_DEMO is set: synthetic numbers for screenshots">DEMO DATA</span></h2>
   <div class="hgrid" id="hosts"></div>
+</section>
+
+<section class="topo hidden" id="toposec">
+  <h2>Topology <span class="dim" id="toposum"></span><span class="demo hidden" id="topodemo" title="LMDECK_DEMO is set: simulated fabric">DEMO DATA</span></h2>
+  <div class="topobox"><div id="topo"></div>
+    <div class="legend"><span><i style="border-color:var(--accent)"></i>cx7 cable</span><span><i style="border-color:var(--ok)"></i>busy (nfs weights / cluster)</span>
+      <span><i style="border-color:var(--sky);border-top-style:dashed"></i>lan</span><span><i style="border-color:var(--dim);border-top-style:dotted"></i>management (controller → serve)</span>
+      <span><i style="border-color:var(--err)"></i>unreachable</span></div>
+    <table class="links" id="links"></table></div>
 </section>
 
 <section class="toolbar">
@@ -256,6 +297,10 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   <pre id="log"></pre>
 </div>
 <div id="toasts"></div>
+<div class="modal hidden" id="runon"><div class="box wide"><h4 id="runontitle">Run on…</h4>
+  <div class="muted" id="runonsub"></div>
+  <div class="plan" id="runonplan">planning…</div>
+  <div class="mbtns"><button class="btn" id="runoncancel">Cancel</button><button class="btn" id="runonswitch">⇄ Switch there</button><button class="btn primary" id="runongo">▶ Start there</button></div></div></div>
 <div class="modal hidden" id="auth"><div class="box"><h4>Token required</h4>
   <div class="muted">This lmdeck server was started with <span class="mono">--token</span>.</div>
   <input id="tok" type="password" placeholder="paste the token" autocomplete="off">
@@ -336,6 +381,16 @@ function card(r){
   const pullBtn = upAvail
     ? `<button class="btn upd${u.state === "pinned_newer" ? " pin" : ""}" data-act="pull" data-ref="${ref}" ${u.state === "pinned_newer" ? 'data-latest="1" title="move the pinned ref to the upstream head and update the checkout"' : 'title="update the checkout"'} ${busy||r.pulling?"disabled":""}>⬆ Update</button>`
     : `<button class="btn" data-act="pull" data-ref="${ref}" ${busy||r.pulling||(!r.model&&!u)?"disabled":""}>↓ Pull</button>`;
+  const wOn = (r.weights_on || []);
+  const wTag = wOn.length ? `<span class="tag wt" title="weights on disk on: ${esc(wOn.join(", "))}${r.weights_home ? " · served from " + esc(r.weights_home) : ""} (never copied; other hosts mount them read-only)">⛁ weights on: ${esc(wOn.join(", "))}</span>` : "";
+  const onTag = r.placed_on ? `<span class="tag on" title="started with --on; weights read over NFS from their home">→ running on ${esc(r.placed_on)}</span>` : "";
+  const nTag = (r.nodes || []).length ? `<span class="tag on">×${r.nodes.length} nodes</span>` : "";
+  const nodes = (r.nodes || []).length ? `<div class="nodes"><div class="hd"><span>nodes · start order</span><span>${esc(r.cluster_phase || "")}</span></div>${r.nodes.map((n, i) =>
+      `<div class="n"><span class="dim">${i + 1}.</span><b>${esc(n.name)}</b><span class="r">${esc(n.role)}</span><span class="h">${esc(n.host)}</span><span class="s ${esc(n.status)}">● ${esc(n.status)}</span></div>`).join("")}
+      ${r.cluster_error ? `<div style="color:var(--err)">✗ ${esc(r.cluster_error)}</div>` : ""}</div>` : "";
+  const hostOpts = runHosts();
+  const runOn = !(r.nodes || []).length && hostOpts.length > 1 ? `<select class="runon" data-ref="${ref}" title="run on another host; weights stay on their home" ${busy?"disabled":""}>
+      <option value="">⇄ Run on another host… (weights stay put)</option>${hostOpts.map(([k, name, label]) => `<option value="${esc(k)}" data-label="${esc(name)}">${esc(label)}${wOn.includes(name) || wOn.includes(k) ? " ⛁ weights here" : ""}</option>`).join("")}</select>` : "";
   const toggle = up(r) ? `<button class="btn danger" data-act="stop" data-ref="${ref}" ${busy?"disabled":""}>■ Stop</button>`
                        : `<button class="btn primary" data-act="start" data-ref="${ref}" ${busy?"disabled":""}>▶ Start</button>`;
   return `<article class="${cls}">
@@ -347,10 +402,10 @@ function card(r){
       ? `<span class="tag" title="${esc(u.repo)}">git @ ${esc(refShort)}</span>${u.state === "not_cloned" ? `<span class="tag remote">not cloned</span>` : ""}`
       : `<span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
       ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}`}
-      ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}${upTag}</div>
-    ${need}${liveLine(r)}
+      ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}${upTag}${nTag}${wTag}${onTag}</div>
+    ${need}${nodes}${liveLine(r)}
     <details class="checks" data-ref="${ref}" ${st.open.has(r.reference)?"open":""}><summary>${(r.checks||[]).length} checks · launch command</summary><div class="chk">${checks}</div>${cmd}</details>
-    <div class="actions">${toggle}
+    ${runOn}<div class="actions">${toggle}
       <button class="btn" data-act="switch" data-ref="${ref}" title="stop the others, start this one" ${busy||up(r)?"disabled":""}>⇄ Switch</button>
       ${pullBtn}
       <button class="btn" data-act="logs" data-ref="${ref}">≡ Logs</button>
@@ -375,6 +430,7 @@ function render(){
   $("#heldbar").querySelector("i").style.width = Math.min(100, held / total * 100).toFixed(1) + "%";
 
   const v = visible();
+  if (document.activeElement?.matches?.("select.runon")) return; // don't close an open picker
   $("#grid").innerHTML = v.length ? v.map(card).join("") :
     `<div class="empty">${st.q ? "Nothing matches “" + esc(st.q) + "”." : "No recipes match these filters."}<br><span class="dim">Try All, or clear the filters.</span></div>`;
 
@@ -437,8 +493,13 @@ function hostCard(h, idx){
       const last = hist.length ? hist[hist.length-1][key] : null;
       return `<div class="spark"><div class="k"><span>${label}</span><span>${fmt(last)}${unit}</span></div>${sparkSvg(hist, key, h.online ? color : "var(--dim)", range, idx + "_" + j)}</div>`;
     }).join("") + `</div>`;
-    const models = (t.models||[]).map(m => `<div class="m"><b>${esc(m.name)}</b><span class="dim">${esc(m.engine)} :${m.port}${m.pid ? " · pid " + m.pid : ""}${m.rss_gb != null ? " · " + gb(m.rss_gb) + (m.mem_share_pct != null ? " (" + fmt(m.mem_share_pct) + "%)" : "") : ""}</span><span class="tps">${m.tokens_per_s != null ? fmt(m.tokens_per_s, 1) + " tok/s" : ""}</span></div>`).join("");
+    const hk = esc(hostKey(h));
+    const models = (t.models||[]).map(m => `<div class="m"><b>${esc(m.name)}</b><span class="dim">${esc(m.engine)} :${m.port}${m.pid ? " · pid " + m.pid : ""}${m.rss_gb != null ? " · " + gb(m.rss_gb) + (m.mem_share_pct != null ? " (" + fmt(m.mem_share_pct) + "%)" : "") : ""}</span><span class="tps">${m.tokens_per_s != null ? fmt(m.tokens_per_s, 1) + " tok/s" : ""}</span>${h.online ? `<span class="acts"><button class="btn" data-hact="logs" data-host="${hk}" data-name="${esc(m.name)}">≡</button><button class="btn danger" data-hact="stop" data-host="${hk}" data-name="${esc(m.name)}">■</button></span>` : ""}</div>`).join("");
     body += `<div class="models">${models || `<span class="dim">no models running</span>`}</div>`;
+    if (h.online && st.snap) {
+      const opts = visible().filter(r => !(r.nodes || []).length).map(r => `<option value="${esc(r.reference)}">${esc(r.name)}</option>`).join("");
+      body += `<div class="runrow"><span>run here</span><select class="runon" data-host="${hk}"><option value="">pick a recipe…</option>${opts}</select></div>`;
+    }
     const extra = [t.cpu_util_pct != null ? "cpu " + fmt(t.cpu_util_pct) + "%" : null, t.load ? "load " + t.load.map(v => v.toFixed(1)).join(" ") : null,
                    t.mem_pressure_pct != null ? "mem pressure " + fmt(t.mem_pressure_pct) + "%" : null, (t.sources||[]).length ? "via " + t.sources.join(", ") : null].filter(Boolean);
     body += `<div class="dim mono" style="font-size:11px">${esc(extra.join(" · "))}</div>`;
@@ -454,9 +515,153 @@ function renderHosts(){
   $("#demo").classList.toggle("hidden", !d.demo);
   const on = d.hosts.filter(h => h.online).length;
   $("#hostsum").textContent = `${on}/${d.hosts.length} online · last ${Math.round(Math.max(0, ...d.hosts.map(h => h.history.length ? (h.history[h.history.length-1].at - h.history[0].at) / 60000 : 0)))} min`;
+  if (document.activeElement?.matches?.("#hosts select.runon")) return;
   $("#hosts").innerHTML = d.hosts.map(hostCard).join("");
 }
 const localTel = () => st.hosts && st.hosts.hosts.find(h => h.local)?.telemetry;
+const hostKey = h => h.local ? "local" : h.name;
+// [key, label] of every host a recipe could run on (this machine first).
+function runHosts(){
+  if (!st.hosts) return [];
+  const me = st.topo?.hosts.find(x => x.key === "local")?.name || "local";
+  return st.hosts.hosts.map(h => h.local ? ["local", me, `${me} (this machine)`] : [h.name, h.name, h.name]);
+}
+
+// ---- run on another host ----
+async function runOn(ref, host, label){
+  st.runon = {ref, host};
+  document.activeElement?.blur?.();
+  $("#runontitle").textContent = `Run ${ref.split("/").pop()} on ${label || host}`;
+  $("#runonsub").textContent = "Weights stay on their home host; another host reads them read-only over the CX7 link (NFS). Nothing is copied.";
+  $("#runonplan").innerHTML = "planning…"; $("#runongo").disabled = true; $("#runonswitch").disabled = true;
+  $("#runon").classList.remove("hidden");
+  try {
+    const j = await api(`plan/${ref}?on=${encodeURIComponent(host)}`);
+    if (st.runon?.ref !== ref || st.runon?.host !== host) return;
+    if (!j.ok) { $("#runonplan").innerHTML = `<span class="e">✗ ${esc(j.error)}</span>`; return; }
+    $("#runonplan").innerHTML = j.lines.map((l, i) => i === 0 ? `<span class="k">${esc(l)}</span>`
+      : /^(warning|refus)/i.test(l) ? `<span class="w">${esc(l)}</span>` : esc(l)).join("\n");
+    $("#runongo").disabled = false; $("#runonswitch").disabled = false;
+  } catch (e) { $("#runonplan").innerHTML = `<span class="e">✗ ${esc(e.message)}</span>`; }
+}
+function closeRunOn(){ $("#runon").classList.add("hidden"); st.runon = null; render(); renderHosts(); }
+async function goRunOn(verb){
+  const r = st.runon; if (!r) return; closeRunOn();
+  await act(verb, r.ref, {on: r.host});
+}
+$("#runoncancel").onclick = closeRunOn;
+$("#runongo").onclick = () => goRunOn("start");
+$("#runonswitch").onclick = () => goRunOn("switch");
+document.addEventListener("change", e => {
+  const s = e.target; if (!s.matches || !s.matches("select.runon") || !s.value) return;
+  if (s.dataset.ref) runOn(s.dataset.ref, s.value, s.options[s.selectedIndex].dataset.label);
+  else if (s.dataset.host) runOn(s.value, s.dataset.host);
+});
+// ---- another host's servers: stop, logs ----
+$("#hosts").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-hact]"); if (!b) return;
+  const {host, name} = b.dataset;
+  if (b.dataset.hact === "logs") return host === "local" ? openLogs(name) : openRemoteLogs(host, name);
+  b.disabled = true;
+  try {
+    const j = host === "local" ? await api(`stop/${encodeURIComponent(name)}`, {method:"POST", body:"{}"})
+                               : await api(`hosts/${encodeURIComponent(host)}/stop/${encodeURIComponent(name)}`, {method:"POST", body:"{}"});
+    toast(`${host}: ${j.message || "stopped"}`);
+  } catch (err) { toast(`${host}: ${err.message}`, false); }
+  finally { refreshHosts(); refresh(); }
+});
+function openRemoteLogs(host, name){
+  if (st.es) st.es.close(); st.es = null;
+  clearInterval(st.remoteTimer);
+  st.logRef = name; $("#logname").textContent = `${name} @ ${host}`; $("#logpath").textContent = "via " + host + "'s lmdeck serve";
+  $("#drawer").classList.add("open");
+  const pull = async () => {
+    try { const j = await api(`hosts/${encodeURIComponent(host)}/logs/${encodeURIComponent(name)}?n=300`);
+      $("#log").textContent = (j.lines || []).join("\n"); if ($("#follow").checked) $("#log").scrollTop = $("#log").scrollHeight;
+      $("#logpill").className = "pill loaded"; $("#logpill").lastChild.textContent = "remote";
+    } catch (err) { $("#logpill").className = "pill stopped"; $("#logpill").lastChild.textContent = err.message; }
+  };
+  pull(); st.remoteTimer = setInterval(() => { if (!$("#drawer").classList.contains("open")) clearInterval(st.remoteTimer); else pull(); }, 2500);
+}
+
+// ---- topology ----
+function topoSvg(t){
+  const n = t.hosts.length, W = 960, H = n <= 2 ? 250 : 400, BW = 210, BH = 104;
+  const cx = W / 2, cy = n <= 2 ? 125 : 205, rx = n <= 2 ? 300 : 330, ry = n <= 2 ? 0 : 135;
+  const ctl = Math.max(0, t.hosts.findIndex(h => h.key === t.controller));
+  const order = [ctl, ...t.hosts.map((_, i) => i).filter(i => i !== ctl)];
+  const pos = {};
+  order.forEach((hi, k) => {
+    const a = n <= 2 ? Math.PI * (k === 0 ? 1 : 0) : -Math.PI / 2 + (2 * Math.PI * k) / n;
+    pos[t.hosts[hi].key] = [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+  });
+  if (n === 1) pos[t.hosts[0].key] = [cx, cy];
+  let edges = "", labels = "";
+  // management: controller → each serve (dashed, bowed)
+  const C = pos[t.controller] || [cx, cy];
+  t.hosts.forEach(h => {
+    if (h.key === t.controller) return; const P = pos[h.key];
+    const mx = (C[0] + P[0]) / 2, my = (C[1] + P[1]) / 2, dx = P[0] - C[0], dy = P[1] - C[1], L = Math.hypot(dx, dy) || 1;
+    const qx = mx - dy / L * 46, qy = my + dx / L * 46;
+    edges += `<path d="M${C[0]},${C[1]} Q${qx},${qy} ${P[0]},${P[1]}" fill="none" style="stroke:${h.online ? "var(--dim)" : "var(--err)"}" stroke-width="1.4" stroke-dasharray="2 5"/>`;
+    const lx = 0.3 * P[0] + 0.7 * C[0] + (qx - mx) * 0.6, ly = 0.3 * P[1] + 0.7 * C[1] + (qy - my) * 0.6 + 4;
+    labels += `<text x="${lx}" y="${ly}" text-anchor="middle" style="fill:var(--dim)" font-size="10.5" font-family="var(--mono)">${esc(h.mgmt_kind)}${h.mgmt_addr ? " " + esc(h.mgmt_addr) : ""}</text>`;
+  });
+  // fabric links, offset when a pair has several
+  const seen = {};
+  t.links.forEach(l => {
+    const A = pos[l.a.host], B = pos[l.b.host]; if (!A || !B) return;
+    const pair = [l.a.host, l.b.host].sort().join("|"); const k = seen[pair] = (seen[pair] ?? -1) + 1;
+    const dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, off = k * 12;
+    const ox = -dy / L * off, oy = dx / L * off;
+    const busy = (l.active || []).length > 0, bad = l.verified === false;
+    const color = bad ? "var(--err)" : busy ? "var(--ok)" : l.kind === "cx7" ? "var(--accent)" : l.kind === "lan" ? "var(--sky)" : "var(--dim)";
+    const w = l.kind === "cx7" ? 5 : 2, dash = l.kind === "cx7" ? "" : l.kind === "lan" ? 'stroke-dasharray="7 5"' : 'stroke-dasharray="2 4"';
+    edges += `<line class="edge${busy ? " busy" : ""}" x1="${A[0]+ox}" y1="${A[1]+oy}" x2="${B[0]+ox}" y2="${B[1]+oy}" style="stroke:${color}" stroke-width="${w}" stroke-linecap="round" ${busy ? "" : dash}/>`;
+    const sp = l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "";
+    const mx = (A[0] + B[0]) / 2 + ox, my = (A[1] + B[1]) / 2 + oy;
+    const txt = `${l.kind}${sp ? " " + sp : ""}${bad ? " ✗" : l.rtt_ms != null ? " · " + l.rtt_ms.toFixed(2) + "ms" : ""}`;
+    labels += `<g><rect x="${mx - txt.length * 3.6 - 6}" y="${my - 10}" width="${txt.length * 7.2 + 12}" height="19" rx="9" style="fill:var(--bg);stroke:${color}" stroke-width="1"/>
+      <text x="${mx}" y="${my + 4}" text-anchor="middle" style="fill:${color}" font-size="11.5" font-weight="700" font-family="var(--mono)">${esc(txt)}</text></g>`;
+    if (busy) labels += `<text x="${mx}" y="${my + 24}" text-anchor="middle" style="fill:var(--ok)" font-size="10.5" font-family="var(--mono)">● ${esc(l.active.join(", "))}</text>`;
+  });
+  let nodes = "";
+  t.hosts.forEach(h => {
+    const [x, y] = pos[h.key]; const x0 = x - BW / 2, y0 = y - BH / 2;
+    const stroke = h.key === t.controller ? "var(--accent)" : h.online ? "var(--blue)" : "var(--err)";
+    const mem = h.mem_total_gb ? (h.mem_used_gb != null ? `${Math.round(h.mem_used_gb)}/` : "") + Math.round(h.mem_total_gb) + " GB" : "";
+    const cx7 = (h.fabric?.nics || []).filter(c => c.kind === "cx7" && (c.ipv4 || []).length).map(c => c.ipv4[0].ip);
+    const lines = [
+      [`${h.gpu || (h.online ? "no GPU" : "")}${mem ? " · " + mem : ""}${h.temp_c != null ? " · " + Math.round(h.temp_c) + "°C" : ""}`, "var(--muted)"],
+      [h.fabric ? (cx7.length ? "cx7 " + cx7.join(" ") : "no CX7 ports") : (h.fabric_error || "fabric unknown"), h.fabric && !cx7.length ? "var(--warn)" : "var(--fg)"],
+      [h.running.length ? "▸ " + h.running.join(", ") : "idle", h.running.length ? "var(--ok)" : "var(--dim)"],
+      [h.weights.length ? `⛁ ${h.weights.length === 1 ? h.weights[0] : h.weights.length + " models on disk"}` : "no weights indexed", "var(--sky)"],
+    ];
+    const clipTxt = s => s.length > 30 ? s.slice(0, 29) + "…" : s;
+    nodes += `<g${h.online ? "" : ' opacity=".55"'}><rect x="${x0}" y="${y0}" width="${BW}" height="${BH}" rx="12" style="fill:var(--card2);stroke:${stroke}" stroke-width="${h.key === t.controller ? 2.4 : 1.4}"/>
+      <circle cx="${x0 + 16}" cy="${y0 + 19}" r="5" style="fill:${h.online ? "var(--ok)" : "var(--err)"}"/>
+      <text x="${x0 + 28}" y="${y0 + 24}" style="fill:var(--fg)" font-size="14.5" font-weight="700" font-family="var(--mono)">${esc(h.name)}</text>
+      ${h.key === t.controller ? `<text x="${x0 + BW - 12}" y="${y0 + 23}" text-anchor="end" style="fill:var(--accent)" font-size="10.5" font-weight="700" font-family="var(--mono)">◆ CONTROLLER</text>` : ""}
+      ${lines.map(([s, c], i) => `<text x="${x0 + 14}" y="${y0 + 45 + i * 16}" style="fill:${c}" font-size="11" font-family="var(--mono)">${esc(clipTxt(s))}</text>`).join("")}</g>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="hosts and links">${edges}${labels}${nodes}</svg>`;
+}
+function renderTopo(){
+  const t = st.topo; if (!t) return;
+  $("#toposec").classList.toggle("hidden", t.hosts.length < 2 && !t.links.length);
+  $("#topodemo").classList.toggle("hidden", !t.demo);
+  const cx7 = t.links.filter(l => l.kind === "cx7").length;
+  $("#toposum").textContent = `${t.hosts.length} hosts · ${t.links.length} links · ${cx7} cx7`;
+  $("#topo").innerHTML = topoSvg(t);
+  const disp = k => (t.hosts.find(h => h.key === k) || {}).name || k;
+  $("#links").innerHTML = `<tr><th>link</th><th>from</th><th>to</th><th>iface</th><th>subnet</th><th>speed</th><th>check</th><th></th></tr>` + (t.links.length ? t.links.map(l =>
+    `<tr><td>${esc(l.kind)}</td><td>${esc(disp(l.a.host))} ${esc(l.a.ip)}</td><td>${esc(disp(l.b.host))} ${esc(l.b.ip)}</td><td>${esc(l.a.ifname || "-")}</td><td>${esc(l.subnet || "-")}</td>
+     <td>${l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "-"}</td><td class="${l.verified === true ? "ok" : l.verified === false ? "bad" : ""}">${l.verified === true ? "ok" + (l.rtt_ms != null ? " " + l.rtt_ms.toFixed(2) + " ms" : "") : l.verified === false ? "UNREACHABLE" : "unverified"}${l.manual ? " (hosts.toml)" : ""}</td>
+     <td class="busy">${(l.active || []).length ? "● " + esc(l.active.join(", ")) : ""}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="dim">no links matched: no shared subnets between hosts' fabrics (add [[link]] to hosts.toml)</td></tr>`)
+    + (t.notes || []).map(n => `<tr><td colspan="8" style="color:var(--warn)">note: ${esc(n)}</td></tr>`).join("");
+}
+async function refreshTopo(){ try { st.topo = await api("topology"); renderTopo(); } catch (e) {} }
 async function refreshHosts(){ try { st.hosts = await api("hosts"); renderHosts(); render(); } catch (e) {} }
 
 let failing = false;
@@ -569,8 +774,10 @@ const params = new URLSearchParams(location.search);
 if (params.get("scope") === "all") $("#scope [data-v=all]").click();
 if (params.get("logs")) openLogs(params.get("logs"));
 if (params.get("themes") === "open") setTimeout(() => $("#thbtn").click(), 300);
-loadThemes(); refresh(); refreshHosts();
+loadThemes(); refresh(); refreshHosts(); refreshTopo();
 setInterval(() => { if (!document.hidden) { refresh(); refreshHosts(); } }, 2500);
+setInterval(() => { if (!document.hidden) refreshTopo(); }, 20000);
+if (params.get("runon")) { const [ref, host] = params.get("runon").split("@"); setTimeout(() => runOn(ref, host), 900); }
 </script>
 </body>
 </html>

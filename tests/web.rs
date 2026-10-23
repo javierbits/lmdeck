@@ -108,6 +108,17 @@ fn dashboard_and_read_endpoints() {
     assert!(html.header("Content-Security-Policy").unwrap().contains("frame-ancestors 'none'"));
     let body = html.into_string().unwrap();
     assert!(body.contains("<title>lmdeck</title>") && body.contains("EventSource"));
+    // The multi-host UI: topology, run-on planner, remote controls, weights badges.
+    for hook in [
+        "id=\"toposec\"",
+        "api(\"topology\")",
+        "plan/${ref}?on=",
+        "hosts/${encodeURIComponent(host)}/stop/",
+        "weights on: ",
+        "nodes · start order",
+    ] {
+        assert!(body.contains(hook), "dashboard is missing {hook}");
+    }
 
     let snap = s.get("/api/snapshot").unwrap();
     assert_eq!(snap["version"], env!("CARGO_PKG_VERSION"));
