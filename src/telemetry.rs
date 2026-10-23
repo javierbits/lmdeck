@@ -594,7 +594,17 @@ impl Collector {
     pub fn collect(&mut self, paths: &Paths) -> Telemetry {
         if self.demo {
             let at = now_ms();
-            return demo::local(at as f64 / 1000.0, at);
+            let mut t = demo::local(at as f64 / 1000.0, at);
+            // Label the synthetic model with whatever is really running, so
+            // the deck and hosts views tell the same (demo) story.
+            if let (Some(r), Some(m)) = (RunRecord::all(paths).into_iter().find(|r| r.alive()), t.models.first_mut()) {
+                m.name = r.name;
+                m.engine = r.engine;
+                m.port = r.port;
+                m.pid = r.pid;
+                m.metrics = Some("demo".into());
+            }
+            return t;
         }
         // Static facts (platform, hostname, cores) are detected once.
         let hw = self.hw.get_or_insert_with(Hardware::detect).clone();

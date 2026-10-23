@@ -393,21 +393,21 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
             _ => "tok/s n/a (no engine /metrics)".into(),
         });
         if let Some(n) = m.requests_running.filter(|n| *n > 0.0) {
-            parts.push(format!("{n:.0} running"));
+            parts.push(format!("{n:.0} req"));
         }
         lines.push(kv("live", parts.join(" · "), t));
     }
     if r.is_up() {
         if let Some(h) = app.hosts.iter().find(|h| h.local) {
-            let mut spans = vec![Span::styled(format!("{:<10}", "machine"), Style::new().fg(t.muted))];
+            // One rolling line per metric: the machine-wide picture while this runs.
             for m in [Metric::GpuUtil, Metric::Power, Metric::Temp] {
                 let series: Vec<Option<f64>> = h.history.iter().map(|s| m.get(s)).collect();
                 let Some(now) = series.last().copied().flatten() else { continue };
-                spans.push(Span::styled(format!("{} {now:.0}{} ", m.label(), m.unit()), Style::new().fg(t.fg)));
-                spans.extend(crate::tui::hostsview::spark_spans(&series, m, 12, t, false));
-                spans.push(Span::raw("  "));
-            }
-            if spans.len() > 1 {
+                let mut spans = vec![
+                    Span::styled(format!("{:<10}", m.label()), Style::new().fg(t.muted)),
+                    Span::styled(format!("{:<7}", format!("{now:.0}{}", m.unit())), Style::new().fg(t.fg)),
+                ];
+                spans.extend(crate::tui::hostsview::spark_spans(&series, m, 30, t, false));
                 lines.push(Line::from(spans));
             }
         }
