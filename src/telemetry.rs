@@ -571,7 +571,6 @@ pub struct Collector {
     hw: Option<Hardware>,
     pub sys_root: std::path::PathBuf,
     pub demo: bool,
-    started: Instant,
 }
 
 impl Default for Collector {
@@ -589,13 +588,13 @@ impl Collector {
             hw: None,
             sys_root: "/sys".into(),
             demo: demo_mode(),
-            started: Instant::now(),
         }
     }
 
     pub fn collect(&mut self, paths: &Paths) -> Telemetry {
         if self.demo {
-            return demo::local(self.started.elapsed().as_secs_f64(), now_ms());
+            let at = now_ms();
+            return demo::local(at as f64 / 1000.0, at);
         }
         // Static facts (platform, hostname, cores) are detected once.
         let hw = self.hw.get_or_insert_with(Hardware::detect).clone();
@@ -875,7 +874,7 @@ pub mod demo {
 
     /// The local machine in demo mode.
     pub fn local(t: f64, at: u64) -> Telemetry {
-        spark("spark1", 0.1, t + 400.0, at, true)
+        spark("spark1", 0.1, t, at, true)
     }
 
     /// Fills a history with the last `n` samples of a generator.

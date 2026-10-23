@@ -5,6 +5,7 @@
 //! because a stop can wait out a 20 s grace period.
 
 pub mod app;
+pub mod hostsview;
 pub mod theme;
 pub mod view;
 
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::compat::Level;
 use crate::deck::{tail_lines, Deck, Snapshot};
+use crate::hosts::{snapshot_once, Sampler};
 pub use app::{Action, App, Mode, Tab};
 
 #[derive(Debug, Clone, Default)]
@@ -76,12 +78,23 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
         });
     }
     let _ = work_tx.send(Work::Refresh { inventory: false });
+    // Telemetry for this machine and every hosts.toml entry, on its own thread.
+    let sampler = Sampler::spawn(deck.paths.clone(), true);
 
     let mut app = initial_app(&opts);
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         let mut last_log = Instant::now() - LOG_POLL;
+        let mut last_hosts = Instant::now() - LOG_POLL;
         while !app.quit {
+            if last_hosts.elapsed() >= LOG_POLL {
+                last_hosts = Instant::now();
+                let hosts = sampler.hosts();
+                let stamp = |v: &[crate::hosts::HostView]| v.iter().map(|h| h.last_seen).collect::<Vec<_>>();
+                if stamp(&hosts) != stamp(&app.hosts) || hosts.len() != app.hosts.len() {
+                    app.set_hosts(hosts);
+                }
+            }
             for m in msg_rx.try_iter() {
                 match m {
                     Msg::Snapshot(s) => app.set_snapshot(*s),
@@ -152,6 +165,7 @@ pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab
     let mut app = initial_app(opts);
     app.tab = tab;
     app.set_snapshot(deck.snapshot(false));
+    app.set_hosts(snapshot_once(&deck.paths, true));
     if let Some(name) = app.selected().map(|r| r.name.clone()) {
         let path = deck.log_for(&name);
         app.logs = tail_lines(&path, 500);

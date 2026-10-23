@@ -187,9 +187,12 @@ fn search_mode_edits_query() {
 #[test]
 fn tabs_help_theme_and_quit() {
     let mut a = app();
-    a.on_key(key('2'));
+    a.on_key(key('3'));
     assert_eq!(a.tab, Tab::Machine);
     assert_eq!(a.on_key(code(KeyCode::Enter)), Action::None, "actions only on the deck tab");
+    a.on_key(code(KeyCode::BackTab));
+    assert_eq!(a.tab, Tab::Hosts);
+    a.on_key(code(KeyCode::Tab));
     a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Sources);
     a.on_key(code(KeyCode::Tab));
@@ -235,11 +238,11 @@ fn renders_every_tab_and_overlay() {
     {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
-    a.on_key(key('2'));
+    a.on_key(key('3'));
     let text = buffer_text(&render(&a, 140, 36));
     assert!(text.contains("system memory") && text.contains("32.0G used of 128.0G"), "{text}");
     assert!(text.contains("GB10") && text.contains("llama.cpp"), "{text}");
-    a.on_key(key('3'));
+    a.on_key(key('4'));
     let text = buffer_text(&render(&a, 140, 36));
     assert!(text.contains("builtin") && text.contains("every recipe file parsed"), "{text}");
     a.on_key(key('?'));
@@ -249,7 +252,11 @@ fn renders_every_tab_and_overlay() {
     for (w, h) in [(20, 5), (60, 10), (1, 1)] {
         let mut b = app();
         render(&b, w, h);
-        b.on_key(key('2'));
+        for k in ['2', '3'] {
+            b.on_key(key(k));
+            render(&b, w, h);
+        }
+        b.hosts = demo_hosts();
         render(&b, w, h);
     }
     let html = buffer_html(&render(&a, 80, 20), "x");
@@ -273,4 +280,141 @@ fn first_snapshot_selects_the_running_recipe() {
     a.on_key(key('g'));
     a.set_snapshot(s);
     assert_eq!(a.cursor, 0);
+}
+
+/// Two hosts with a few minutes of history; the second one is offline.
+pub(super) fn demo_hosts() -> Vec<crate::hosts::HostView> {
+    use crate::hosts::HostView;
+    use crate::telemetry::{GpuTel, ModelTel, Sample, Telemetry};
+    let tel = |name: &str, temp: f64| Telemetry {
+        hostname: name.into(),
+        platform: "NVIDIA GB10".into(),
+        at: 1_000_000,
+        unified_memory: true,
+        mem_total_gb: 120.0,
+        mem_used_gb: Some(60.0),
+        cpu_cores: 20,
+        cpu_util_pct: Some(12.0),
+        system_power_w: Some(80.0),
+        system_power_source: Some("spbm sys_total".into()),
+        gpus: vec![GpuTel { temp_c: Some(temp), power_w: Some(55.0), util_pct: Some(90.0), ..Default::default() }],
+        models: vec![ModelTel {
+            name: "qwen3-4b-gguf".into(),
+            engine: "llama.cpp".into(),
+            port: 8080,
+            pid: Some(4242),
+            rss_gb: Some(6.0),
+            mem_share_pct: Some(5.0),
+            tokens_per_s: Some(42.5),
+            metrics: Some("llama.cpp /metrics".into()),
+            ..Default::default()
+        }],
+        sources: vec!["/proc/meminfo".into(), "nvidia-smi".into()],
+        ..Default::default()
+    };
+    let hist: Vec<Sample> = (0..120u64)
+        .map(|i| Sample {
+            at: 1_000_000 - (119 - i) * 2000,
+            temp_c: Some(40.0 + i as f64 * 0.2),
+            power_w: Some(20.0 + i as f64),
+            mem_pct: Some(50.0),
+            gpu_util_pct: Some((i % 10) as f64 * 10.0),
+            ..Default::default()
+        })
+        .collect();
+    vec![
+        HostView {
+            name: "local".into(),
+            local: true,
+            online: true,
+            latency_ms: Some(0),
+            last_seen: Some(1_000_000),
+            telemetry: Some(tel("spark1", 63.8)),
+            history: hist.clone(),
+            ..Default::default()
+        },
+        HostView {
+            name: "spark2".into(),
+            url: Some("http://spark2:7979".into()),
+            online: false,
+            error: Some("connection refused".into()),
+            last_seen: Some(900_000),
+            telemetry: Some(tel("spark2", 50.0)),
+            history: hist,
+            ..Default::default()
+        },
+    ]
+}
+
+#[test]
+fn hosts_tab_shows_gauges_history_and_offline_hosts() {
+    let mut a = app();
+    a.set_hosts(demo_hosts());
+    a.on_key(key('2'));
+    assert_eq!(a.tab, Tab::Hosts);
+    let text = buffer_text(&render(&a, 160, 42));
+    for want in [
+        "Hosts",
+        "1/2 online",
+        "local",
+        "spark2",
+        "64°",
+        "▲6",
+        "60/120G",
+        "memory (unified",
+        "gpu 0 util",
+        "system power",
+        "42.5 tok/s",
+        "History",
+        "spbm sys_total",
+        "host",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert!(text.contains('▁') && text.contains('█'), "sparklines\n{text}");
+    assert!(!text.contains("DEMO"), "real data is not labelled demo");
+    a.on_key(key('j'));
+    assert_eq!(a.host_cursor, 1);
+    assert_eq!(a.cursor, 0, "recipe cursor untouched");
+    let text = buffer_text(&render(&a, 160, 42));
+    assert!(text.contains("offline: connection refused"), "{text}");
+    a.on_key(key('j'));
+    assert_eq!(a.host_cursor, 1, "clamped");
+    // A refresh keeps the selected host.
+    let mut h = demo_hosts();
+    h.reverse();
+    a.set_hosts(h);
+    assert_eq!(a.selected_host().unwrap().name, "spark2");
+
+    // Demo telemetry is always labelled.
+    let mut d = demo_hosts();
+    d[0].telemetry.as_mut().unwrap().demo = true;
+    a.set_hosts(d);
+    assert!(buffer_text(&render(&a, 160, 42)).contains("DEMO DATA"));
+}
+
+#[test]
+fn deck_details_show_live_process_telemetry() {
+    let mut a = app();
+    a.set_hosts(demo_hosts());
+    let text = buffer_text(&render(&a, 160, 42));
+    assert!(text.contains("rss 6.0G (5% of RAM)") && text.contains("42.5 tok/s (llama.cpp /metrics)"), "{text}");
+    assert!(text.contains("64°C 55W") || text.contains("64°C 80W"), "header shows live temp/power\n{text}");
+}
+
+#[test]
+fn sparkline_buckets_and_scales() {
+    use crate::telemetry::Metric;
+    use crate::tui::hostsview::{bucket, change_span, scale};
+    assert_eq!(bucket(&[Some(1.0)], 3), vec![None, None, Some(1.0)]);
+    assert_eq!(bucket(&[Some(1.0), Some(5.0), None, Some(2.0)], 2), vec![Some(5.0), Some(2.0)]);
+    assert_eq!(bucket(&[None, None], 1), vec![None]);
+    assert!(bucket(&[Some(1.0)], 0).is_empty());
+    assert_eq!(scale(Metric::Mem, &[Some(250.0)]), (0.0, 100.0));
+    assert!((scale(Metric::Power, &[Some(100.0)]).1 - 115.0).abs() < 1e-9);
+    let t = &crate::tui::theme::OMP;
+    assert_eq!(change_span(Some(2.4), true, t).content, "▲2");
+    assert_eq!(change_span(Some(-1.0), true, t).content, "▼1");
+    assert_eq!(change_span(Some(0.1), true, t).content, "·");
+    assert_eq!(change_span(None, true, t).content, "");
 }

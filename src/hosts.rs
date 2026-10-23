@@ -252,7 +252,7 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
         ..Default::default()
     };
     if local_view.history.len() < 150 {
-        let back = demo::history(150, at, |t, a| demo::spark("spark1", 0.1, t + 400.0, a, true));
+        let back = demo::history(150, local.at, demo::local);
         local_view.history = back.samples.into();
     }
     let seen = at.saturating_sub(185_000);
@@ -272,6 +272,22 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
             ..Default::default()
         },
     ]
+}
+
+/// One synchronous round (two local samples so CPU% and tokens/s have a
+/// delta), for one-shot renders and `lmdeck host list`.
+pub fn snapshot_once(paths: &Paths, with_hosts: bool) -> Vec<HostView> {
+    let mut collector = Collector::new();
+    let mut history = History::default();
+    history.push(Sample::from(&collector.collect(paths)));
+    std::thread::sleep(Duration::from_millis(300));
+    let t = collector.collect(paths);
+    history.push(Sample::from(&t));
+    if collector.demo {
+        return demo_hosts(&t, &history, now_ms());
+    }
+    let entries = if with_hosts { HostsFile::load(paths).map(|f| f.hosts).unwrap_or_default() } else { vec![] };
+    Aggregator::default().refresh(&entries, &t, &history)
 }
 
 /// Live state shared by the sampler thread and its readers.

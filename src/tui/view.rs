@@ -11,6 +11,7 @@ use ratatui::Frame;
 use crate::compat::Level;
 use crate::deck::{RecipeView, Snapshot};
 use crate::runner::Status;
+use crate::telemetry::Metric;
 use crate::tui::app::{App, Mode, Tab};
 use crate::tui::theme::Theme;
 use crate::util::{human_bytes, human_duration, human_gb, now_secs};
@@ -34,6 +35,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         Some(s) => match app.tab {
             Tab::Deck => draw_deck(f, app, s, body),
+            Tab::Hosts => crate::tui::hostsview::draw_hosts(f, app, body),
             Tab::Machine => draw_machine(f, app, s, body),
             Tab::Sources => draw_sources(f, app, s, body),
         },
@@ -73,7 +75,7 @@ fn segments<'a>(segs: &[(String, Color)], end_bg: Color, t: &Theme, nerd: bool) 
     out
 }
 
-fn panel<'a>(title: Line<'a>, t: &Theme, focused: bool) -> Block<'a> {
+pub(super) fn panel<'a>(title: Line<'a>, t: &Theme, focused: bool) -> Block<'a> {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -83,7 +85,7 @@ fn panel<'a>(title: Line<'a>, t: &Theme, focused: bool) -> Block<'a> {
         .style(Style::new().bg(t.panel))
 }
 
-fn title<'a>(icon: &str, text: impl Into<String>, extra: Option<String>, t: &Theme) -> Line<'a> {
+pub(super) fn title<'a>(icon: &str, text: impl Into<String>, extra: Option<String>, t: &Theme) -> Line<'a> {
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(icon.to_string(), Style::new().fg(t.accent)),
@@ -144,6 +146,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(label, Style::new().fg(t.muted))
         });
     }
+    if app.demo() {
+        spans.push(Span::raw(" "));
+        spans.extend(pill("DEMO DATA", t.warn, t, app.nerd));
+    }
     let left = Line::from(spans);
     let mut right = vec![];
     if let Some(s) = &app.snap {
@@ -154,8 +160,29 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             }
             None => format!("mem {}", human_gb(hw.total_memory_gb)),
         };
-        right.push(Span::styled(format!("{} ", hw.hostname), Style::new().fg(t.muted)));
-        right.extend(segments(&[(hw.platform.clone(), t.seg[1]), (mem, t.seg[2])], t.bar_bg, t, false));
+        // Live numbers win over the snapshot's once the sampler has run.
+        let mem = match app.local() {
+            Some(l) if l.mem_used_gb.is_some() => {
+                format!("mem {} / {}", human_gb(l.mem_used_gb.unwrap_or(0.0)), human_gb(l.mem_total_gb))
+            }
+            _ => mem,
+        };
+        let (host, platform) = match app.local() {
+            Some(l) => (l.hostname.clone(), l.platform.clone()),
+            None => (hw.hostname.clone(), hw.platform.clone()),
+        };
+        right.push(Span::styled(format!("{host} "), Style::new().fg(t.muted)));
+        let mut segs = vec![(platform, t.seg[1]), (mem, t.seg[2])];
+        if let Some(l) = app.local() {
+            let live: Vec<String> = [l.temp().map(|c| format!("{c:.0}°C")), l.power().map(|w| format!("{w:.0}W"))]
+                .into_iter()
+                .flatten()
+                .collect();
+            if !live.is_empty() {
+                segs.push((live.join(" "), t.seg[0]));
+            }
+        }
+        right.extend(segments(&segs, t.bar_bg, t, false));
     }
     f.render_widget(Block::new().style(Style::new().bg(t.bar_bg)), area);
     f.render_widget(Paragraph::new(left), area);
@@ -170,7 +197,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::Help => ("HELP", t.seg[0]),
     };
     let mut segs = vec![(mode.to_string(), mode_bg)];
-    if let Some(s) = &app.snap {
+    if app.tab == Tab::Hosts {
+        let up = app.hosts.iter().filter(|h| h.online).count();
+        segs.push((format!("⌁ {up}/{} up", app.hosts.len()), t.seg[3]));
+    } else if let Some(s) = &app.snap {
         let shown = app.visible().len();
         segs.push((format!("{} {shown}", if app.show_all { "all" } else { "deck" }), t.seg[0]));
         segs.push((format!("▶ {} running", s.running()), t.seg[3]));
@@ -198,6 +228,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     let hints: &[(&str, &str)] = match app.mode {
         Mode::Search => &[("↵", "keep"), ("esc", "clear"), ("↑↓", "move")],
+        _ if app.tab == Tab::Hosts => &[("↑↓", "host"), ("tab", "view"), ("t", "theme"), ("?", "help"), ("q", "quit")],
         _ => &[("↵", "start/stop"), ("s", "switch"), ("p", "pull"), ("l", "logs"), ("/", "search"), ("?", "help")],
     };
     let mut right = vec![];
@@ -347,6 +378,40 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     if let (Some(pid), Some(at)) = (r.pid, r.started_at) {
         lines.push(kv("process", format!("pid {pid} · up {}", human_duration(now_secs().saturating_sub(at))), t));
     }
+    if let Some(m) = app.local().and_then(|l| l.model(&r.name)) {
+        let mut parts = vec![];
+        if let Some(g) = m.rss_gb {
+            let share = m.mem_share_pct.map(|p| format!(" ({p:.0}% of RAM)")).unwrap_or_default();
+            parts.push(format!("rss {}{share}", human_gb(g)));
+        }
+        if let Some(g) = m.gpu_mem_gb {
+            parts.push(format!("vram {}", human_gb(g)));
+        }
+        parts.push(match (m.tokens_per_s, &m.metrics) {
+            (Some(v), Some(src)) => format!("{v:.1} tok/s ({src})"),
+            (None, Some(_)) => "idle".into(),
+            _ => "tok/s n/a (no engine /metrics)".into(),
+        });
+        if let Some(n) = m.requests_running.filter(|n| *n > 0.0) {
+            parts.push(format!("{n:.0} running"));
+        }
+        lines.push(kv("live", parts.join(" · "), t));
+    }
+    if r.is_up() {
+        if let Some(h) = app.hosts.iter().find(|h| h.local) {
+            let mut spans = vec![Span::styled(format!("{:<10}", "machine"), Style::new().fg(t.muted))];
+            for m in [Metric::GpuUtil, Metric::Power, Metric::Temp] {
+                let series: Vec<Option<f64>> = h.history.iter().map(|s| m.get(s)).collect();
+                let Some(now) = series.last().copied().flatten() else { continue };
+                spans.push(Span::styled(format!("{} {now:.0}{} ", m.label(), m.unit()), Style::new().fg(t.fg)));
+                spans.extend(crate::tui::hostsview::spark_spans(&series, m, 12, t, false));
+                spans.push(Span::raw("  "));
+            }
+            if spans.len() > 1 {
+                lines.push(Line::from(spans));
+            }
+        }
+    }
     lines.push(Line::raw(""));
     for c in &r.checks {
         let mark = match c.level {
@@ -422,7 +487,7 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
 
 // ───────────────────────── machine tab ─────────────────────────
 
-fn gauge<'a>(label: &str, ratio: f64, text: String, color: Color, t: &Theme) -> Gauge<'a> {
+pub(super) fn gauge<'a>(label: &str, ratio: f64, text: String, color: Color, t: &Theme) -> Gauge<'a> {
     Gauge::default()
         .block(Block::new().title(Span::styled(label.to_string(), Style::new().fg(t.muted))))
         .gauge_style(Style::new().fg(color).bg(t.gauge_bg))
@@ -592,7 +657,7 @@ fn draw_sources(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
 // ───────────────────────── help ─────────────────────────
 
 pub const KEYS: &[(&str, &str)] = &[
-    ("↑ ↓  j k", "move"),
+    ("↑ ↓  j k", "move (recipes, or hosts on the hosts tab)"),
     ("↵ / space", "start or stop the selected server"),
     ("s", "switch: stop the others, start this one"),
     ("x", "stop"),
@@ -601,7 +666,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
-    ("1 2 3  tab", "deck · machine · sources"),
+    ("1-4  tab", "deck · hosts · machine · sources"),
     ("t", "next theme"),
     ("r", "refresh now (re-probe engines)"),
     ("?", "this help"),

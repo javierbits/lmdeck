@@ -19,7 +19,6 @@ use lmdeck::paths::Paths;
 use lmdeck::recipe::{valid_name, Engine, Format, Recipe};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
-use lmdeck::telemetry::{Collector, History, Sample};
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
 
@@ -386,15 +385,8 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
             Ok(())
         }
         HostCmd::List { json } => {
-            let mut collector = Collector::new();
-            let local = collector.collect(&ctx.paths);
-            let mut hist = History::default();
-            hist.push(Sample::from(&local));
-            let views = if collector.demo {
-                hosts::demo_hosts(&local, &hist, local.at)
-            } else {
-                hosts::Aggregator::default().refresh(&file.hosts, &local, &hist)
-            };
+            let views = hosts::snapshot_once(&ctx.paths, true);
+            let demo = views.iter().any(|h| h.telemetry.as_ref().is_some_and(|t| t.demo));
             if json {
                 let mut v = serde_json::to_value(&views)?;
                 for h in v.as_array_mut().into_iter().flatten() {
@@ -403,7 +395,7 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&v)?);
                 return Ok(());
             }
-            if collector.demo {
+            if demo {
                 println!("{}", yellow("DEMO DATA (LMDECK_DEMO is set): these numbers are synthetic"));
             }
             let mut t = Table::new(&["host", "url", "status", "platform", "mem", "temp", "power", "gpu", "models"])
@@ -433,6 +425,7 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
     if a.render_html.is_some() || a.render_text {
         let tab = match a.tab.as_str() {
             "deck" => lmdeck::tui::Tab::Deck,
+            "hosts" => lmdeck::tui::Tab::Hosts,
             "machine" | "doctor" => lmdeck::tui::Tab::Machine,
             "sources" => lmdeck::tui::Tab::Sources,
             other => bail!("unknown tab '{other}'"),

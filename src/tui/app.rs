@@ -6,21 +6,25 @@ use std::time::Instant;
 
 use crate::compat::Level;
 use crate::deck::{RecipeView, Snapshot};
+use crate::hosts::HostView;
+use crate::telemetry::Telemetry;
 use crate::tui::theme::{Theme, THEMES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Deck,
+    Hosts,
     Machine,
     Sources,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Deck, Tab::Machine, Tab::Sources];
+    pub const ALL: [Tab; 4] = [Tab::Deck, Tab::Hosts, Tab::Machine, Tab::Sources];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Deck => "Deck",
+            Tab::Hosts => "Hosts",
             Tab::Machine => "Machine",
             Tab::Sources => "Sources",
         }
@@ -80,6 +84,9 @@ pub struct App {
     /// Use Nerd Font powerline glyphs.
     pub nerd: bool,
     pub quit: bool,
+    /// This machine first, then every `hosts.toml` entry.
+    pub hosts: Vec<HostView>,
+    pub host_cursor: usize,
 }
 
 impl Default for App {
@@ -101,6 +108,8 @@ impl Default for App {
             busy: vec![],
             nerd: false,
             quit: false,
+            hosts: vec![],
+            host_cursor: 0,
         }
     }
 }
@@ -167,6 +176,29 @@ impl App {
         self.clamp();
     }
 
+    /// Live telemetry of this machine, once the sampler has produced some.
+    pub fn local(&self) -> Option<&Telemetry> {
+        self.hosts.iter().find(|h| h.local).and_then(|h| h.telemetry.as_ref())
+    }
+
+    pub fn selected_host(&self) -> Option<&HostView> {
+        self.hosts.get(self.host_cursor)
+    }
+
+    /// Whether anything on screen is mock data (`LMDECK_DEMO`).
+    pub fn demo(&self) -> bool {
+        self.hosts.iter().any(|h| h.telemetry.as_ref().is_some_and(|t| t.demo))
+    }
+
+    pub fn set_hosts(&mut self, hosts: Vec<HostView>) {
+        let keep = self.selected_host().map(|h| h.name.clone());
+        self.hosts = hosts;
+        if let Some(i) = keep.and_then(|n| self.hosts.iter().position(|h| h.name == n)) {
+            self.host_cursor = i;
+        }
+        self.host_cursor = self.host_cursor.min(self.hosts.len().saturating_sub(1));
+    }
+
     pub fn notify(&mut self, text: impl Into<String>, level: Level) {
         self.toast = Some(Toast { text: text.into(), level, at: Instant::now() });
     }
@@ -180,6 +212,11 @@ impl App {
         if self.logs_max {
             let max = self.logs.len().saturating_sub(1);
             self.log_scroll = (self.log_scroll as isize - delta).clamp(0, max as isize) as usize;
+            return;
+        }
+        if self.tab == Tab::Hosts {
+            let n = self.hosts.len().max(1) as isize;
+            self.host_cursor = (self.host_cursor as isize + delta).clamp(0, n - 1) as usize;
             return;
         }
         let n = self.visible().len();
@@ -319,7 +356,7 @@ impl App {
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => self.tab = Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],
             KeyCode::BackTab => self.tab = Tab::ALL[(self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
-            KeyCode::Char(c @ '1'..='3') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
+            KeyCode::Char(c @ '1'..='4') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
             _ => {}
         }
         self.clamp();
