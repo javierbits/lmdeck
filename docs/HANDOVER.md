@@ -3,8 +3,9 @@
 **Repo:** https://github.com/jvr0x/lmdeck. It is a **private** repo owned by `jvr0x` (Javier).
 
 **State (2026-10-23):**
-- `main` = the "wrap-only recipes, LMDeploy, TOML only" commit on top of `80fe886`; see `git log`.
-- CI: ubuntu, macOS and MSRV 1.85 jobs (check `gh run list`).
+- `main`: `cacce29` (wrap-only recipes, LMDeploy, TOML only) on top of `80fe886`, then three test-hardening commits (`322532c`, `3295fc8`, `bcb7136`) and this doc update.
+- CI was green on ubuntu, macOS and MSRV 1.85 at `bcb7136`.
+- macOS CI note: the runners now have Homebrew Python 3.15, and a fresh `python3 -m http.server` there has taken ~40 s to answer. Tests that use it have long ready timeouts, and `free_port()` never hands out the same port twice.
 - Crate `lmdeck` v0.1.0, Rust edition with `rust-version = "1.85"`, about 12.5k lines of Rust.
 - Nothing has been published to crates.io, PyPI, or npm.
 
