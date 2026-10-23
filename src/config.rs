@@ -28,6 +28,70 @@ pub struct Config {
     /// Checking wrapped recipes' `[source]` repos for new commits.
     #[serde(default, skip_serializing_if = "UpdateChecks::is_default")]
     pub updates: UpdateChecks,
+    /// `[node]`: this machine's name and fast-link address as peers see them.
+    #[serde(default, skip_serializing_if = "NodeConfig::is_default")]
+    pub node: NodeConfig,
+    /// `[serve]`: what other machines may ask this one's `lmdeck serve` to do.
+    #[serde(default, skip_serializing_if = "ServeConfig::is_default")]
+    pub serve: ServeConfig,
+    /// `[weights]`: sharing this machine's weights with peers over NFS.
+    #[serde(default, skip_serializing_if = "WeightsConfig::is_default")]
+    pub weights: WeightsConfig,
+}
+
+/// `[node]` in config.toml (all optional; detection fills the rest).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NodeConfig {
+    /// This machine's name in topologies and `weights on:` badges (default: the hostname).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl NodeConfig {
+    pub fn is_default(&self) -> bool {
+        *self == NodeConfig::default()
+    }
+}
+
+/// `[serve]` in config.toml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ServeConfig {
+    /// Accept whole recipes from a controller (`POST /api/run`). A recipe is a
+    /// command line, so this is off by default; starting recipes this machine
+    /// already has by name never needs it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accept_recipes: bool,
+    /// Name of an environment variable holding the API token (so a fixed
+    /// token survives restarts without living in this file). `--token` /
+    /// `LMDECK_TOKEN` win over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+}
+
+impl ServeConfig {
+    pub fn is_default(&self) -> bool {
+        *self == ServeConfig::default()
+    }
+}
+
+/// `[weights]` in config.toml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct WeightsConfig {
+    /// Let lmdeck add the read-only `/etc/exports` line and run `exportfs -ra`
+    /// itself (with `sudo -n`, so a password prompt fails instead of hanging).
+    /// Off by default: lmdeck prints the two commands for you to run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_export: bool,
+    /// The directory exported to peers (default: the Hugging Face home, the
+    /// parent of `hub/`, which is what containers mount at /root/.cache/huggingface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nfs_path: Option<String>,
+}
+
+impl WeightsConfig {
+    pub fn is_default(&self) -> bool {
+        *self == WeightsConfig::default()
+    }
 }
 
 /// `[updates]`: how lmdeck looks for new commits upstream of wrapped recipes.
@@ -123,6 +187,9 @@ impl Default for Config {
             // is YAML, which lmdeck no longer reads.
             sources: vec![],
             updates: UpdateChecks::default(),
+            node: NodeConfig::default(),
+            serve: ServeConfig::default(),
+            weights: WeightsConfig::default(),
         }
     }
 }
@@ -176,6 +243,11 @@ impl Config {
         fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
         fs::rename(&tmp, &file)?;
         Ok(file)
+    }
+
+    /// This machine's name as other hosts see it: `[node] name`, else the hostname.
+    pub fn node_name(&self) -> String {
+        self.node.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(crate::util::hostname)
     }
 
     pub fn source(&self, name: &str) -> Option<&SourceEntry> {

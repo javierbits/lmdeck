@@ -9,12 +9,13 @@
 //!   with their *own* telemetry, so hosts that list each other can't loop.
 //! - A host that fails keeps its last telemetry and history, marked offline
 //!   with the error, so the UIs can grey it out.
-//! - Aggregation is read-only: starting/stopping models on another host is
-//!   done on that host (its own dashboard or CLI).
+//! - Controlling a host (start / stop / switch / logs, uploading a recipe,
+//!   NFS weight volumes) goes through [`crate::remote`], which calls that
+//!   host's own `lmdeck serve` API with the token from this file.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -28,18 +29,81 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_millis(1500);
 /// The reserved name of this machine in the aggregate.
 pub const LOCAL: &str = "local";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostEntry {
     pub name: String,
     pub url: String,
+    /// The host's `serve --token`, stored here (the file is 0600).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Or: the name of an environment variable holding the token. Without
+    /// either, `LMDECK_HOST_TOKEN_<NAME>` is tried (name upper-cased, `-`/`.` → `_`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    /// The host's address on the fast (CX7) link, overriding detection for
+    /// every peer. Per-pair overrides go in `[[link]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_addr: Option<String>,
+}
+
+impl HostEntry {
+    /// The token to send: `token`, else `$token_env`, else `$LMDECK_HOST_TOKEN_<NAME>`.
+    pub fn resolved_token(&self) -> Option<String> {
+        self.resolved_token_with(|k| std::env::var(k).ok())
+    }
+
+    pub fn resolved_token_with(&self, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+        let nonempty = |v: Option<String>| v.filter(|t| !t.trim().is_empty());
+        nonempty(self.token.clone())
+            .or_else(|| self.token_env.as_deref().and_then(|k| nonempty(get(k))))
+            .or_else(|| nonempty(get(&token_env_name(&self.name))))
+    }
+}
+
+/// `LMDECK_HOST_TOKEN_<NAME>` for a host name.
+pub fn token_env_name(host: &str) -> String {
+    let up: String =
+        host.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
+    format!("LMDECK_HOST_TOKEN_{up}")
+}
+
+/// `[[link]]`: a hand-written link between two hosts, for when detection
+/// can't see it (or picks the wrong port). Wins over detection.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinkOverride {
+    /// Host names (`local` or this machine's `[node] name` for this machine).
+    pub a: String,
+    pub b: String,
+    /// Each side's address on the link.
+    pub a_addr: String,
+    pub b_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a_ifname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b_ifname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a_hca: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b_hca: Option<String>,
+    /// RoCE GID index on each side (`NCCL_IB_GID_INDEX`), when detection can't read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a_gid_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b_gid_index: Option<u32>,
+    /// Link speed, for load-time estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gbps: Option<f64>,
+    /// `cx7` (default), `lan` or `tailscale`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostsFile {
     #[serde(default, rename = "host")]
     pub hosts: Vec<HostEntry>,
+    #[serde(default, rename = "link", skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<LinkOverride>,
 }
 
 pub fn hosts_path(paths: &Paths) -> PathBuf {
@@ -91,10 +155,21 @@ impl HostsFile {
         if !crate::recipe::valid_name(name) || name == LOCAL {
             bail!("invalid host name '{name}' (letters, digits, . _ -; '{LOCAL}' is reserved)");
         }
-        let e = HostEntry { name: name.to_string(), url: normalize_url(url)?, token: token.filter(|t| !t.is_empty()) };
+        let old = self.hosts.iter().find(|h| h.name == name).cloned().unwrap_or_default();
+        let e = HostEntry {
+            name: name.to_string(),
+            url: normalize_url(url)?,
+            token: token.filter(|t| !t.is_empty()),
+            token_env: old.token_env,
+            link_addr: old.link_addr,
+        };
         self.hosts.retain(|h| h.name != name);
         self.hosts.push(e.clone());
         Ok(e)
+    }
+
+    pub fn get(&self, name: &str) -> Option<&HostEntry> {
+        self.hosts.iter().find(|h| h.name == name)
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
@@ -152,7 +227,7 @@ pub fn fetch(entry: &HostEntry, since: u64, timeout: Duration) -> Result<(Teleme
     let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
     let url = format!("{}/api/telemetry?history=1&since={since}", entry.url);
     let mut req = agent.get(&url);
-    if let Some(t) = &entry.token {
+    if let Some(t) = entry.resolved_token() {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
     let t0 = Instant::now();
@@ -290,6 +365,46 @@ pub fn snapshot_once(paths: &Paths, with_hosts: bool) -> Vec<HostView> {
     Aggregator::default().refresh(&entries, &t, &history)
 }
 
+/// What each host is running, as the last sampler round saw it; lets
+/// one-shot commands show multi-node status without asking every host.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LiveFile {
+    pub at: u64,
+    /// host key → (online, running recipe names).
+    pub hosts: BTreeMap<String, (bool, Vec<String>)>,
+}
+
+fn live_path(paths: &Paths) -> PathBuf {
+    paths.cache_dir.join("hosts-live.json")
+}
+
+pub fn write_live(paths: &Paths, views: &[HostView]) {
+    let f = LiveFile {
+        at: now_ms(),
+        hosts: views
+            .iter()
+            .map(|v| {
+                let running = v.telemetry.as_ref().map(|t| t.models.iter().map(|m| m.name.clone()).collect());
+                (v.name.clone(), (v.online, running.unwrap_or_default()))
+            })
+            .collect(),
+    };
+    let p = live_path(paths);
+    let _ = fs::create_dir_all(&paths.cache_dir);
+    if let Ok(body) = serde_json::to_string(&f) {
+        let tmp = p.with_extension("json.tmp");
+        if fs::write(&tmp, body).is_ok() {
+            let _ = fs::rename(&tmp, &p);
+        }
+    }
+}
+
+/// The live file when it is younger than `max_age`.
+pub fn read_live(paths: &Paths, max_age: Duration) -> Option<LiveFile> {
+    let f: LiveFile = serde_json::from_str(&fs::read_to_string(live_path(paths)).ok()?).ok()?;
+    (now_ms().saturating_sub(f.at) < max_age.as_millis() as u64).then_some(f)
+}
+
 /// Live state shared by the sampler thread and its readers.
 #[derive(Default)]
 pub struct Live {
@@ -308,6 +423,15 @@ impl Sampler {
     pub fn spawn(paths: Paths, with_hosts: bool) -> Sampler {
         let live = Arc::new(Mutex::new(Live::default()));
         let shared = live.clone();
+        if with_hosts {
+            // The weights index (who holds which model) changes slowly.
+            let paths = paths.clone();
+            let _ = std::thread::Builder::new().name("lmdeck-weights".into()).spawn(move || loop {
+                let cfg = crate::config::Config::load(&paths).unwrap_or_default();
+                crate::weights::Index::refresh(&paths, &cfg);
+                std::thread::sleep(crate::weights::INDEX_TTL);
+            });
+        }
         std::thread::Builder::new()
             .name("lmdeck-telemetry".into())
             .spawn(move || {
@@ -326,6 +450,7 @@ impl Sampler {
                     } else {
                         agg.refresh(&[], &t, &history)
                     };
+                    write_live(&paths, &hosts);
                     {
                         let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
                         g.telemetry = Some(t);
@@ -381,6 +506,26 @@ mod tests {
     }
 
     #[test]
+    fn tokens_resolve_from_file_then_named_env_then_default_env() {
+        let env = |k: &str| match k {
+            "MY_TOK" => Some("from-env".to_string()),
+            "LMDECK_HOST_TOKEN_SPARK_2" => Some("default-env".to_string()),
+            _ => None,
+        };
+        let mut e = HostEntry { name: "spark-2".into(), url: "http://x:1".into(), ..Default::default() };
+        assert_eq!(e.resolved_token_with(env).as_deref(), Some("default-env"));
+        e.token_env = Some("MY_TOK".into());
+        assert_eq!(e.resolved_token_with(env).as_deref(), Some("from-env"));
+        e.token = Some("inline".into());
+        assert_eq!(e.resolved_token_with(env).as_deref(), Some("inline"));
+        e.name = "other".into();
+        e.token = None;
+        e.token_env = Some("UNSET".into());
+        assert_eq!(e.resolved_token_with(env), None);
+        assert_eq!(token_env_name("spark.1-a"), "LMDECK_HOST_TOKEN_SPARK_1_A");
+    }
+
+    #[test]
     fn hosts_file_roundtrip_and_validation() {
         let d = tempfile::tempdir().unwrap();
         let p = paths(d.path());
@@ -402,7 +547,12 @@ mod tests {
         assert_eq!(back.hosts.len(), 2);
         assert_eq!(
             back.hosts[1],
-            HostEntry { name: "spark1".into(), url: "http://100.64.0.11:7979".into(), token: Some("t2".into()) }
+            HostEntry {
+                name: "spark1".into(),
+                url: "http://100.64.0.11:7979".into(),
+                token: Some("t2".into()),
+                ..Default::default()
+            }
         );
         assert_eq!(back.hosts[0].token, None);
         let mut back = back;
@@ -454,9 +604,9 @@ mod tests {
         let (ok_url, ok_srv) = fake_host("200 OK", body.clone(), 2);
         let (auth_url, _auth) = fake_host("401 Unauthorized", "{\"ok\":false}".into(), 1);
         let entries = vec![
-            HostEntry { name: "spark2".into(), url: ok_url, token: Some("tok".into()) },
-            HostEntry { name: "spark3".into(), url: closed_port(), token: None },
-            HostEntry { name: "mac".into(), url: auth_url, token: None },
+            HostEntry { name: "spark2".into(), url: ok_url, token: Some("tok".into()), ..Default::default() },
+            HostEntry { name: "spark3".into(), url: closed_port(), ..Default::default() },
+            HostEntry { name: "mac".into(), url: auth_url, ..Default::default() },
         ];
         let local = Telemetry { hostname: "spark1".into(), at: 4_000, ..Default::default() };
         let mut agg = Aggregator { timeout: Some(Duration::from_millis(800)), ..Default::default() };

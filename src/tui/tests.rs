@@ -38,6 +38,12 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         plan_error: None,
         pulling: false,
         update: None,
+        weights_on: if downloaded { vec!["local".into()] } else { vec![] },
+        weights_home: downloaded.then(|| "local".into()),
+        nodes: vec![],
+        placed_on: None,
+        cluster_phase: None,
+        cluster_error: None,
     }
 }
 

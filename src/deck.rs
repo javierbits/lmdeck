@@ -173,6 +173,19 @@ pub struct RecipeView {
     /// Wrapped recipes: whether the `[source]` repo has newer commits
     /// (from the update-check cache; `None` for native recipes).
     pub update: Option<crate::updates::UpdateView>,
+    /// Hosts whose disk holds the weights (`[node] name` for this machine),
+    /// from the controller's weights index.
+    pub weights_on: Vec<String>,
+    /// The one host the weights are served from (`[model] home`, else the
+    /// first holder, this machine first).
+    pub weights_home: Option<String>,
+    /// Multi-node recipes: one entry per `[[nodes]]`, in start order.
+    pub nodes: Vec<crate::cluster::NodeView>,
+    /// Started on another host by `--on` (placement record).
+    pub placed_on: Option<String>,
+    /// Multi-node: `starting`, `up` or `failed` (+ error), from the run record.
+    pub cluster_phase: Option<String>,
+    pub cluster_error: Option<String>,
 }
 
 impl RecipeView {
@@ -240,6 +253,10 @@ impl Deck {
         Catalog::load(&self.paths, &self.cfg)
     }
 
+    pub fn docker_bin(&self) -> String {
+        self.docker()
+    }
+
     fn docker(&self) -> String {
         self.cfg.engines.docker.clone().unwrap_or_else(|| "docker".into())
     }
@@ -288,6 +305,17 @@ impl Deck {
             cat.entries.iter().map(|f| &f.recipe),
         );
         let mut recipes = vec![];
+        let node = self.cfg.node_name();
+        let mut widx = crate::weights::Index::load(&self.paths);
+        if !widx.hosts.contains_key(crate::hosts::LOCAL) && !widx.demo {
+            let inv = crate::weights::local(&self.cfg);
+            widx.hosts.insert(
+                crate::hosts::LOCAL.into(),
+                crate::weights::HostWeights { online: true, error: None, at: now_secs(), inventory: Some(inv) },
+            );
+        }
+        let show = |k: &str| if k == crate::hosts::LOCAL { node.clone() } else { k.to_string() };
+        let live = crate::hosts::read_live(&self.paths, Duration::from_secs(15));
         for f in &cat.entries {
             let r = &f.recipe;
             let reference = reference(f);
@@ -298,8 +326,30 @@ impl Deck {
                 Ok(plan) => (Some(plan.command_line()), None),
                 Err(e) => (None, Some(format!("{e:#}"))),
             };
-            let status = runner::status_cached(&self.paths, &r.name, r.port(), &mut cache);
+            let mut status = runner::status_cached(&self.paths, &r.name, r.port(), &mut cache);
+            let nodes = if r.nodes.is_empty() { vec![] } else { crate::cluster::views(&self.paths, r, &node) };
+            let crec = (!r.nodes.is_empty()).then(|| crate::cluster::Record::load(&self.paths, &r.name)).flatten();
+            if !nodes.is_empty() {
+                let up = |s: &str| matches!(s, "loaded" | "running" | "loading");
+                let head_ok =
+                    nodes.iter().any(|n| n.role == "head" && matches!(n.status.as_str(), "loaded" | "running"));
+                status = if nodes.iter().all(|n| up(&n.status)) && head_ok {
+                    Status::Loaded
+                } else if nodes.iter().any(|n| up(&n.status)) || crec.as_ref().is_some_and(|c| c.phase == "starting") {
+                    Status::Loading
+                } else {
+                    Status::Stopped
+                };
+            }
+            let placed =
+                crate::placement::Record::load(&self.paths, &r.name).filter(|p| p.run_host != crate::hosts::LOCAL);
+            let placed_on = placed.as_ref().and_then(|p| {
+                let running =
+                    live.as_ref().and_then(|l| l.hosts.get(&p.run_host)).is_some_and(|(_, v)| v.contains(&p.served_as));
+                running.then(|| p.run_host.clone())
+            });
             let rec = if status.is_up() { RunRecord::load(&self.paths, &r.name) } else { None };
+            let locs = widx.locate(r);
             recipes.push(RecipeView {
                 index,
                 name: r.name.clone(),
@@ -330,6 +380,12 @@ impl Deck {
                 plan_error,
                 pulling: self.pulling(&r.name),
                 update: updates.remove(&r.name),
+                weights_on: locs.iter().map(|l| show(&l.host)).collect(),
+                weights_home: widx.home(r, &node).map(|l| show(&l.host)),
+                nodes,
+                placed_on,
+                cluster_phase: crec.as_ref().map(|c| c.phase.clone()),
+                cluster_error: crec.and_then(|c| c.error),
             });
         }
         // Listed recipes first, in list order; then the rest by origin.
@@ -371,8 +427,20 @@ impl Deck {
         let cat = self.catalog();
         let found = resolve(&cat, target)?;
         let r = &found.recipe;
+        if !r.nodes.is_empty() {
+            return crate::cluster::start_background(
+                self,
+                r,
+                &crate::cluster::Opts { only, force, ..Default::default() },
+            );
+        }
+        self.start_recipe(r, only, force)
+    }
+
+    /// Starts a recipe that need not be in the catalog (an uploaded or derived one).
+    pub fn start_recipe(&self, r: &Recipe, only: bool, force: bool) -> Result<String> {
         if r.nodes() > 1 {
-            bail!("{} spans {} nodes; multi-node launch is not supported", r.name, r.nodes());
+            bail!("{} spans {} nodes; give it [[nodes]] to launch it across hosts", r.name, r.nodes());
         }
         let hw = Hardware::detect();
         let inv = self.inventory(false);
@@ -428,6 +496,7 @@ impl Deck {
     pub fn stop(&self, target: &str) -> Result<String> {
         let cat = self.catalog();
         let name = match resolve(&cat, target) {
+            Ok(f) if !f.recipe.nodes.is_empty() => return crate::cluster::stop(self, &f.recipe),
             Ok(f) => f.recipe.name.clone(),
             Err(_) if RunRecord::load(&self.paths, target).is_some() => target.to_string(),
             Err(e) => return Err(e),

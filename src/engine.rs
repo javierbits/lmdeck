@@ -373,7 +373,12 @@ pub fn checkout_dir(checkouts_dir: &Path, recipe: &str) -> PathBuf {
 /// Builds the launch plan for `r`.
 pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     if r.nodes() > 1 {
-        bail!("'{}' spans {} nodes; multi-node launch is not supported in lmdeck v0.1", r.name, r.nodes());
+        bail!(
+            "'{}' spans {} nodes: each [[nodes]] entry gets its own plan (`lmdeck use {} --dry-run`)",
+            r.name,
+            r.nodes(),
+            r.name
+        );
     }
     let port = r.port();
     let local = r.local_path(&ctx.models_dir);
@@ -515,9 +520,17 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
                     "host".into(),
                     "--ipc".into(),
                     "host".into(),
-                    "-v".into(),
-                    format!("{}:/root/.cache/huggingface", hf_home.display()),
                 ];
+                match &r.model.nfs_volume {
+                    // Weights streamed read-only from their home over NFS (placement.rs).
+                    Some(nfs) => a.extend([
+                        "-v".into(),
+                        format!("{}:{}:ro", nfs.volume, nfs.mount_at),
+                        "-e".into(),
+                        "HF_HUB_OFFLINE=1".into(),
+                    ]),
+                    None => a.extend(["-v".into(), format!("{}:/root/.cache/huggingface", hf_home.display())]),
+                }
                 if use_local {
                     a.extend(["-v".into(), format!("{model_arg}:{model_arg}:ro")]);
                 }
@@ -967,6 +980,6 @@ mod tests {
     #[test]
     fn multi_node_refused() {
         let r = recipe("[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n[hardware]\nnodes=2\n");
-        assert!(plan(&r, &ctx(false)).unwrap_err().to_string().contains("multi-node"));
+        assert!(plan(&r, &ctx(false)).unwrap_err().to_string().contains("spans 2 nodes"));
     }
 }

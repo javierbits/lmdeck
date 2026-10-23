@@ -162,6 +162,25 @@ pub struct ModelSpec {
     /// Approximate download size in GB (informational, used for memory estimates).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_gb: Option<f64>,
+    /// The host whose disk holds the weights (its `hosts.toml` name, or this
+    /// machine's `[node] name`). Default: this machine if it has them, else
+    /// the first host that does (`lmdeck weights`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    /// Set by lmdeck when a recipe runs away from its weights: a Docker
+    /// volume (an NFS mount of the home's HF cache, read-only) mounted in
+    /// place of the local Hugging Face cache. Not for hand-written recipes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nfs_volume: Option<NfsMount>,
+}
+
+/// How an NFS weights volume is mounted in the container.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NfsMount {
+    /// Docker volume name.
+    pub volume: String,
+    /// Container path (`/root/.cache/huggingface`, the same on every node).
+    pub mount_at: String,
 }
 
 impl ModelSpec {
@@ -346,6 +365,74 @@ pub struct Recipe {
     pub engine: EngineSpec,
     #[serde(default, skip_serializing_if = "HardwareReq::is_empty")]
     pub hardware: HardwareReq,
+    /// Multi-node: how the `[[nodes]]` are brought up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster: Option<ClusterSpec>,
+    /// Multi-node: one entry per machine (exactly one `role = "head"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<NodeSpec>,
+}
+
+/// Start order for `[[nodes]]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StartOrder {
+    /// Head first (Ray: the head must be up before workers join).
+    #[default]
+    HeadFirst,
+    /// Workers first (engines whose head waits for every worker to dial in).
+    WorkersFirst,
+}
+
+/// `[cluster]`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClusterSpec {
+    #[serde(default)]
+    pub order: StartOrder,
+    /// Seconds each node gets to pass its gate (default 120).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeRole {
+    Head,
+    Worker,
+}
+
+/// One `[[nodes]]` entry: what runs on one machine. Commands and env take
+/// the engine placeholders plus `{head_addr}`, `{node_addr}`, `{ifname}`,
+/// `{hca}`, `{gid_index}`, `{rank}`, `{nodes}`, `{node}`, `{image}`,
+/// `{weights_volume}` and `{weights_at}` (see docs/MULTIHOST.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeSpec {
+    pub name: String,
+    pub role: NodeRole,
+    /// `local` / this machine's `[node] name`, or a hosts.toml name.
+    pub host: String,
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<String>,
+    /// Port the node's status is probed on (the head defaults to the
+    /// recipe's `engine.port`; a worker to its `ready_port`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Gate: the next node starts once this TCP port answers on the node
+    /// (e.g. Ray's GCS on 6379). Without it, the gate is "still running
+    /// after `ready_delay` seconds" (default 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_delay: Option<u64>,
 }
 
 /// Is this a recipe file name (`.toml`)?
@@ -430,7 +517,7 @@ impl Recipe {
                 bail!("model.repo '{repo}' should look like 'org/name'");
             }
         }
-        if custom && self.engine.command.is_empty() {
+        if custom && self.engine.command.is_empty() && self.nodes.is_empty() {
             bail!("engine \"custom\" needs engine.command");
         }
         if !custom {
@@ -463,6 +550,36 @@ impl Recipe {
         if self.hardware.nodes == Some(0) {
             bail!("hardware.nodes must be at least 1");
         }
+        if !self.nodes.is_empty() {
+            let heads = self.nodes.iter().filter(|n| n.role == NodeRole::Head).count();
+            if heads != 1 {
+                bail!("[[nodes]] needs exactly one role = \"head\" (found {heads})");
+            }
+            for (i, n) in self.nodes.iter().enumerate() {
+                if !valid_name(&n.name) {
+                    bail!("[[nodes]] #{}: invalid name '{}'", i + 1, n.name);
+                }
+                if self.nodes[..i].iter().any(|m| m.name == n.name) {
+                    bail!("[[nodes]]: two nodes are named '{}'", n.name);
+                }
+                if n.host.trim().is_empty() {
+                    bail!("[[nodes]] {}: needs host", n.name);
+                }
+                if n.command.is_empty() {
+                    bail!("[[nodes]] {}: needs command", n.name);
+                }
+                if !n.logs.is_empty() && !n.detached {
+                    bail!("[[nodes]] {}: logs is for detached nodes", n.name);
+                }
+            }
+            if let Some(want) = self.hardware.nodes {
+                if want as usize != self.nodes.len() {
+                    bail!("hardware.nodes = {want} but there are {} [[nodes]]", self.nodes.len());
+                }
+            }
+        } else if self.cluster.is_some() {
+            bail!("[cluster] needs [[nodes]]");
+        }
         Ok(())
     }
 
@@ -475,7 +592,11 @@ impl Recipe {
     }
 
     pub fn nodes(&self) -> u32 {
-        self.hardware.nodes.unwrap_or(1)
+        if self.nodes.is_empty() {
+            self.hardware.nodes.unwrap_or(1)
+        } else {
+            self.nodes.len() as u32
+        }
     }
 
     pub fn quant_short(&self) -> String {

@@ -55,6 +55,9 @@ enum Cmd {
         /// Stop everything lmdeck started.
         #[arg(long)]
         all: bool,
+        /// Stop it on this host (through its `lmdeck serve`).
+        #[arg(long, value_name = "HOST")]
+        on: Option<String>,
     },
     /// Wrap a repo that ships start.sh / stop.sh as a recipe in the deck.
     Add {
@@ -97,6 +100,20 @@ enum Cmd {
         target: String,
         #[arg(short = 'n', long, default_value_t = 40)]
         lines: usize,
+        /// Read it from this host.
+        #[arg(long, value_name = "HOST")]
+        on: Option<String>,
+        /// Multi-node recipes: this node's log (default: the head).
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Which host holds which model's weights (asks every host).
+    Weights {
+        /// Ignore the cached index (refreshed every 60 s).
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Find, add, inspect and run recipes.
     #[command(subcommand)]
@@ -213,6 +230,14 @@ struct UseArgs {
     /// Print the launch plan without starting anything.
     #[arg(long)]
     dry_run: bool,
+    /// Run on this host (a hosts.toml name, or `local`). The weights stay on
+    /// their home and are mounted read-only over NFS on the CX7 link.
+    #[arg(long, value_name = "HOST")]
+    on: Option<String>,
+    /// Allow streaming weights or a multi-node run over LAN / Tailscale when
+    /// there is no ConnectX-7 link.
+    #[arg(long)]
+    allow_slow_link: bool,
 }
 
 #[derive(Subcommand)]
@@ -297,9 +322,15 @@ enum HostCmd {
         name: String,
         /// Base URL of the host's `lmdeck serve`, scheme and port included.
         url: String,
-        /// The token that host's `lmdeck serve --token` expects.
+        /// The token that host's `lmdeck serve --token` expects (stored in hosts.toml, mode 0600).
         #[arg(long)]
         token: Option<String>,
+        /// Read the token from this environment variable instead (only the name is stored).
+        #[arg(long, value_name = "VAR")]
+        token_env: Option<String>,
+        /// This host's address on the fast (CX7) link, when auto-detection can't tell.
+        #[arg(long, value_name = "IP")]
+        link_addr: Option<String>,
         /// Save without contacting the host.
         #[arg(long)]
         no_check: bool,
@@ -313,6 +344,15 @@ enum HostCmd {
     /// Forget a host.
     #[command(visible_alias = "rm")]
     Remove { name: String },
+    /// How the hosts are cabled: CX7 / LAN / Tailscale links, detected from each host's NICs.
+    #[command(visible_alias = "topo")]
+    Topology {
+        #[arg(long)]
+        json: bool,
+        /// Skip the ping / TCP check of each link.
+        #[arg(long)]
+        no_verify: bool,
+    },
 }
 
 struct Ctx {
@@ -367,16 +407,20 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Tui(a)) => tui(ctx, a),
         Some(Cmd::Theme(c)) => theme_cmd(&ctx, c),
         Some(Cmd::Serve { host, port, token }) => {
+            let token = token.filter(|t| !t.is_empty()).or_else(|| {
+                ctx.cfg.serve.token_env.as_deref().and_then(|n| std::env::var(n).ok()).filter(|t| !t.is_empty())
+            });
             lmdeck::web::run(Deck::new(ctx.paths, ctx.cfg), lmdeck::web::WebOptions { host, port, token })
         }
         Some(Cmd::List(a)) => list(&ctx, &a),
         Some(Cmd::Use(a)) => use_recipe(&ctx, &a),
         Some(Cmd::Switch(a)) => use_recipe(&ctx, &UseArgs { only: true, ..a }),
-        Some(Cmd::Stop { target, all }) => stop(&ctx, target.as_deref(), all),
+        Some(Cmd::Stop { target, all, on }) => stop(&ctx, target.as_deref(), all, on.as_deref()),
         Some(Cmd::Add { repo, name, git_ref, force }) => add_wrapper(&ctx, &repo, name, git_ref, force),
         Some(Cmd::Pull { target, dry_run, latest }) => pull(&ctx, &target, dry_run, latest),
         Some(Cmd::Outdated { targets, fetch, json }) => outdated(&ctx, &targets, fetch, json),
-        Some(Cmd::Logs { target, lines }) => logs(&ctx, &target, lines),
+        Some(Cmd::Logs { target, lines, on, node }) => logs(&ctx, &target, lines, on.as_deref(), node.as_deref()),
+        Some(Cmd::Weights { refresh, json }) => weights_cmd(&ctx, refresh, json),
         Some(Cmd::Recipe(c)) => recipe_cmd(&ctx, c),
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
         Some(Cmd::Host(c)) => host_cmd(&ctx, c),
@@ -413,8 +457,22 @@ fn host_row(h: &HostView) -> Vec<String> {
 fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
     let mut file = HostsFile::load(&ctx.paths)?;
     match c {
-        HostCmd::Add { name, url, token, no_check } => {
-            let e = file.add(&name, &url, token)?;
+        HostCmd::Add { name, url, token, token_env, link_addr, no_check } => {
+            let mut e = file.add(&name, &url, token)?;
+            if token_env.is_some() || link_addr.is_some() {
+                if let Some(slot) = file.hosts.iter_mut().find(|h| h.name == e.name) {
+                    if let Some(v) = token_env {
+                        slot.token_env = Some(v);
+                    }
+                    if let Some(a) = link_addr {
+                        if a.parse::<std::net::IpAddr>().is_err() {
+                            bail!("--link-addr must be an IP address");
+                        }
+                        slot.link_addr = Some(a);
+                    }
+                    e = slot.clone();
+                }
+            }
             let path = file.save(&ctx.paths)?;
             println!("{} added host {} {} {}", green("✓"), bold(&e.name), e.url, dim(&format!("({})", path.display())));
             if !no_check {
@@ -429,6 +487,16 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
                         dim("on that machine run `lmdeck serve --host <its tailscale/LAN IP> --token <token>`")
                     ),
                 }
+            }
+            Ok(())
+        }
+        HostCmd::Topology { json, no_verify } => {
+            let views = hosts::snapshot_once(&ctx.paths, true);
+            let t = lmdeck::topology::build(&ctx.paths, &ctx.cfg, &views, !no_verify);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&t)?);
+            } else {
+                print!("{}", lmdeck::topology::render_text(&t));
             }
             Ok(())
         }
@@ -669,9 +737,28 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         .right(&[0, 5, 7])
         .max_width(2, 48);
     let mut rows = vec![];
+    let node = ctx.cfg.node_name();
+    let has_hosts = hosts::HostsFile::load(&ctx.paths).map(|f| !f.hosts.is_empty()).unwrap_or(false);
+    let idx = has_hosts.then(|| lmdeck::weights::Index::fresh(&ctx.paths, &ctx.cfg, lmdeck::weights::INDEX_TTL));
     for (i, f) in entries.iter().enumerate() {
         let r = &f.recipe;
         let st = runner::status_cached(&ctx.paths, &r.name, r.port(), &mut cache);
+        let weights_on: Vec<String> = match &idx {
+            Some(idx) => {
+                let mut v: Vec<String> = idx.locate(r).into_iter().map(|l| l.host).collect();
+                v.dedup();
+                v
+            }
+            None => vec![],
+        };
+        let nodes: Vec<serde_json::Value> = if r.nodes.is_empty() {
+            vec![]
+        } else {
+            lmdeck::cluster::views(&ctx.paths, r, &node)
+                .into_iter()
+                .map(|n| json!({"name": n.name, "role": n.role, "host": n.host, "served_as": n.served_as, "status": n.status}))
+                .collect()
+        };
         if loaded_only && !st.is_up() {
             continue;
         }
@@ -681,6 +768,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
             "quant": r.quant_short(), "port": r.port(), "status": status_word(&st),
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
             "update": update_json(ups.get(&r.name)),
+            "weights_on": weights_on, "nodes": nodes,
         }));
         let glyph = match st {
             Status::Loaded | Status::External => green("●"),
@@ -695,6 +783,12 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         let up = update_tag(ups.get(&r.name));
         if !up.is_empty() {
             name = format!("{name} {up}");
+        }
+        if !r.nodes.is_empty() {
+            name = format!("{name} {}", dim(&format!("×{} nodes", r.nodes.len())));
+        }
+        if weights_on.iter().any(|h| h != hosts::LOCAL) {
+            name = format!("{name} {}", dim(&format!("weights on: {}", weights_on.join(", "))));
         }
         t.row(vec![
             (i + 1).to_string(),
@@ -873,8 +967,14 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let cat = ctx.catalog();
     let found = resolve(&cat, &a.target)?;
     let r = &found.recipe;
+    if !r.nodes.is_empty() {
+        return use_cluster(ctx, r, a);
+    }
     if r.nodes() > 1 {
-        bail!("{} spans {} nodes; multi-node launch is not supported in lmdeck v0.1", r.name, r.nodes());
+        bail!("{} spans {} nodes; give it [[nodes]] entries to launch it across hosts", r.name, r.nodes());
+    }
+    if let Some(on) = &a.on {
+        return use_on(ctx, r, on, a);
     }
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
@@ -1026,7 +1126,35 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     }
 }
 
-fn stop(ctx: &Ctx, target: Option<&str>, all: bool) -> Result<()> {
+fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<()> {
+    let node = ctx.cfg.node_name();
+    let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
+    if let Some(host) = on.filter(|h| !lmdeck::remote::is_local(h, &node)) {
+        let t = target.ok_or_else(|| anyhow!("say which recipe to stop on {host}"))?;
+        let c = lmdeck::remote::Client::named(&ctx.paths, host)?;
+        let m = c.action("stop", t, false)?;
+        lmdeck::placement::Record::remove(&ctx.paths, t);
+        println!("{} {host}: {m}", dim("○"));
+        return Ok(());
+    }
+    if let (Some(t), false) = (target, all) {
+        if let Ok(f) = resolve(&ctx.catalog(), t) {
+            if !f.recipe.nodes.is_empty() {
+                println!("{} {}", dim("○"), deck.stop(t)?);
+                return Ok(());
+            }
+            // Started elsewhere with --on: stop it there.
+            if let Some(p) = lmdeck::placement::Record::load(&ctx.paths, &f.recipe.name) {
+                if p.run_host != hosts::LOCAL && RunRecord::load(&ctx.paths, &f.recipe.name).is_none() {
+                    let c = lmdeck::remote::Client::named(&ctx.paths, &p.run_host)?;
+                    let m = c.action("stop", &p.served_as, false)?;
+                    lmdeck::placement::Record::remove(&ctx.paths, &f.recipe.name);
+                    println!("{} {}: {m}", dim("○"), p.run_host);
+                    return Ok(());
+                }
+            }
+        }
+    }
     let names: Vec<String> = if all {
         RunRecord::all(&ctx.paths).into_iter().map(|r| r.name).collect()
     } else {
@@ -1052,14 +1180,185 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool) -> Result<()> {
     Ok(())
 }
 
-fn logs(ctx: &Ctx, target: &str, lines: usize) -> Result<()> {
+fn logs(ctx: &Ctx, target: &str, lines: usize, on: Option<&str>, node: Option<&str>) -> Result<()> {
     let cat = ctx.catalog();
-    let name = resolve(&cat, target).map(|f| f.recipe.name.clone()).unwrap_or_else(|_| target.to_string());
+    let me = ctx.cfg.node_name();
+    let found = resolve(&cat, target).ok();
+    let mut on = on.map(str::to_string);
+    let mut name = found.map(|f| f.recipe.name.clone()).unwrap_or_else(|| target.to_string());
+    if let Some(f) = found.filter(|f| !f.recipe.nodes.is_empty()) {
+        let r = &f.recipe;
+        let n = match node {
+            Some(want) => r.nodes.iter().find(|n| n.name == want).ok_or_else(|| {
+                anyhow!(
+                    "{} has no node '{want}' (nodes: {})",
+                    r.name,
+                    r.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>().join(", ")
+                )
+            })?,
+            None => r.nodes.iter().find(|n| n.role == lmdeck::recipe::NodeRole::Head).expect("validated"),
+        };
+        name = lmdeck::cluster::node_name(r, n);
+        on = Some(n.host.clone());
+    } else if on.is_none() {
+        if let Some(p) = lmdeck::placement::Record::load(&ctx.paths, &name).filter(|p| p.run_host != hosts::LOCAL) {
+            if !ctx.paths.log_dir().join(format!("{name}.log")).exists() {
+                on = Some(p.run_host);
+            }
+        }
+    }
+    if let Some(host) = on.filter(|h| !lmdeck::remote::is_local(h, &me)) {
+        let c = lmdeck::remote::Client::named(&ctx.paths, &host)?;
+        for l in c.logs(&name, lines)? {
+            println!("{l}");
+        }
+        return Ok(());
+    }
     let path = ctx.paths.log_dir().join(format!("{name}.log"));
     if !path.exists() {
         bail!("no log for {name} at {}", path.display());
     }
     println!("{}", runner::tail(&path, lines));
+    Ok(())
+}
+
+// ───────────────────────── remote / multi-node ─────────────────────────
+
+fn host_label(h: &str, node: &str) -> String {
+    if h == hosts::LOCAL {
+        format!("{node} (local)")
+    } else {
+        h.to_string()
+    }
+}
+
+/// `lmdeck use <recipe> --on <host>`.
+fn use_on(ctx: &Ctx, r: &Recipe, on: &str, a: &UseArgs) -> Result<()> {
+    let node = ctx.cfg.node_name();
+    let plan = lmdeck::placement::plan(&ctx.paths, &ctx.cfg, r, on, a.allow_slow_link)?;
+    if a.dry_run {
+        println!("{} {}", bold("plan for"), cyan(&r.name));
+        for l in plan.describe(&node) {
+            println!("  {l}");
+        }
+        return Ok(());
+    }
+    for l in plan.describe(&node).iter().take(4) {
+        println!("  {}", dim(l));
+    }
+    let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
+    for l in lmdeck::placement::execute(&deck, r, &plan, a.only, a.force)? {
+        println!("{} {l}", cyan("▶"));
+    }
+    if a.no_wait {
+        return Ok(());
+    }
+    wait_on(&deck, &plan.run_host, &r.name, r.port(), r.engine.ready_timeout.unwrap_or(900), &node)
+}
+
+fn wait_on(deck: &Deck, host: &str, name: &str, port: u16, timeout: u64, node: &str) -> Result<()> {
+    let (_, t) = lmdeck::ops::Target::of(deck, host)?;
+    let t0 = std::time::Instant::now();
+    let mut last = 0;
+    loop {
+        match t.state(deck, name, port)? {
+            lmdeck::ops::NodeState::Up(s) if s == "loaded" || s == "external" => {
+                println!("{} {} is up on {} (port {port})", green("●"), bold(name), host_label(host, node));
+                return Ok(());
+            }
+            lmdeck::ops::NodeState::Stopped if t0.elapsed() > Duration::from_secs(2) => {
+                for l in t.logs(deck, name, 15) {
+                    eprintln!("{l}");
+                }
+                bail!("{name} exited during startup on {}", host_label(host, node));
+            }
+            _ => {}
+        }
+        let el = t0.elapsed().as_secs();
+        if el >= timeout {
+            println!("{} {name} still loading after {timeout}s on {}", yellow("◐"), host_label(host, node));
+            return Ok(());
+        }
+        if el / 10 > last {
+            last = el / 10;
+            eprintln!("  {}", dim(&format!("…waiting ({el}s)")));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// `lmdeck use <multi-node recipe>`.
+fn use_cluster(ctx: &Ctx, r: &Recipe, a: &UseArgs) -> Result<()> {
+    let node = ctx.cfg.node_name();
+    let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
+    let opts = lmdeck::cluster::Opts { only: a.only, force: a.force, allow_slow_link: a.allow_slow_link };
+    if a.on.is_some() {
+        bail!("{} is a multi-node recipe; each [[nodes]] entry names its host (drop --on)", r.name);
+    }
+    let plan = lmdeck::cluster::plan(&deck, r, &opts)?;
+    if a.dry_run {
+        println!("{} {} {}", bold("plan for"), cyan(&r.name), dim("(multi-node)"));
+        for l in plan.describe(&node) {
+            println!("  {l}");
+        }
+        return Ok(());
+    }
+    println!("{} starting {} across {} nodes", cyan("▶"), bold(&r.name), plan.nodes.len());
+    lmdeck::cluster::start(&deck, r, &opts, |l| println!("  {}", dim(l)))?;
+    let head = plan.nodes.iter().find(|n| n.role == lmdeck::recipe::NodeRole::Head).expect("validated");
+    if a.no_wait {
+        println!("{} launched; check with `lmdeck list`", yellow("◐"));
+        return Ok(());
+    }
+    wait_on(&deck, &head.host, &head.served_as, head.port, r.engine.ready_timeout.unwrap_or(900), &node)
+}
+
+/// `lmdeck weights`.
+fn weights_cmd(ctx: &Ctx, refresh: bool, json: bool) -> Result<()> {
+    let idx = if refresh {
+        lmdeck::weights::Index::refresh(&ctx.paths, &ctx.cfg)
+    } else {
+        lmdeck::weights::Index::fresh(&ctx.paths, &ctx.cfg, lmdeck::weights::INDEX_TTL)
+    };
+    let node = ctx.cfg.node_name();
+    let rows = lmdeck::weights::rows(&idx, &node);
+    if json {
+        let v: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(m, h, size, path, kind)| json!({"model": m, "host": h, "size": size, "path": path, "kind": kind}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({"demo": idx.demo, "at": idx.at, "weights": v, "hosts": idx.hosts}))?
+        );
+        return Ok(());
+    }
+    if idx.demo {
+        println!("{}", yellow("DEMO DATA (LMDECK_DEMO=1): simulated hosts"));
+    }
+    let mut t = Table::new(&["MODEL", "HOST", "SIZE", "KIND", "PATH"]);
+    let mut last = String::new();
+    for (m, h, size, path, kind) in &rows {
+        let shown = if *m == last { dim("〃") } else { bold(m) };
+        last = m.clone();
+        t.row(vec![shown, h.clone(), human_bytes(*size), dim(kind), dim(path)]);
+    }
+    if rows.is_empty() {
+        println!("{}", dim("no weights found on any host"));
+    } else {
+        print!("{}", t.render());
+    }
+    for (h, hw) in &idx.hosts {
+        if !hw.online {
+            println!(
+                "{} {}: {} {}",
+                yellow("!"),
+                host_label(h, &node),
+                hw.error.as_deref().unwrap_or("offline"),
+                dim(if hw.inventory.is_some() { "(showing last known)" } else { "" })
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1819,9 +2118,20 @@ fn home(ctx: &Ctx) -> Result<()> {
         let name = f.recipe.name.clone();
         let st = runner::status(&ctx.paths, &name, f.recipe.port());
         let res = if matches!(st, Status::Loaded | Status::Loading) {
-            stop(ctx, Some(&name), false)
+            stop(ctx, Some(&name), false, None)
         } else {
-            use_recipe(ctx, &UseArgs { target: name, only: false, no_wait: false, force: false, dry_run: false })
+            use_recipe(
+                ctx,
+                &UseArgs {
+                    target: name,
+                    only: false,
+                    no_wait: false,
+                    force: false,
+                    dry_run: false,
+                    on: None,
+                    allow_slow_link: false,
+                },
+            )
         };
         if let Err(e) = res {
             eprintln!("{} {e:#}", red("error:"));

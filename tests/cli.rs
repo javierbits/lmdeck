@@ -160,8 +160,8 @@ fn local_source_with_toml_recipes() {
     let dl = e.run(&["list", "--downloaded"]);
     assert!(dl.contains("unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf") && dl.contains("qwen3-4b"), "{dl}");
 
-    // Multi-node recipes are refused.
-    e.cmd().args(["use", "mine/dual"]).assert().failure().stderr(predicate::str::contains("multi-node"));
+    // Multi-node recipes without [[nodes]] are refused.
+    e.cmd().args(["use", "mine/dual"]).assert().failure().stderr(predicate::str::contains("give it [[nodes]] entries"));
 
     e.run(&["recipe", "remove", "qwen3-4b"]);
     e.run(&["source", "remove", "mine"]);

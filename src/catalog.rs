@@ -11,6 +11,22 @@ use crate::sources::{load_dir, Found};
 
 pub const DECK: &str = "deck";
 pub const BUILTIN: &str = "builtin";
+/// Recipes a controller uploaded to this machine (`POST /api/run`), kept in
+/// `<state>/remote-recipes` so status, logs and stop work by name.
+pub const REMOTE: &str = "remote";
+
+pub fn remote_dir(paths: &Paths) -> std::path::PathBuf {
+    paths.state_dir.join("remote-recipes")
+}
+
+/// Saves an uploaded recipe (replacing an older upload of the same name).
+pub fn save_remote(paths: &Paths, recipe: &Recipe) -> Result<std::path::PathBuf> {
+    let dir = remote_dir(paths);
+    fs::create_dir_all(&dir)?;
+    let p = dir.join(format!("{}.toml", recipe.name));
+    fs::write(&p, toml::to_string(recipe)?)?;
+    Ok(p)
+}
 
 /// Example recipes compiled into the binary.
 pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
@@ -38,9 +54,14 @@ pub fn builtin() -> Vec<Found> {
 
 /// Recipes in the deck (`~/.config/lmdeck/recipes`), sorted by name.
 pub fn deck(paths: &Paths) -> (Vec<Found>, Vec<(String, String)>) {
+    plain_dir(DECK, &paths.recipes_dir())
+}
+
+/// Every `.toml` recipe directly in `dir`, sorted by name.
+fn plain_dir(origin: &str, dir: &Path) -> (Vec<Found>, Vec<(String, String)>) {
     let mut found = vec![];
     let mut errors = vec![];
-    let Ok(rd) = fs::read_dir(paths.recipes_dir()) else { return (found, errors) };
+    let Ok(rd) = fs::read_dir(dir) else { return (found, errors) };
     let mut files: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     files.sort();
     for path in files {
@@ -49,7 +70,7 @@ pub fn deck(paths: &Paths) -> (Vec<Found>, Vec<(String, String)>) {
             continue;
         }
         match Recipe::load(&path) {
-            Ok(recipe) => found.push(Found { recipe, origin: DECK.into(), file: path.display().to_string() }),
+            Ok(recipe) => found.push(Found { recipe, origin: origin.into(), file: path.display().to_string() }),
             Err(e) if is_not_a_recipe(&e) => {}
             Err(e) => errors.push((path.display().to_string(), format!("{e:#}"))),
         }
@@ -68,6 +89,8 @@ impl Catalog {
     pub fn load(paths: &Paths, cfg: &Config) -> Catalog {
         let (mut entries, mut errors) = deck(paths);
         entries.extend(builtin());
+        let (remote, _) = plain_dir(REMOTE, &remote_dir(paths));
+        entries.extend(remote);
         for s in &cfg.sources {
             let (f, e) = load_dir(&s.name, &paths.sources_cache_dir().join(&s.name));
             entries.extend(f);

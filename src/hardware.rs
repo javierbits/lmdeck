@@ -1,6 +1,6 @@
 //! Hardware detection for `lmdeck doctor` and recipe compatibility.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -10,7 +10,7 @@ use crate::util::run_with_timeout;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// One GPU as reported by the driver.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gpu {
     pub vendor: String,
     pub name: String,
@@ -21,7 +21,7 @@ pub struct Gpu {
 }
 
 /// What lmdeck knows about the machine.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hardware {
     pub os: String,
     pub arch: String,

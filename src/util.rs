@@ -26,6 +26,19 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> 
     }
 }
 
+/// This machine's short hostname (`/etc/hostname`, then `hostname`), or `localhost`.
+pub fn hostname() -> String {
+    let from_file = fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string());
+    let name = from_file
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            run_with_timeout(&mut Command::new("hostname"), Duration::from_secs(2)).map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "localhost".into());
+    name.split('.').next().unwrap_or(&name).to_string()
+}
+
 /// Bytes → `2.3G` style (binary units, like lmswitch).
 pub fn human_bytes(n: u64) -> String {
     if n == 0 {

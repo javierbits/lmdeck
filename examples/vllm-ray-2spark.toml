@@ -1,0 +1,95 @@
+# Example (not a built-in), UNTESTED: vLLM with Ray, tensor-parallel across TWO DGX Sparks.
+#
+# UNTESTED. Nobody has run this file on real Sparks. It's a starting point
+# that mirrors two working setups, read but not copied verbatim:
+#   * lmswitch's vllm-dual-ray runtime (lmswitch/runtimes/vllm_dual_ray.py):
+#     `ray start --head` on the head, `ray start --address=<head>:6379` on the
+#     worker, wait for 2.0/2.0 GPU, then `vllm serve ... --tensor-parallel-size=2
+#     --distributed-executor-backend=ray`. The NCCL wiring (NCCL_SOCKET_IFNAME,
+#     NCCL_IB_HCA, NCCL_IB_GID_INDEX, VLLM_HOST_IP) matches lmswitch's
+#     _nccl_env_exports, and node-local compile caches stay off NFS, as in
+#     lmswitch's examples/vllm-dual.yaml (`~/.cache/vllm-...:/root/.cache/vllm`).
+#   * Mia's WORKER_WEIGHTS=nfs: the weights live once, on their home Spark.
+#     The other Spark mounts them read-only over the CX7 link with a docker NFS
+#     volume at /root/.cache/huggingface. Nothing is copied.
+#
+# lmdeck fills these from the detected CX7 link (or a [[link]] entry in hosts.toml):
+#   {head_addr}  head's CX7 IP (Ray GCS / master_addr)
+#   {node_addr}  this node's CX7 IP (worker_ip on the worker)
+#   {ifname} {hca} {gid_index}  this node's CX7 netdev, RDMA device, RoCE GID index
+#   {weights_mount}  `<hf cache>:<mount>` on the weights home, or
+#                    `lmdeck-hf-<home>:<mount>:ro` (NFS volume) elsewhere
+#   {image} {head_port} {node} {rank} {nodes}
+#
+# Edit `host` below to your hosts.toml names, then check the plan with:
+#   lmdeck use qwen3.6-35b-a3b-nvfp4-ray-2spark --dry-run
+
+name = "qwen3.6-35b-a3b-nvfp4-ray-2spark"
+display_name = "Qwen3.6 35B-A3B NVFP4 (vLLM + Ray, 2x Spark) [UNTESTED]"
+description = "UNTESTED example: vLLM tensor-parallel 2 over Ray across two DGX Sparks on the CX7 link; weights read-only over NFS from their home."
+tags = ["dgx-spark", "multi-node", "ray", "vllm", "nvfp4", "example", "untested"]
+
+[model]
+repo = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+size_gb = 23.5
+
+[quant]
+format = "nvfp4"
+bits = 4.0
+
+[engine]
+name = "custom"
+image = "vllm/vllm-openai:cu130-nightly"   # must exist on BOTH Sparks
+port = 8000
+ready_timeout = 1800                       # first TP=2 boot is slow
+
+[hardware]
+nodes = 2
+accelerator = ["nvidia"]
+os = ["linux"]
+
+[cluster]
+order = "head-first"   # Ray's GCS has to be up before the worker joins
+gate_timeout = 600
+
+[[nodes]]
+name = "head"
+role = "head"
+host = "local"
+ready_port = 6379      # gate: Ray GCS answers
+container = "lmdeck-qwen36-ray-head"
+stop = ["docker", "rm", "-f", "lmdeck-qwen36-ray-head"]
+command = [
+  "docker", "run", "--rm", "--name", "lmdeck-qwen36-ray-head",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "lmdeck-vllm-cache:/root/.cache/vllm",
+  "-e", "HF_HUB_OFFLINE=1",
+  "-e", "NCCL_IB_DISABLE=0", "-e", "NCCL_SOCKET_IFNAME={ifname}", "-e", "GLOO_SOCKET_IFNAME={ifname}",
+  "-e", "NCCL_IB_HCA={hca}", "-e", "NCCL_IB_GID_INDEX={gid_index}", "-e", "VLLM_HOST_IP={node_addr}",
+  "--entrypoint", "bash", "{image}", "-lc",
+  "export RAY_TMPDIR=/dev/shm/ray; mkdir -p /dev/shm/ray; unset RAY_OVERRIDE_NODE_IP_ADDRESS RAY_NODE_IP_ADDRESS; ray start --head --port=6379 --node-ip-address={head_addr} --num-gpus=1 --object-store-memory=1073741824 && until ray status 2>/dev/null | grep -q '2.0/2.0 GPU'; do sleep 5; done && exec vllm serve nvidia/Qwen3.6-35B-A3B-NVFP4 --served-model-name=qwen3.6-35b-a3b-nvfp4-ray-2spark --host=0.0.0.0 --port={head_port} --tensor-parallel-size=2 --pipeline-parallel-size=1 --distributed-executor-backend=ray --gpu-memory-utilization=0.80 --max-num-seqs=3",
+]
+
+[[nodes]]
+name = "worker"
+role = "worker"
+host = "spark2"        # a hosts.toml name; its `lmdeck serve` needs [serve] accept_recipes = true
+ready_delay = 10       # gate: the container is still running after 10 s
+container = "lmdeck-qwen36-ray-worker"
+stop = ["docker", "rm", "-f", "lmdeck-qwen36-ray-worker"]
+command = [
+  "docker", "run", "--rm", "--name", "lmdeck-qwen36-ray-worker",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "lmdeck-vllm-cache:/root/.cache/vllm",
+  "-e", "HF_HUB_OFFLINE=1",
+  "-e", "NCCL_IB_DISABLE=0", "-e", "NCCL_SOCKET_IFNAME={ifname}", "-e", "GLOO_SOCKET_IFNAME={ifname}",
+  "-e", "NCCL_IB_HCA={hca}", "-e", "NCCL_IB_GID_INDEX={gid_index}", "-e", "VLLM_HOST_IP={node_addr}",
+  "--entrypoint", "bash", "{image}", "-lc",
+  "export RAY_TMPDIR=/dev/shm/ray; mkdir -p /dev/shm/ray; unset RAY_OVERRIDE_NODE_IP_ADDRESS RAY_NODE_IP_ADDRESS; exec ray start --address={head_addr}:6379 --node-ip-address={node_addr} --num-gpus=1 --object-store-memory=1073741824 --block",
+]

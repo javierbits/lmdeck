@@ -11,6 +11,24 @@
 //! - `GET  /api/telemetry[?history=1&since=<unix ms>]`  this machine, live
 //! - `GET  /api/hosts`                 this machine plus every `hosts.toml` entry
 //!
+//! - `GET  /api/weights` · `/api/weights/files?repo=&revision=`  this machine's weights
+//! - `GET  /api/fabric` · `/api/fabric/reach?addr=`  NICs / RDMA (read-only detection), reachability
+//! - `GET  /api/topology`              hosts + links as this controller sees them
+//! - `GET  /api/probe?port=`           does a TCP port answer on this machine
+//! - `GET  /api/plan/{recipe}?on=<host>`  where weights come from and the NFS steps (dry run)
+//! - `POST /api/start/{recipe}` body `{"on":"<host>","allow_slow_link":false}` runs it on another host
+//! - `POST /api/run` `{"recipe":"<toml>","only":false,"force":false}`  needs `[serve] accept_recipes`
+//! - `POST /api/weights/{export,volume,preflight}`  the NFS steps (see `placement`)
+//! - `GET  /api/hosts/{host}/{recipes,status,logs/{recipe}}`, `POST /api/hosts/{host}/{start,stop,switch}/{recipe}`
+//!   proxied to that host with the token from hosts.toml
+//!
+//! Auth: bound to loopback, no token is needed and the Host header must be
+//! localhost (DNS rebinding). Bound anywhere else, a token is generated if
+//! none is given and every `/api` route but `/api/health` needs it, reads
+//! included (telemetry, logs and weights paths are not public). Whatever the
+//! bind, a state-changing request from a non-loopback peer without a
+//! configured token is refused (403).
+//!
 //! `{recipe}` is a name or `origin/name`. With a token, send
 //! `Authorization: Bearer <token>` (or `?token=` for EventSource).
 //! State-changing calls also need an `X-Lmdeck: 1` header, which a
@@ -47,6 +65,7 @@ pub struct State {
     /// Only accept these Host headers (DNS-rebinding guard) when bound to loopback.
     pub loopback: bool,
     cache: Mutex<Option<(Instant, Arc<Snapshot>)>>,
+    json_cache: Mutex<std::collections::HashMap<String, (Instant, Value)>>,
     pub sampler: Sampler,
     /// The saved theme (config.toml `theme`), updated by `POST /api/theme`.
     theme: Mutex<Option<String>>,
@@ -56,7 +75,15 @@ impl State {
     pub fn new(deck: Deck, token: Option<String>, loopback: bool) -> State {
         let sampler = Sampler::spawn(deck.paths.clone(), true);
         let theme = Mutex::new(deck.cfg.theme.clone());
-        State { deck: Arc::new(deck), token, loopback, cache: Mutex::new(None), sampler, theme }
+        State {
+            deck: Arc::new(deck),
+            token,
+            loopback,
+            cache: Mutex::new(None),
+            json_cache: Mutex::new(Default::default()),
+            sampler,
+            theme,
+        }
     }
 
     fn snapshot(&self) -> Arc<Snapshot> {
@@ -69,6 +96,18 @@ impl State {
         let s = Arc::new(self.deck.snapshot(false));
         *g = Some((Instant::now(), s.clone()));
         s
+    }
+
+    /// A JSON reply reused for `ttl` (fabric and topology probes are slow).
+    fn cached(&self, key: &str, ttl: Duration, f: impl FnOnce() -> Value) -> Value {
+        if let Some((at, v)) = self.json_cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+            if at.elapsed() < ttl {
+                return v.clone();
+            }
+        }
+        let v = f();
+        self.json_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), (Instant::now(), v.clone()));
+        v
     }
 
     fn invalidate(&self) {
@@ -191,6 +230,11 @@ struct ActionBody {
     /// `pull`: also move a pinned wrapped recipe to the upstream head.
     #[serde(default)]
     latest: bool,
+    /// `start` / `switch`: run on this host instead (weights stay on their home).
+    #[serde(default)]
+    on: Option<String>,
+    #[serde(default)]
+    allow_slow_link: bool,
 }
 
 fn handle(st: &State, mut req: Request) {
@@ -291,6 +335,7 @@ fn handle(st: &State, mut req: Request) {
                 json_reply(req, 200, &json!({"at": now_ms(), "demo": demo_mode(), "hosts": st.sampler.hosts()}))
             }
             _ => {
+                let Some(req) = get_more(st, req, api, &query) else { return };
                 if let Some(rest) = api.strip_prefix("logs/") {
                     if let Some(target) = rest.strip_suffix("/stream") {
                         return stream_logs(st, req, target);
@@ -311,11 +356,16 @@ fn handle(st: &State, mut req: Request) {
             if header(&req, "X-Lmdeck").as_deref() != Some("1") {
                 return error(req, 403, "state-changing requests need the X-Lmdeck: 1 header");
             }
+            let peer_local = req.remote_addr().is_none_or(|a| a.ip().is_loopback());
+            if st.token.is_none() && !peer_local {
+                return error(req, 403, "refusing an unauthenticated change from another machine; serve with a token");
+            }
             let mut body = String::new();
-            let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
+            let _ = req.as_reader().take(256 * 1024).read_to_string(&mut body);
             if api == "theme" {
                 return set_theme(st, req, &body);
             }
+            let Some(req) = post_more(st, req, api, &body) else { return };
             let Some((verb, target)) = api.split_once('/') else { return error(req, 404, "not found") };
             let opts: ActionBody = if body.trim().is_empty() {
                 ActionBody::default()
@@ -325,12 +375,17 @@ fn handle(st: &State, mut req: Request) {
                     Err(e) => return error(req, 400, &format!("bad JSON body: {e}")),
                 }
             };
-            let result = match verb {
-                "start" => st.deck.start(target, false, opts.force),
-                "switch" => st.deck.start(target, true, opts.force),
-                "stop" => st.deck.stop(target),
-                "pull" => st.deck.pull(target, opts.latest),
-                _ => return error(req, 404, "unknown action (start, stop, switch, pull)"),
+            let node = st.deck.cfg.node_name();
+            let elsewhere = opts.on.as_deref().filter(|h| !crate::remote::is_local(h, &node));
+            let result = match (verb, elsewhere) {
+                ("start" | "switch", Some(host)) => place(st, target, host, verb == "switch", &opts),
+                _ => match verb {
+                    "start" => st.deck.start(target, false, opts.force),
+                    "switch" => st.deck.start(target, true, opts.force),
+                    "stop" => st.deck.stop(target),
+                    "pull" => st.deck.pull(target, opts.latest),
+                    _ => return error(req, 404, "unknown action (start, stop, switch, pull)"),
+                },
             };
             st.invalidate();
             match result {
@@ -340,6 +395,214 @@ fn handle(st: &State, mut req: Request) {
         }
         _ => error(req, 405, "method not allowed"),
     }
+}
+
+fn resolve_recipe(st: &State, target: &str) -> Result<crate::recipe::Recipe> {
+    let cat = st.deck.catalog();
+    Ok(crate::deck::resolve(&cat, target)?.recipe.clone())
+}
+
+/// `start --on`: plan and run on another host, weights from their home.
+fn place(st: &State, target: &str, host: &str, only: bool, o: &ActionBody) -> Result<String> {
+    let r = resolve_recipe(st, target)?;
+    if !r.nodes.is_empty() {
+        return Err(anyhow!("{} is a multi-node recipe; its [[nodes]] say where each part runs", r.name));
+    }
+    let plan = crate::placement::plan(&st.deck.paths, &st.deck.cfg, &r, host, o.allow_slow_link)?;
+    let lines = crate::placement::execute(&st.deck, &r, &plan, only, o.force)?;
+    Ok(lines.join("; "))
+}
+
+fn client_for(st: &State, host: &str) -> Result<crate::remote::Client> {
+    crate::remote::Client::named(&st.deck.paths, host)
+}
+
+/// Read routes added for remote control, weights and topology. Returns the
+/// request when the route isn't one of these.
+fn get_more(st: &State, req: Request, api: &str, query: &str) -> Option<Request> {
+    let q = |k: &str| query_param(query, k);
+    match api {
+        "weights" => {
+            let cfg = st.deck.cfg.clone();
+            json_reply(req, 200, &st.cached("weights", Duration::from_secs(60), || json!(crate::weights::local(&cfg))))
+        }
+        "weights/index" => {
+            let idx = crate::weights::Index::load(&st.deck.paths);
+            let node = st.deck.cfg.node_name();
+            let rows: Vec<Value> = crate::weights::rows(&idx, &node)
+                .into_iter()
+                .map(
+                    |(m, h, size, path, kind)| json!({"model": m, "host": h, "size": size, "path": path, "kind": kind}),
+                )
+                .collect();
+            json_reply(req, 200, &json!({"at": idx.at, "demo": idx.demo, "rows": rows, "hosts": idx.hosts}))
+        }
+        "weights/files" => {
+            let Some(repo) = q("repo") else { return refused(req, 400, "repo= is required") };
+            match crate::weights::local_files(&repo, q("revision").as_deref()) {
+                Ok((commit, files)) => json_reply(req, 200, &json!({"commit": commit, "files": files})),
+                Err(e) => error(req, 404, &format!("{e:#}")),
+            }
+        }
+        "fabric" => {
+            json_reply(req, 200, &st.cached("fabric", Duration::from_secs(30), || json!(crate::fabric::detect())))
+        }
+        "fabric/reach" => {
+            let Some(addr) = q("addr").filter(|a| a.parse::<IpAddr>().is_ok()) else {
+                return refused(req, 400, "addr= must be an IP address");
+            };
+            let (ok, rtt) = crate::fabric::reach(&addr);
+            json_reply(req, 200, &json!({"ok": ok, "rtt_ms": rtt}))
+        }
+        "topology" => {
+            st.sampler.wait_first(Duration::from_secs(8));
+            let verify = q("verify").is_none_or(|v| v != "0");
+            let v = st.cached(&format!("topology-{verify}"), Duration::from_secs(20), || {
+                json!(crate::topology::build(&st.deck.paths, &st.deck.cfg, &st.sampler.hosts(), verify))
+            });
+            json_reply(req, 200, &v)
+        }
+        "probe" => match q("port").and_then(|p| p.parse::<u16>().ok()) {
+            Some(p) => json_reply(req, 200, &json!({"port": p, "open": crate::ops::port_open(p)})),
+            None => error(req, 400, "port= is required"),
+        },
+        _ => {
+            if let Some(target) = api.strip_prefix("plan/") {
+                let r = match resolve_recipe(st, target) {
+                    Ok(r) => r,
+                    Err(e) => return refused(req, 404, &format!("{e:#}")),
+                };
+                let on = q("on").unwrap_or_else(|| crate::hosts::LOCAL.to_string());
+                let slow = q("allow_slow_link").is_some_and(|v| v == "1" || v == "true");
+                let node = st.deck.cfg.node_name();
+                let v = match crate::placement::plan(&st.deck.paths, &st.deck.cfg, &r, &on, slow) {
+                    Ok(p) => json!({"ok": true, "plan": p, "lines": p.describe(&node)}),
+                    Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+                };
+                json_reply(req, 200, &v);
+                return None;
+            }
+            if let Some(rest) = api.strip_prefix("hosts/") {
+                let Some((host, what)) = rest.split_once('/') else { return Some(req) };
+                let c = match client_for(st, host) {
+                    Ok(c) => c,
+                    Err(e) => return refused(req, 404, &format!("{e:#}")),
+                };
+                let path = match what {
+                    "recipes" | "status" | "snapshot" => what.to_string(),
+                    w if w.starts_with("logs/") => {
+                        format!("{}?n={}", crate::remote::encode(w), q("n").unwrap_or_else(|| "200".to_string()))
+                    }
+                    _ => return refused(req, 404, "not found"),
+                };
+                match c.get::<Value>(&path) {
+                    Ok(v) => json_reply(req, 200, &v),
+                    Err(e) => error(req, 502, &format!("{e:#}")),
+                }
+                return None;
+            }
+            return Some(req);
+        }
+    }
+    None
+}
+
+/// `error` for the `Option<Request>` routers: the request is answered.
+fn refused(req: Request, code: u16, msg: &str) -> Option<Request> {
+    error(req, code, msg);
+    None
+}
+
+/// State-changing routes for remote control and weights. Returns the
+/// request when the route isn't one of these.
+fn post_more(st: &State, req: Request, api: &str, body: &str) -> Option<Request> {
+    let parse = |b: &str| -> Result<Value, String> {
+        if b.trim().is_empty() {
+            Ok(json!({}))
+        } else {
+            serde_json::from_str(b).map_err(|e| format!("bad JSON body: {e}"))
+        }
+    };
+    let v = match parse(body) {
+        Ok(v) => v,
+        Err(e) => return refused(req, 400, &e),
+    };
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let accept = st.deck.cfg.serve.accept_recipes;
+    let refuse =
+        "this host does not accept work from a controller; set [serve] accept_recipes = true in its config.toml";
+    let result: Result<Value> = match api {
+        "run" => {
+            if !accept {
+                return refused(req, 403, refuse);
+            }
+            (|| {
+                let text = s("recipe").ok_or_else(|| anyhow!("recipe (TOML) is required"))?;
+                let r = crate::recipe::Recipe::parse(&text, "remote")?;
+                if !r.nodes.is_empty() {
+                    return Err(anyhow!("upload each node's recipe, not the multi-node one"));
+                }
+                crate::catalog::save_remote(&st.deck.paths, &r)?;
+                let m = st.deck.start_recipe(&r, b("only"), b("force"))?;
+                Ok(json!({"ok": true, "message": m}))
+            })()
+        }
+        "weights/export" => (|| {
+            let client = s("client").ok_or_else(|| anyhow!("client is required"))?;
+            let inv = crate::weights::local(&st.deck.cfg);
+            let m = crate::placement::ensure_export(&st.deck.cfg, &inv.export_path, &client)?;
+            Ok(json!({"ok": true, "message": m, "path": inv.export_path}))
+        })(),
+        "weights/volume" => {
+            if !accept {
+                return refused(req, 403, refuse);
+            }
+            (|| {
+                let need = |k: &str| s(k).ok_or_else(|| anyhow!("{k} is required"));
+                let (vol, server, path) = (need("volume")?, need("server")?, need("path")?);
+                if server.parse::<IpAddr>().is_err() {
+                    return Err(anyhow!("server must be an IP address"));
+                }
+                let m = crate::placement::ensure_volume(&st.deck.docker_bin(), &vol, &server, &path)?;
+                Ok(json!({"ok": true, "message": m}))
+            })()
+        }
+        "weights/preflight" => {
+            if !accept {
+                return refused(req, 403, refuse);
+            }
+            (|| {
+                let need = |k: &str| s(k).ok_or_else(|| anyhow!("{k} is required"));
+                let files = crate::placement::preflight(
+                    &st.deck.docker_bin(),
+                    &need("volume")?,
+                    &need("image")?,
+                    &need("path")?,
+                )?;
+                Ok(json!({"ok": true, "files": files}))
+            })()
+        }
+        _ => {
+            let Some(rest) = api.strip_prefix("hosts/") else { return Some(req) };
+            let mut it = rest.splitn(3, '/');
+            let (Some(host), Some(verb), Some(target)) = (it.next(), it.next(), it.next()) else {
+                return refused(req, 404, "want /api/hosts/<host>/<start|stop|switch>/<recipe>");
+            };
+            if !matches!(verb, "start" | "stop" | "switch") {
+                return refused(req, 404, "unknown action (start, stop, switch)");
+            }
+            client_for(st, host)
+                .and_then(|c| c.action(verb, target, b("force")))
+                .map(|m| json!({"ok": true, "message": m}))
+        }
+    };
+    st.invalidate();
+    match result {
+        Ok(v) => json_reply(req, 200, &v),
+        Err(e) => error(req, 409, &format!("{e:#}")),
+    }
+    None
 }
 
 /// Every theme for the dashboard's picker: CSS variables plus swatches.
