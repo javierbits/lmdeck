@@ -222,7 +222,17 @@ fn init_writes_config_once() {
 }
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    // Never hand out the same port twice in one test process: parallel tests
+    // each start a server on "their" port.
+    static USED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut used = USED.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let p = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        if !used.contains(&p) {
+            used.push(p);
+            return p;
+        }
+    }
 }
 
 #[test]
@@ -230,7 +240,7 @@ fn start_list_stop_custom_server() {
     let e = Env::new();
     let port = free_port();
     let recipe = format!(
-        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 30\ncommand = [\"python3\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
+        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 30\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
         e.path("models").display()
     );
     let file = e.path("web.toml");
@@ -239,12 +249,24 @@ fn start_list_stop_custom_server() {
 
     let out = e.run(&["use", "web"]);
     let log = fs::read_to_string(e.path("home/state/logs/web.log")).unwrap_or_default();
-    let probe = e.cmd().args(["list", "--json"]).env("LMDECK_DEBUG", "1").output().unwrap();
-    assert!(
-        out.contains(&format!("web is up at http://localhost:{port}/v1")),
-        "{out}\n--- log ---\n{log}\n--- probe ---\n{}",
-        String::from_utf8_lossy(&probe.stderr)
-    );
+    if !out.contains(&format!("web is up at http://localhost:{port}/v1")) {
+        let probe = e.cmd().args(["list", "--json"]).env("LMDECK_DEBUG", "1").output().unwrap();
+        let lsof = std::process::Command::new("lsof").args(["-nP", &format!("-iTCP:{port}")]).output();
+        let ps = std::process::Command::new("ps").args(["-axo", "pid,pgid,stat,etime,command"]).output();
+        let txt = |o: std::io::Result<std::process::Output>| {
+            o.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+        };
+        panic!(
+            "{out}\n--- log ---\n{log}\n--- probe ---\n{}\n--- lsof ---\n{}\n--- ps ---\n{}",
+            String::from_utf8_lossy(&probe.stderr),
+            txt(lsof),
+            txt(ps)
+                .lines()
+                .filter(|l| l.contains("python") || l.contains("lmdeck") || l.contains("sh"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
     let v: serde_json::Value = serde_json::from_str(&e.run(&["list", "--json"])).unwrap();
     assert_eq!(v[0]["status"], "loaded");
     let loaded = e.run(&["list", "--loaded"]);

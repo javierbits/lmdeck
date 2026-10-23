@@ -12,7 +12,17 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    // Never hand out the same port twice in one test process: parallel tests
+    // each start a server on "their" port.
+    static USED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut used = USED.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let p = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        if !used.contains(&p) {
+            used.push(p);
+            return p;
+        }
+    }
 }
 
 struct Served {
