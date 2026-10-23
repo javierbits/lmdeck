@@ -238,7 +238,13 @@ fn start_list_stop_custom_server() {
     e.run(&["recipe", "add", file.to_str().unwrap()]);
 
     let out = e.run(&["use", "web"]);
-    assert!(out.contains(&format!("web is up at http://localhost:{port}/v1")), "{out}");
+    let log = fs::read_to_string(e.path("home/state/logs/web.log")).unwrap_or_default();
+    let probe = e.cmd().args(["list", "--json"]).env("LMDECK_DEBUG", "1").output().unwrap();
+    assert!(
+        out.contains(&format!("web is up at http://localhost:{port}/v1")),
+        "{out}\n--- log ---\n{log}\n--- probe ---\n{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
     let v: serde_json::Value = serde_json::from_str(&e.run(&["list", "--json"])).unwrap();
     assert_eq!(v[0]["status"], "loaded");
     let loaded = e.run(&["list", "--loaded"]);
