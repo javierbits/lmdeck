@@ -30,7 +30,8 @@ impl Env {
             .env("HF_HUB_CACHE", self.path("hf"))
             .env("NO_COLOR", "1")
             .env_remove("HF_TOKEN")
-            .env_remove("LMDECK_DEMO");
+            .env_remove("LMDECK_DEMO")
+            .env_remove("LMDECK_THEME");
         c
     }
 
@@ -272,4 +273,47 @@ fn host_add_list_remove() {
 
     assert!(env.run(&["host", "rm", "spark9"]).contains("removed host spark9"));
     assert!(env.run(&["host", "list"]).contains("no other hosts"));
+}
+
+#[test]
+fn theme_set_list_show_and_sync() {
+    let e = Env::new();
+    assert!(e.run(&["theme", "show"]).contains("omp (oh-my-pi)"));
+    let list = e.run(&["theme", "list"]);
+    for slug in ["omp", "catppuccin", "catppuccin-latte", "rose-pine", "tokyo-night", "white", "vantablack"] {
+        assert!(list.contains(slug), "{slug} missing from\n{list}");
+    }
+    // Forgiving names, saved as the canonical slug.
+    assert!(e.run(&["theme", "set", "Rosé Pine"]).contains("rose-pine"));
+    let cfg = fs::read_to_string(e.path("home/config/config.toml")).unwrap();
+    assert!(cfg.contains("theme = \"rose-pine\""), "{cfg}");
+    let show = e.run(&["theme", "show"]);
+    assert!(show.contains("Rosé Pine") && show.contains("themes/rose-pine/colors.toml"), "{show}");
+    assert!(e.run(&["theme", "list"]).contains("● │ rose-pine"));
+    e.run(&["theme", "set", "TOKYO night"]);
+    assert!(fs::read_to_string(e.path("home/config/config.toml")).unwrap().contains("theme = \"tokyo-night\""));
+    // The TUI picks the saved theme up; --theme / LMDECK_THEME override it.
+    let frame = e.run(&["tui", "--render-text", "--picker", "--width", "120", "--height", "40"]);
+    assert!(frame.contains("▸ Tokyo Night"), "{frame}");
+    let frame = e.run(&["tui", "--render-text", "--picker", "--theme", "nord"]);
+    assert!(frame.contains("▸ Nord"), "{frame}");
+    e.cmd()
+        .args(["tui", "--render-text", "--picker"])
+        .env("LMDECK_THEME", "kanagawa")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("▸ Kanagawa"));
+    e.cmd()
+        .args(["theme", "set", "solarized"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown theme 'solarized'").and(predicate::str::contains("rose-pine")));
+    e.cmd().args(["tui", "--render-text", "--theme", "nope"]).assert().failure();
+    // Omarchy's current theme.
+    let home = e.path("fakehome");
+    write(&home.join(".local/state/omarchy/current"), "theme.name", "everforest\n");
+    e.cmd().args(["theme", "sync-omarchy"]).env("HOME", &home).assert().success();
+    assert!(e.run(&["theme", "show"]).contains("Everforest"));
+    e.run(&["theme", "reset"]);
+    assert!(e.run(&["theme", "show"]).contains("omp (oh-my-pi)"));
 }

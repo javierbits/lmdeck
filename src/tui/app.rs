@@ -8,7 +8,7 @@ use crate::compat::Level;
 use crate::deck::{RecipeView, Snapshot};
 use crate::hosts::HostView;
 use crate::telemetry::Telemetry;
-use crate::tui::theme::{Theme, THEMES};
+use crate::tui::theme::{themes, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -40,6 +40,8 @@ pub enum Mode {
     Normal,
     Search,
     Help,
+    /// The theme picker (`T`): moving previews, ↵ keeps, esc reverts.
+    Themes,
 }
 
 /// Something the runtime has to do on the app's behalf.
@@ -53,6 +55,8 @@ pub enum Action {
     Pull(String),
     /// Re-snapshot now, re-probing engines too.
     Refresh,
+    /// Persist this theme (a slug) as the config's `theme`.
+    SaveTheme(String),
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +91,10 @@ pub struct App {
     /// This machine first, then every `hosts.toml` entry.
     pub hosts: Vec<HostView>,
     pub host_cursor: usize,
+    /// Highlighted row in the theme picker.
+    pub theme_cursor: usize,
+    /// The theme to go back to when the picker is cancelled.
+    pub theme_before: usize,
 }
 
 impl Default for App {
@@ -110,13 +118,15 @@ impl Default for App {
             quit: false,
             hosts: vec![],
             host_cursor: 0,
+            theme_cursor: 0,
+            theme_before: 0,
         }
     }
 }
 
 impl App {
     pub fn theme(&self) -> &'static Theme {
-        &THEMES[self.theme % THEMES.len()]
+        &themes()[self.theme % themes().len()]
     }
 
     /// Recipes after the deck/all, compatible and fuzzy filters; best match first.
@@ -262,8 +272,42 @@ impl App {
                 Action::None
             }
             Mode::Search => self.search_key(k, ctrl),
+            Mode::Themes => self.theme_key(k),
             Mode::Normal => self.normal_key(k),
         }
+    }
+
+    pub fn open_theme_picker(&mut self) {
+        self.theme_before = self.theme;
+        self.theme_cursor = self.theme;
+        self.mode = Mode::Themes;
+    }
+
+    fn theme_key(&mut self, k: KeyEvent) -> Action {
+        let n = themes().len() as isize;
+        let step = |app: &mut App, d: isize| {
+            app.theme_cursor = (app.theme_cursor as isize + d).clamp(0, n - 1) as usize;
+            app.theme = app.theme_cursor; // live preview
+        };
+        match k.code {
+            KeyCode::Down | KeyCode::Char('j') => step(self, 1),
+            KeyCode::Up | KeyCode::Char('k') => step(self, -1),
+            KeyCode::PageDown => step(self, 8),
+            KeyCode::PageUp => step(self, -8),
+            KeyCode::Home | KeyCode::Char('g') => step(self, -n),
+            KeyCode::End | KeyCode::Char('G') => step(self, n),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.mode = Mode::Normal;
+                self.theme = self.theme_cursor;
+                return Action::SaveTheme(self.theme().name.to_string());
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('T') => {
+                self.theme = self.theme_before;
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        Action::None
     }
 
     fn search_key(&mut self, k: KeyEvent, ctrl: bool) -> Action {
@@ -349,9 +393,11 @@ impl App {
                 self.notify(if self.show_all { "every known recipe" } else { "deck only" }, Level::Ok);
             }
             KeyCode::Char('t') => {
-                self.theme = (self.theme + 1) % THEMES.len();
-                self.notify(format!("theme: {}", self.theme().name), Level::Ok);
+                self.theme = (self.theme + 1) % themes().len();
+                self.notify(format!("theme: {}", self.theme().title), Level::Ok);
+                return Action::SaveTheme(self.theme().name.to_string());
             }
+            KeyCode::Char('T') => self.open_theme_picker(),
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => self.tab = Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],

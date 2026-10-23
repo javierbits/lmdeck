@@ -202,7 +202,7 @@ fn tabs_help_theme_and_quit() {
     a.on_key(key('q'));
     assert_eq!(a.mode, Mode::Normal);
     assert!(!a.quit, "q closes help first");
-    a.on_key(key('t'));
+    assert_eq!(a.on_key(key('t')), Action::SaveTheme("catppuccin".into()));
     assert_eq!(a.theme().name, "catppuccin");
     assert_eq!(a.on_key(key('r')), Action::Refresh);
     assert_eq!(a.on_key(key('q')), Action::Quit);
@@ -412,9 +412,51 @@ fn sparkline_buckets_and_scales() {
     assert!(bucket(&[Some(1.0)], 0).is_empty());
     assert_eq!(scale(Metric::Mem, &[Some(250.0)]), (0.0, 100.0));
     assert!((scale(Metric::Power, &[Some(100.0)]).1 - 115.0).abs() < 1e-9);
-    let t = &crate::tui::theme::OMP;
+    let t = crate::tui::theme::omp();
     assert_eq!(change_span(Some(2.4), true, t).content, "▲2");
     assert_eq!(change_span(Some(-1.0), true, t).content, "▼1");
     assert_eq!(change_span(Some(0.1), true, t).content, "·");
     assert_eq!(change_span(None, true, t).content, "");
+}
+
+#[test]
+fn theme_picker_previews_saves_and_reverts() {
+    let mut a = app();
+    let n = crate::tui::theme::themes().len();
+    a.on_key(key('T'));
+    assert_eq!(a.mode, Mode::Themes);
+    assert_eq!(a.theme_cursor, 0);
+    // Moving previews live, without saving.
+    assert_eq!(a.on_key(code(KeyCode::Down)), Action::None);
+    assert_eq!(a.on_key(key('j')), Action::None);
+    assert_eq!(a.theme().name, "catppuccin-latte");
+    assert!(a.theme().light);
+    let frame = buffer_text(&render(&a, 150, 40));
+    assert!(frame.contains("Theme") && frame.contains("Rosé Pine") && frame.contains("esc revert"), "{frame}");
+    // Esc goes back to what was there before.
+    a.on_key(code(KeyCode::Esc));
+    assert_eq!((a.mode, a.theme().name), (Mode::Normal, "omp"));
+    // Enter keeps the highlighted theme and asks the runtime to save it.
+    a.on_key(key('T'));
+    a.on_key(key('G'));
+    assert_eq!(a.theme_cursor, n - 1);
+    a.on_key(code(KeyCode::Down)); // stays on the last one
+    assert_eq!(a.on_key(code(KeyCode::Enter)), Action::SaveTheme("white".into()));
+    assert_eq!((a.mode, a.theme().name), (Mode::Normal, "white"));
+    // The picker scrolls to keep the cursor visible in a short terminal.
+    a.on_key(key('T'));
+    let frame = buffer_text(&render(&a, 100, 16));
+    assert!(frame.contains("▸ White"), "{frame}");
+}
+
+#[test]
+fn every_theme_renders() {
+    let mut a = app();
+    for i in 0..crate::tui::theme::themes().len() {
+        a.theme = i;
+        for tab in Tab::ALL {
+            a.tab = tab;
+            let _ = render(&a, 120, 36);
+        }
+    }
 }

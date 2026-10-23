@@ -44,6 +44,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == Mode::Help {
         draw_help(f, app, area);
     }
+    if app.mode == Mode::Themes {
+        draw_theme_picker(f, app, area);
+    }
 }
 
 // ───────────────────────── building blocks ─────────────────────────
@@ -195,6 +198,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::Normal => ("NORMAL", t.accent),
         Mode::Search => ("SEARCH", t.info),
         Mode::Help => ("HELP", t.seg[0]),
+        Mode::Themes => ("THEME", t.seg[2]),
     };
     let mut segs = vec![(mode.to_string(), mode_bg)];
     if app.tab == Tab::Hosts {
@@ -667,7 +671,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
     ("1-4  tab", "deck · hosts · machine · sources"),
-    ("t", "next theme"),
+    ("t", "next theme (saved)"),
+    ("T", "theme picker: live preview, ↵ saves"),
     ("r", "refresh now (re-probe engines)"),
     ("?", "this help"),
     ("q  esc", "quit (servers keep running)"),
@@ -696,4 +701,63 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     );
     let block = panel(title("?", "Keys", None, t), t, true).padding(Padding::uniform(1));
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+// ───────────────────────── theme picker ─────────────────────────
+
+fn draw_theme_picker(f: &mut Frame, app: &App, area: Rect) {
+    use crate::tui::theme::{rgb, themes};
+    let t = app.theme();
+    let all = crate::theme::all();
+    let n = themes().len();
+    let w = 62.min(area.width);
+    let h = (n as u16 + 5).min(area.height.saturating_sub(2)).max(7);
+    let [v] = Layout::vertical([Constraint::Length(h)]).flex(Flex::Center).areas(area);
+    let [r] = Layout::horizontal([Constraint::Length(w)]).flex(Flex::Center).areas(v);
+    f.render_widget(Clear, r);
+    let block = panel(title("◐", "Theme", Some(format!("{}/{n}", app.theme_cursor + 1)), t), t, true)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let [list, foot] = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
+    let rows = list.height as usize;
+    let top = app.theme_cursor.saturating_sub(rows.saturating_sub(1)).min(n.saturating_sub(rows));
+    let lines: Vec<Line> = (top..n.min(top + rows))
+        .map(|i| {
+            let (th, p) = (&themes()[i], &all[i]);
+            let on = i == app.theme_cursor;
+            let base = if on { Style::new().bg(t.selected_bg) } else { Style::new() };
+            let mut spans = vec![
+                Span::styled(if on { " ▸ " } else { "   " }, base.fg(t.accent).bold()),
+                Span::styled(format!("{:<18}", th.title), if on { base.fg(t.fg).bold() } else { base.fg(t.fg) }),
+                Span::styled(format!("{:<7}", if th.light { "light" } else { "dark" }), base.fg(t.dim)),
+            ];
+            // A tile of the theme's own background with its colours on it.
+            spans.push(Span::styled(" ", Style::new().bg(rgb(p.bg))));
+            for c in p.swatch()[1..].iter() {
+                spans.push(Span::styled("■ ", Style::new().fg(rgb(*c)).bg(rgb(p.bg))));
+            }
+            spans.push(Span::styled(if i == app.theme_before { " ●" } else { "  " }, base.fg(t.ok)));
+            Line::from(spans)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), list);
+    let help = Line::from(vec![
+        Span::styled("↑↓", Style::new().fg(t.accent).bold()),
+        Span::styled(" preview  ", Style::new().fg(t.dim)),
+        Span::styled("↵", Style::new().fg(t.accent).bold()),
+        Span::styled(" save  ", Style::new().fg(t.dim)),
+        Span::styled("esc", Style::new().fg(t.accent).bold()),
+        Span::styled(" revert  ", Style::new().fg(t.dim)),
+        Span::styled("● current", Style::new().fg(t.ok)),
+    ]);
+    let src = Line::from(Span::styled(
+        if all[app.theme_cursor].slug == crate::theme::DEFAULT {
+            "lmdeck's own palette".to_string()
+        } else {
+            "palette from Omarchy (MIT) · omarchy.org".to_string()
+        },
+        Style::new().fg(t.dim),
+    ));
+    f.render_widget(Paragraph::new(vec![src, help]), foot);
 }

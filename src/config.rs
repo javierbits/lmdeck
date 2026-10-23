@@ -22,6 +22,9 @@ pub struct Config {
     /// Interface servers bind to.
     #[serde(default = "default_host")]
     pub host: String,
+    /// Colour theme for the TUI and the web dashboard (`lmdeck theme list`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     /// Optional per-engine binary / directory overrides.
     #[serde(default)]
     pub engines: EngineOverrides,
@@ -76,6 +79,7 @@ impl Default for Config {
         Config {
             models_dir: default_models_dir(),
             host: default_host(),
+            theme: None,
             engines: EngineOverrides::default(),
             sources: vec![SourceEntry { name: DEFAULT_SOURCE_NAME.into(), spec: DEFAULT_SOURCE_SPEC.into() }],
         }
@@ -116,9 +120,61 @@ impl Config {
         }
     }
 
+    /// Saves `theme = "<slug>"` (or removes it, for `None`) without touching
+    /// the rest of the file: comments and other settings stay as they are.
+    pub fn save_theme(paths: &Paths, theme: Option<&str>) -> Result<PathBuf> {
+        let file = paths.config_file();
+        if !file.exists() {
+            let cfg = Config { theme: theme.map(str::to_string), ..Config::default() };
+            return cfg.save(paths);
+        }
+        let text = fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+        let out = set_top_level(&text, "theme", theme.map(|t| toml::Value::String(t.into()).to_string()).as_deref());
+        Self::parse(&out).context("updated config would not parse")?;
+        let tmp = file.with_extension("toml.tmp");
+        fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, &file)?;
+        Ok(file)
+    }
+
     pub fn source(&self, name: &str) -> Option<&SourceEntry> {
         self.sources.iter().find(|s| s.name == name)
     }
+}
+
+/// Sets (or, with `None`, removes) a top-level `key = value` line in TOML
+/// text. Top-level keys must come before the first `[table]`, so a new line
+/// goes just above it.
+pub fn set_top_level(text: &str, key: &str, value: Option<&str>) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let header = lines.iter().position(|l| l.trim_start().starts_with('['));
+    let top = header.unwrap_or(lines.len());
+    let is_key = |l: &str| {
+        let l = l.trim_start();
+        l.strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let new = value.map(|v| format!("{key} = {v}"));
+    match (lines[..top].iter().position(|l| is_key(l)), new) {
+        (Some(i), Some(n)) => lines[i] = n,
+        (Some(i), None) => {
+            lines.remove(i);
+        }
+        (None, Some(n)) => {
+            // Above the first table, after any blank lines that precede it.
+            let mut at = top;
+            while at > 0 && lines[at - 1].trim().is_empty() {
+                at -= 1;
+            }
+            lines.insert(at, n);
+            if header.is_some() && at == top {
+                lines.insert(at + 1, String::new());
+            }
+        }
+        (None, None) => {}
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
 }
 
 #[cfg(test)]
@@ -146,5 +202,42 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(Config::parse("models_dir = [").is_err());
+    }
+
+    #[test]
+    fn theme_edits_keep_the_rest_of_the_file() {
+        let text = "# my notes\nmodels_dir = \"/data\" # keep\n\n[engines]\n# tabby\ntabbyapi_dir = \"~/t\"\n";
+        let a = set_top_level(text, "theme", Some("\"nord\""));
+        assert_eq!(
+            a,
+            "# my notes\nmodels_dir = \"/data\" # keep\ntheme = \"nord\"\n\n[engines]\n# tabby\ntabbyapi_dir = \"~/t\"\n"
+        );
+        assert_eq!(Config::parse(&a).unwrap().theme.as_deref(), Some("nord"));
+        let b = set_top_level(&a, "theme", Some("\"rose-pine\""));
+        assert_eq!(b.matches("theme =").count(), 1);
+        assert_eq!(Config::parse(&b).unwrap().theme.as_deref(), Some("rose-pine"));
+        let c = set_top_level(&b, "theme", None);
+        assert_eq!(c, text);
+        // A `theme` key inside a table is not the top-level one.
+        let t = set_top_level("[x]\ntheme = 1\n", "theme", Some("\"omp\""));
+        assert_eq!(t, "theme = \"omp\"\n\n[x]\ntheme = 1\n");
+        assert_eq!(set_top_level("", "theme", Some("\"omp\"")), "theme = \"omp\"\n");
+    }
+
+    #[test]
+    fn save_theme_persists_and_creates_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        let paths = Paths { config_dir: dir.join("cfg"), cache_dir: dir.join("cache"), state_dir: dir.join("state") };
+        Config::save_theme(&paths, Some("kanagawa")).unwrap();
+        assert_eq!(Config::load(&paths).unwrap().theme.as_deref(), Some("kanagawa"));
+        assert_eq!(Config::load(&paths).unwrap().sources[0].spec, DEFAULT_SOURCE_SPEC);
+        fs::write(paths.config_file(), "# hand-written\nmodels_dir = \"/m\"\n").unwrap();
+        Config::save_theme(&paths, Some("white")).unwrap();
+        let text = fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.starts_with("# hand-written\n"), "{text}");
+        assert_eq!(Config::load(&paths).unwrap().theme.as_deref(), Some("white"));
+        Config::save_theme(&paths, None).unwrap();
+        assert_eq!(Config::load(&paths).unwrap().theme, None);
     }
 }

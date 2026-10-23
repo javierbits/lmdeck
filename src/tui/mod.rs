@@ -25,9 +25,12 @@ pub use app::{Action, App, Mode, Tab};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
+    /// An explicit theme (`--theme` / `LMDECK_THEME`); else the config's.
     pub theme: Option<String>,
     pub nerd: bool,
     pub all: bool,
+    /// Open with the theme picker up (for `--render-*` screenshots).
+    pub picker: bool,
 }
 
 enum Msg {
@@ -44,20 +47,17 @@ type Job = Box<dyn FnOnce(&Deck) -> Result<String> + Send>;
 const REFRESH: Duration = Duration::from_secs(2);
 const LOG_POLL: Duration = Duration::from_millis(400);
 
-fn initial_app(opts: &Options) -> App {
+fn initial_app(opts: &Options, deck: &Deck) -> Result<App> {
     let mut app = App { nerd: opts.nerd, show_all: opts.all, ..App::default() };
-    if let Some(i) = opts.theme.as_deref().and_then(theme::by_name) {
-        app.theme = i;
+    let p = crate::theme::resolve(opts.theme.as_deref(), deck.cfg.theme.as_deref())?;
+    app.theme = theme::by_name(p.slug).unwrap_or(0);
+    if opts.picker {
+        app.open_theme_picker();
     }
-    app
+    Ok(app)
 }
 
 pub fn run(deck: Deck, opts: Options) -> Result<()> {
-    if let Some(name) = opts.theme.as_deref() {
-        if theme::by_name(name).is_none() {
-            anyhow::bail!("unknown theme '{name}' (try omp, catppuccin or tokyo-night)");
-        }
-    }
     let deck = Arc::new(deck);
     let (msg_tx, msg_rx) = mpsc::channel::<Msg>();
     let (work_tx, work_rx) = mpsc::channel::<Work>();
@@ -81,7 +81,7 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
     // Telemetry for this machine and every hosts.toml entry, on its own thread.
     let sampler = Sampler::spawn(deck.paths.clone(), true);
 
-    let mut app = initial_app(&opts);
+    let mut app = initial_app(&opts, &deck)?;
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         let mut last_log = Instant::now() - LOG_POLL;
@@ -134,6 +134,18 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                     let _ = work_tx.send(Work::Refresh { inventory: true });
                     continue;
                 }
+                Action::SaveTheme(slug) => {
+                    let title = app.theme().title;
+                    match crate::config::Config::save_theme(&deck.paths, Some(&slug)) {
+                        Ok(_) if opts.theme.is_some() => app.notify(
+                            format!("theme: {title} · saved (--theme / LMDECK_THEME still wins at start)"),
+                            Level::Warn,
+                        ),
+                        Ok(_) => app.notify(format!("theme: {title} · saved"), Level::Ok),
+                        Err(e) => app.notify(format!("theme: {title} · not saved: {e:#}"), Level::Fail),
+                    }
+                    continue;
+                }
                 Action::Start(r) => (r.clone(), Box::new(move |d| d.start(&r, false, false))),
                 Action::Switch(r) => (r.clone(), Box::new(move |d| d.start(&r, true, false))),
                 Action::Stop(r) => (r.clone(), Box::new(move |d| d.stop(&r))),
@@ -161,8 +173,8 @@ pub fn render(app: &App, width: u16, height: u16) -> Buffer {
 }
 
 /// One frame of the live deck, for screenshots (`lmdeck tui --render-html`).
-pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab: Tab) -> Buffer {
-    let mut app = initial_app(opts);
+pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab: Tab) -> Result<Buffer> {
+    let mut app = initial_app(opts, deck)?;
     app.tab = tab;
     app.set_snapshot(deck.snapshot(false));
     app.set_hosts(snapshot_once(&deck.paths, true));
@@ -171,7 +183,7 @@ pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab
         app.logs = tail_lines(&path, 500);
         app.log_path = Some(path);
     }
-    render(&app, width, height)
+    Ok(render(&app, width, height))
 }
 
 /// Plain text of a buffer (one line per row, trailing spaces trimmed).

@@ -1,12 +1,15 @@
-//! Colour themes. The default borrows oh-my-pi's dark palette (amber accent,
-//! blue borders, powerline status segments); the others are Catppuccin Mocha
-//! and Tokyo Night.
+//! The TUI's view of [`crate::theme`]: the same palettes as ratatui colours.
 
 use ratatui::style::Color;
+use std::sync::LazyLock;
+
+use crate::theme::{self as palettes, Palette};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub name: &'static str,
+    pub title: &'static str,
+    pub light: bool,
     pub bg: Color,
     pub panel: Color,
     pub fg: Color,
@@ -26,86 +29,56 @@ pub struct Theme {
     /// Powerline status segments, left to right.
     pub seg: [Color; 4],
     pub gauge_bg: Color,
+    pub magenta: Color,
 }
 
-const fn rgb(hex: u32) -> Color {
+pub const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-pub const OMP: Theme = Theme {
-    name: "omp",
-    bg: rgb(0x18181e),
-    panel: rgb(0x1e1e24),
-    fg: rgb(0xd4d4d4),
-    muted: rgb(0x777d88),
-    dim: rgb(0x5f6673),
-    accent: rgb(0xfebc38),
-    border: rgb(0x178fb9),
-    border_focus: rgb(0x0088fa),
-    selected_bg: rgb(0x31363f),
-    ok: rgb(0x89d281),
-    warn: rgb(0xe4c00f),
-    err: rgb(0xfc3a4b),
-    info: rgb(0x00afaf),
-    on_pill: rgb(0x121212),
-    bar_bg: rgb(0x121212),
-    seg: [rgb(0xd787af), rgb(0x00afaf), rgb(0x8787af), rgb(0x5faf5f)],
-    gauge_bg: rgb(0x3d424a),
-};
-
-pub const CATPPUCCIN: Theme = Theme {
-    name: "catppuccin",
-    bg: rgb(0x1e1e2e),
-    panel: rgb(0x181825),
-    fg: rgb(0xcdd6f4),
-    muted: rgb(0xa6adc8),
-    dim: rgb(0x6c7086),
-    accent: rgb(0xfab387),
-    border: rgb(0x585b70),
-    border_focus: rgb(0x89b4fa),
-    selected_bg: rgb(0x313244),
-    ok: rgb(0xa6e3a1),
-    warn: rgb(0xf9e2af),
-    err: rgb(0xf38ba8),
-    info: rgb(0x89dceb),
-    on_pill: rgb(0x11111b),
-    bar_bg: rgb(0x11111b),
-    seg: [rgb(0xcba6f7), rgb(0x94e2d5), rgb(0xb4befe), rgb(0xa6e3a1)],
-    gauge_bg: rgb(0x45475a),
-};
-
-pub const TOKYO_NIGHT: Theme = Theme {
-    name: "tokyo-night",
-    bg: rgb(0x1a1b26),
-    panel: rgb(0x16161e),
-    fg: rgb(0xc0caf5),
-    muted: rgb(0xa9b1d6),
-    dim: rgb(0x565f89),
-    accent: rgb(0xff9e64),
-    border: rgb(0x3b4261),
-    border_focus: rgb(0x7aa2f7),
-    selected_bg: rgb(0x292e42),
-    ok: rgb(0x9ece6a),
-    warn: rgb(0xe0af68),
-    err: rgb(0xf7768e),
-    info: rgb(0x7dcfff),
-    on_pill: rgb(0x15161e),
-    bar_bg: rgb(0x15161e),
-    seg: [rgb(0xbb9af7), rgb(0x7dcfff), rgb(0x7aa2f7), rgb(0x9ece6a)],
-    gauge_bg: rgb(0x414868),
-};
-
-pub const THEMES: [Theme; 3] = [OMP, CATPPUCCIN, TOKYO_NIGHT];
-
-/// Looks a theme up by name (`omp`/`dark`, `catppuccin`/`mocha`, `tokyo-night`).
-pub fn by_name(name: &str) -> Option<usize> {
-    let n = name.to_ascii_lowercase().replace(['_', ' '], "-");
-    match n.as_str() {
-        "omp" | "dark" | "default" | "oh-my-pi" => Some(0),
-        "catppuccin" | "mocha" | "catppuccin-mocha" => Some(1),
-        "tokyo-night" | "tokyonight" | "tokyo" => Some(2),
-        _ => None,
+impl From<&Palette> for Theme {
+    fn from(p: &Palette) -> Self {
+        Theme {
+            name: p.slug,
+            title: p.name,
+            light: p.light,
+            bg: rgb(p.bg),
+            panel: rgb(p.panel),
+            fg: rgb(p.fg),
+            muted: rgb(p.muted),
+            dim: rgb(p.dim),
+            accent: rgb(p.accent),
+            border: rgb(p.border),
+            border_focus: rgb(p.border_focus),
+            selected_bg: rgb(p.selected_bg),
+            ok: rgb(p.ok),
+            warn: rgb(p.warn),
+            err: rgb(p.err),
+            info: rgb(p.info),
+            on_pill: rgb(p.on_pill),
+            bar_bg: rgb(p.bar_bg),
+            seg: p.seg.map(rgb),
+            gauge_bg: rgb(p.gauge_bg),
+            magenta: rgb(p.magenta),
+        }
     }
+}
+
+static THEMES: LazyLock<Vec<Theme>> = LazyLock::new(|| palettes::all().iter().map(Theme::from).collect());
+
+/// Every theme, in [`crate::theme::all`] order (`omp` first).
+pub fn themes() -> &'static [Theme] {
+    &THEMES
+}
+
+/// The default `omp` theme.
+pub fn omp() -> &'static Theme {
+    &THEMES[0]
+}
+
+/// Looks a theme up by any spelling [`crate::theme::index`] accepts.
+pub fn by_name(name: &str) -> Option<usize> {
+    palettes::index(name)
 }
 
 #[cfg(test)]
@@ -115,10 +88,10 @@ mod tests {
     #[test]
     fn names_resolve() {
         assert_eq!(by_name("Dark"), Some(0));
-        assert_eq!(by_name("mocha"), Some(1));
-        assert_eq!(by_name("tokyo_night"), Some(2));
+        assert_eq!(themes()[by_name("mocha").unwrap()].name, "catppuccin");
+        assert_eq!(themes()[by_name("tokyo_night").unwrap()].name, "tokyo-night");
         assert_eq!(by_name("solarized"), None);
-        for (i, t) in THEMES.iter().enumerate() {
+        for (i, t) in themes().iter().enumerate() {
             assert_eq!(by_name(t.name), Some(i));
         }
     }

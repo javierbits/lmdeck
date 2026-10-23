@@ -15,7 +15,7 @@ use lmdeck::engine::{self, Inventory, PlanCtx};
 use lmdeck::hardware::{which, Hardware};
 use lmdeck::hosts::{self, HostView, HostsFile};
 use lmdeck::models::{self, hf_cache_dir, Presence};
-use lmdeck::paths::Paths;
+use lmdeck::paths::{home_dir, Paths};
 use lmdeck::recipe::{valid_name, Engine, Format, Recipe};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
@@ -80,6 +80,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Colour themes for the TUI and web dashboard (Omarchy's, plus omp).
+    #[command(subcommand)]
+    Theme(ThemeCmd),
     /// Full-screen dashboard (also what bare `lmdeck` opens in a terminal).
     Tui(TuiArgs),
     /// Serve the web dashboard and JSON API (localhost only by default).
@@ -104,9 +107,24 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ThemeCmd {
+    /// Every theme, with swatches; the current one is marked.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Save a theme to config.toml (names are forgiving: "Rosé Pine", rose-pine, rose).
+    Set { name: String },
+    /// Show the current theme (or the named one): its colours and source.
+    Show { name: Option<String> },
+    /// Use the theme Omarchy is currently set to, if it is one lmdeck has.
+    SyncOmarchy,
+    /// Forget the saved theme (back to omp).
+    Reset,
+}
+
 #[derive(Args, Default)]
 struct TuiArgs {
-    /// omp (default), catppuccin or tokyo-night. Also LMDECK_THEME.
+    /// Theme for this run only (see `lmdeck theme list`; `lmdeck theme set` saves one). Also LMDECK_THEME.
     #[arg(long, env = "LMDECK_THEME")]
     theme: Option<String>,
     /// Rounded powerline caps (needs a Nerd Font). Also LMDECK_NERD_FONT=1.
@@ -128,6 +146,9 @@ struct TuiArgs {
     /// Tab for --render-*: deck, machine or sources.
     #[arg(long, hide = true, default_value = "deck")]
     tab: String,
+    /// For --render-*: show the theme picker.
+    #[arg(long, hide = true)]
+    picker: bool,
 }
 
 #[derive(Args)]
@@ -312,6 +333,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         None => home(&ctx),
         Some(Cmd::Tui(a)) => tui(ctx, a),
+        Some(Cmd::Theme(c)) => theme_cmd(&ctx, c),
         Some(Cmd::Serve { host, port, token }) => {
             lmdeck::web::run(Deck::new(ctx.paths, ctx.cfg), lmdeck::web::WebOptions { host, port, token })
         }
@@ -420,7 +442,7 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
 
 fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
     let nerd = a.nerd || std::env::var("LMDECK_NERD_FONT").is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
-    let opts = lmdeck::tui::Options { theme: a.theme, nerd, all: a.all };
+    let opts = lmdeck::tui::Options { theme: a.theme, nerd, all: a.all, picker: a.picker };
     let deck = Deck::new(ctx.paths, ctx.cfg);
     if a.render_html.is_some() || a.render_text {
         let tab = match a.tab.as_str() {
@@ -430,7 +452,7 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
             "sources" => lmdeck::tui::Tab::Sources,
             other => bail!("unknown tab '{other}'"),
         };
-        let buf = lmdeck::tui::render_snapshot(&deck, &opts, a.width, a.height, tab);
+        let buf = lmdeck::tui::render_snapshot(&deck, &opts, a.width, a.height, tab)?;
         if let Some(p) = a.render_html {
             std::fs::write(&p, lmdeck::tui::buffer_html(&buf, "lmdeck tui"))?;
         }
@@ -440,6 +462,99 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
         return Ok(());
     }
     lmdeck::tui::run(deck, opts)
+}
+
+// ───────────────────────────── theme ─────────────────────────────
+
+/// A coloured block (truecolor), or nothing when colour is off.
+fn swatch_block(c: u32) -> String {
+    if !ui::color_enabled() {
+        return String::new();
+    }
+    format!("\x1b[48;2;{};{};{}m  \x1b[0m", c >> 16, (c >> 8) & 0xff, c & 0xff)
+}
+
+fn theme_cmd(ctx: &Ctx, c: ThemeCmd) -> Result<()> {
+    use lmdeck::theme;
+    let env = std::env::var("LMDECK_THEME").ok().filter(|v| !v.trim().is_empty());
+    let current = theme::resolve(None, ctx.cfg.theme.as_deref())?;
+    let saved = |p: &theme::Palette| -> Result<()> {
+        let file = Config::save_theme(&ctx.paths, Some(p.slug))?;
+        println!("{} theme {} ({}) saved to {}", green("✓"), bold(p.name), p.slug, file.display());
+        if let Some(e) = &env {
+            println!("{}", yellow(&format!("note: LMDECK_THEME={e} is set and overrides this for `lmdeck tui`")));
+        }
+        Ok(())
+    };
+    match c {
+        ThemeCmd::List => {
+            let mut t = Table::new(&["", "theme", "name", "", "colours"]);
+            for p in theme::all() {
+                let mark = if p.slug == current.slug { green("●") } else { String::new() };
+                let sw: String = p.swatch().iter().map(|&c| swatch_block(c)).collect();
+                t.row(vec![
+                    mark,
+                    if p.slug == current.slug { bold(p.slug) } else { p.slug.to_string() },
+                    p.name.to_string(),
+                    dim(if p.light { "light" } else { "dark" }),
+                    sw,
+                ]);
+            }
+            print!("{}", t.render());
+            println!("{}", dim("lmdeck theme set <name> · themes from Omarchy (MIT) · https://omarchy.org"));
+        }
+        ThemeCmd::Set { name } => saved(theme::by_name(&name).ok_or_else(|| theme::unknown(&name))?)?,
+        ThemeCmd::Show { name } => {
+            let p = match name.as_deref() {
+                Some(n) => theme::by_name(n).ok_or_else(|| theme::unknown(n))?,
+                None => current,
+            };
+            println!("{} ({}, {})", bold(p.name), p.slug, if p.light { "light" } else { "dark" });
+            println!("{}", dim(&format!("source: {}", p.source())));
+            if name.is_none() {
+                let why = match &ctx.cfg.theme {
+                    Some(t) => format!("set in {} (theme = \"{t}\")", ctx.paths.config_file().display()),
+                    None => "default (no theme in config.toml)".to_string(),
+                };
+                println!("{}", dim(&why));
+                if let Some(e) = &env {
+                    println!("{}", yellow(&format!("LMDECK_THEME={e} overrides it for `lmdeck tui`")));
+                }
+            }
+            let roles = [
+                ("background", p.bg),
+                ("panel", p.panel),
+                ("bar", p.bar_bg),
+                ("selection", p.selected_bg),
+                ("foreground", p.fg),
+                ("muted", p.muted),
+                ("dim", p.dim),
+                ("accent", p.accent),
+                ("border", p.border),
+                ("ok", p.ok),
+                ("warn", p.warn),
+                ("error", p.err),
+                ("info", p.info),
+                ("magenta", p.magenta),
+                ("blue", p.blue),
+            ];
+            for (role, c) in roles {
+                println!("  {} {role:<11} #{c:06x}", swatch_block(c));
+            }
+        }
+        ThemeCmd::SyncOmarchy => {
+            let name = theme::omarchy_current(&home_dir())
+                .ok_or_else(|| anyhow!("no Omarchy theme found (~/.local/state/omarchy/current/theme.name)"))?;
+            let p = theme::by_name(&name)
+                .ok_or_else(|| anyhow!("Omarchy is on '{name}', which lmdeck doesn't have (lmdeck theme list)"))?;
+            saved(p)?;
+        }
+        ThemeCmd::Reset => {
+            Config::save_theme(&ctx.paths, None)?;
+            println!("{} theme reset to {}", green("✓"), theme::DEFAULT);
+        }
+    }
+    Ok(())
 }
 
 // ───────────────────────────── list ─────────────────────────────
