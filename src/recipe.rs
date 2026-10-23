@@ -1,11 +1,12 @@
 //! Recipes: a model source + quant + engine + hardware requirements.
 //!
-//! Native recipes are TOML (YAML is accepted too, same schema). lmswitch's
-//! per-model YAML (`runtime: llama|vllm|...`, as published in
-//! `jvr0x/ai-models`) is detected and converted on load, so every existing
-//! lmswitch recipe works as an lmdeck recipe.
+//! Recipes are TOML, and TOML only: a `.yaml`/`.yml` file is rejected with
+//! an error that says so. A recipe either launches an engine lmdeck knows
+//! (llama.cpp, vLLM, SGLang, LMDeploy, …) or wraps someone else's scripts on
+//! the `custom` engine (`command` / `stop` / `detached`, plus a `[source]`
+//! git checkout to run them from).
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,12 +34,14 @@ pub enum Engine {
     Mlx,
     /// TensorFold (github.com/ashhart/TensorFold): native Zig server for Apple Metal and NVIDIA CUDA.
     TensorFold,
+    /// LMDeploy `lmdeploy serve api_server` (TurboMind / PyTorch backends), natively or in Docker.
+    LmDeploy,
     /// Anything else: `engine.command` is run verbatim.
     Custom,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 8] = [
+    pub const ALL: [Engine; 9] = [
         Engine::LlamaCpp,
         Engine::Vllm,
         Engine::Sglang,
@@ -46,6 +49,7 @@ impl Engine {
         Engine::LmStudio,
         Engine::Mlx,
         Engine::TensorFold,
+        Engine::LmDeploy,
         Engine::Custom,
     ];
 
@@ -58,6 +62,7 @@ impl Engine {
             Engine::LmStudio => "lmstudio",
             Engine::Mlx => "mlx",
             Engine::TensorFold => "tensorfold",
+            Engine::LmDeploy => "lmdeploy",
             Engine::Custom => "custom",
         }
     }
@@ -70,6 +75,7 @@ impl Engine {
             Engine::Sglang => 30000,
             Engine::TabbyApi => 5000,
             Engine::LmStudio => 1234,
+            Engine::LmDeploy => 23333,
         }
     }
 
@@ -102,6 +108,7 @@ impl FromStr for Engine {
             "lmstudio" | "lm-studio" | "lms" => Engine::LmStudio,
             "mlx" | "mlx-lm" | "mlx_lm" => Engine::Mlx,
             "tensorfold" | "tensor-fold" | "tensorfold-native" | "tf" => Engine::TensorFold,
+            "lmdeploy" | "lm-deploy" | "lmdeploy-serve" | "turbomind" => Engine::LmDeploy,
             "custom" => Engine::Custom,
             other => {
                 bail!("unknown engine '{other}' (expected one of: {})", Engine::ALL.map(|e| e.as_str()).join(", "))
@@ -134,6 +141,7 @@ pub enum ModelSource {
     Local,
 }
 
+/// The weights. Optional for `custom` recipes whose scripts fetch their own.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ModelSpec {
     #[serde(default)]
@@ -154,6 +162,24 @@ pub struct ModelSpec {
     /// Approximate download size in GB (informational, used for memory estimates).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_gb: Option<f64>,
+}
+
+impl ModelSpec {
+    /// No repo and no path: the recipe names no weights of its own.
+    pub fn is_empty(&self) -> bool {
+        self.repo.as_deref().unwrap_or("").is_empty() && self.path.as_deref().unwrap_or("").is_empty()
+    }
+}
+
+/// A git checkout lmdeck keeps in its cache (`<cache>/checkouts/<recipe>`)
+/// so a `custom` recipe can run a repo's own scripts.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GitSource {
+    /// Anything `git clone` accepts: an https URL, `git@host:org/repo`, a local path.
+    pub repo: String,
+    /// Branch, tag or commit. Empty = the remote's default branch.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -188,10 +214,12 @@ pub struct EngineSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx: Option<u64>,
     /// Extra engine flags, appended last. Placeholders: `{name}`, `{port}`,
-    /// `{ctx}`, `{model}`, `{models_dir}`, `{host}`, `{repo}`, `{revision}`.
+    /// `{ctx}`, `{model}`, `{models_dir}`, `{host}`, `{repo}`, `{revision}`,
+    /// `{dir}` (the working directory) and `{container}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Environment for the server process (or container).
+    /// Environment for the server process (or container). Values take the
+    /// same placeholders, e.g. `PORT = "{port}"` for wrapped scripts.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Run in Docker with this image (vllm / sglang).
@@ -206,12 +234,33 @@ pub struct EngineSpec {
     /// Binary override for this recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bin: Option<String>,
-    /// Working directory (TabbyAPI checkout for `tabbyapi`).
+    /// Working directory (TabbyAPI checkout for `tabbyapi`). With a
+    /// `[source]` it defaults to the checkout, and a relative `dir` is
+    /// resolved inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
-    /// Full argv for `custom` engines (placeholders as in `args`).
+    /// Full argv for `custom` engines (placeholders as in `args`). A relative
+    /// program (`./start.sh`) is resolved against the working directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// `custom`: argv that stops the server (`["./stop.sh"]`). Runs with the
+    /// same working directory and environment as `command`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    /// `custom`: `command` exits 0 once the server is up (it backgrounds or
+    /// `docker run -d`s it). A clean exit is not a crash; liveness comes from
+    /// `container` when set, otherwise from probing `port`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
+    /// `custom`: Docker container the scripts run the server in. Used for
+    /// liveness and as the `docker stop` fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    /// `custom` + `detached`: argv that streams the server's log once
+    /// `command` has exited, e.g. `["docker", "logs", "-f", "my-container"]`.
+    /// Its output goes to lmdeck's log file (the TUI and web log views).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<String>,
     /// Seconds to wait for the server to answer `/v1/models`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_timeout: Option<u64>,
@@ -231,6 +280,10 @@ impl EngineSpec {
             bin: None,
             dir: None,
             command: vec![],
+            stop: vec![],
+            detached: false,
+            container: None,
+            logs: vec![],
             ready_timeout: None,
         }
     }
@@ -278,7 +331,12 @@ pub struct Recipe {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Optional for `custom` recipes.
+    #[serde(default, skip_serializing_if = "ModelSpec::is_empty")]
     pub model: ModelSpec,
+    /// A git checkout to run `custom` scripts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<GitSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quant: Option<Quant>,
     pub engine: EngineSpec,
@@ -286,22 +344,21 @@ pub struct Recipe {
     pub hardware: HardwareReq,
 }
 
-/// File formats a recipe can be read from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    Toml,
-    Yaml,
+/// Is this a recipe file name (`.toml`)?
+pub fn is_recipe_file(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("toml"))
 }
 
-impl Format {
-    pub fn from_path(p: &Path) -> Option<Format> {
-        match p.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-            "toml" => Some(Format::Toml),
-            "yaml" | "yml" => Some(Format::Yaml),
-            _ => None,
-        }
-    }
+/// Is this a YAML file (no longer accepted as a recipe)?
+pub fn is_yaml_file(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
 }
+
+/// The error for a `.yaml`/`.yml` recipe.
+pub const YAML_UNSUPPORTED: &str =
+    "YAML recipes are no longer supported: lmdeck reads TOML only (convert it to a .toml recipe; see the README's \"Recipe format\")";
 
 /// Returned (wrapped in anyhow) when a file parses but is not a recipe,
 /// so source indexing can skip READMEs, CI configs, etc. quietly.
@@ -310,7 +367,7 @@ pub struct NotARecipe;
 
 impl fmt::Display for NotARecipe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("not a recipe (no [engine]/[model] tables and no lmswitch `runtime`/`model` keys)")
+        f.write_str("not a recipe (no [engine] table)")
     }
 }
 
@@ -321,40 +378,14 @@ pub fn is_not_a_recipe(e: &anyhow::Error) -> bool {
 }
 
 impl Recipe {
-    /// Parses recipe text. `stem` names the recipe when the text does not.
-    pub fn parse(text: &str, format: Format, stem: &str) -> Result<Recipe> {
-        let mut recipe = match format {
-            Format::Toml => {
-                let value: toml::Value = toml::from_str(text)?;
-                let table = value.as_table().ok_or(NotARecipe)?;
-                if !(table.get("engine").is_some_and(|v| v.is_table())
-                    && table.get("model").is_some_and(|v| v.is_table()))
-                {
-                    return Err(NotARecipe.into());
-                }
-                value.try_into::<Recipe>()?
-            }
-            Format::Yaml => {
-                let value: serde_yaml::Value = match serde_yaml::from_str(text) {
-                    // PyYAML (and so lmswitch) lets a later duplicate key win.
-                    Err(e) if e.to_string().contains("duplicate entry") => {
-                        serde_yaml::from_str(&dedupe_top_level_keys(text))?
-                    }
-                    other => other?,
-                };
-                let map = value.as_mapping().ok_or(NotARecipe)?;
-                let has_table = |k: &str| map.get(k).is_some_and(|v| v.is_mapping());
-                if has_table("engine") && has_table("model") {
-                    serde_yaml::from_value::<Recipe>(value)?
-                } else if map.get("runtime").is_some_and(|v| v.is_string())
-                    || map.get("model").is_some_and(|v| v.is_string())
-                {
-                    from_lmswitch(map, stem, text)?
-                } else {
-                    return Err(NotARecipe.into());
-                }
-            }
-        };
+    /// Parses TOML recipe text. `stem` names the recipe when the text does not.
+    pub fn parse(text: &str, stem: &str) -> Result<Recipe> {
+        let value: toml::Value = toml::from_str(text)?;
+        let table = value.as_table().ok_or(NotARecipe)?;
+        if !table.get("engine").is_some_and(|v| v.is_table()) {
+            return Err(NotARecipe.into());
+        }
+        let mut recipe: Recipe = value.try_into()?;
         if recipe.name.trim().is_empty() {
             recipe.name = stem.to_string();
         }
@@ -362,13 +393,17 @@ impl Recipe {
         Ok(recipe)
     }
 
-    /// Reads a recipe file (`.toml`, `.yaml`, `.yml`).
+    /// Reads a `.toml` recipe file. YAML files get a clear "not supported" error.
     pub fn load(path: &Path) -> Result<Recipe> {
-        let format = Format::from_path(path)
-            .ok_or_else(|| anyhow!("{}: recipes must be .toml, .yaml or .yml", path.display()))?;
+        if is_yaml_file(path) {
+            bail!("{}: {YAML_UNSUPPORTED}", path.display());
+        }
+        if !is_recipe_file(path) {
+            bail!("{}: recipes must be .toml files", path.display());
+        }
         let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("recipe");
-        Recipe::parse(&text, format, stem).with_context(|| format!("loading {}", path.display()))
+        Recipe::parse(&text, stem).with_context(|| format!("loading {}", path.display()))
     }
 
     /// Checks invariants the rest of lmdeck relies on.
@@ -376,8 +411,9 @@ impl Recipe {
         if !valid_name(&self.name) {
             bail!("invalid recipe name '{}': use letters, digits, '.', '_' or '-'", self.name);
         }
+        let custom = self.engine.name == Engine::Custom;
         match self.model.source {
-            ModelSource::Hf if self.model.repo.as_deref().unwrap_or("").is_empty() => {
+            ModelSource::Hf if !custom && self.model.repo.as_deref().unwrap_or("").is_empty() => {
                 bail!("model.source = \"hf\" needs model.repo")
             }
             ModelSource::Local if self.model.path.as_deref().unwrap_or("").is_empty() => {
@@ -390,8 +426,29 @@ impl Recipe {
                 bail!("model.repo '{repo}' should look like 'org/name'");
             }
         }
-        if self.engine.name == Engine::Custom && self.engine.command.is_empty() {
+        if custom && self.engine.command.is_empty() {
             bail!("engine \"custom\" needs engine.command");
+        }
+        if !custom {
+            for (field, set) in [
+                ("stop", !self.engine.stop.is_empty()),
+                ("detached", self.engine.detached),
+                ("container", self.engine.container.is_some()),
+                ("logs", !self.engine.logs.is_empty()),
+                ("[source]", self.source.is_some()),
+            ] {
+                if set {
+                    bail!("{field} is only for engine \"custom\" (wrapped scripts)");
+                }
+            }
+        }
+        if !self.engine.logs.is_empty() && !self.engine.detached {
+            bail!("engine.logs is for detached recipes; a foreground command's output is logged already");
+        }
+        if let Some(src) = &self.source {
+            if src.repo.trim().is_empty() {
+                bail!("[source] needs repo");
+            }
         }
         if self.engine.name == Engine::LlamaCpp
             && self.model.path.is_none()
@@ -459,6 +516,7 @@ impl Recipe {
             self.description.clone().unwrap_or_default(),
             self.engine.name.to_string(),
             self.model.repo.clone().unwrap_or_default(),
+            self.source.as_ref().map(|s| s.repo.clone()).unwrap_or_default(),
             self.quant_short(),
         ];
         s.extend(self.tags.iter().cloned());
@@ -466,354 +524,11 @@ impl Recipe {
     }
 }
 
-/// Drops all but the last occurrence of each top-level YAML key (PyYAML
-/// semantics for duplicate keys). Only keys at column 0 are considered.
-pub fn dedupe_top_level_keys(text: &str) -> String {
-    let key_of = |line: &str| -> Option<String> {
-        let first = line.chars().next()?;
-        if !(first.is_ascii_alphanumeric() || first == '_' || first == '"' || first == '\'') {
-            return None;
-        }
-        let (k, _) = line.split_once(':')?;
-        Some(k.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-    };
-    let mut blocks: Vec<(Option<String>, Vec<&str>)> = vec![(None, vec![])];
-    for line in text.lines() {
-        match key_of(line) {
-            Some(k) => blocks.push((Some(k), vec![line])),
-            None => blocks.last_mut().expect("non-empty").1.push(line),
-        }
-    }
-    let mut out = String::new();
-    for (i, (key, lines)) in blocks.iter().enumerate() {
-        let superseded = key.as_ref().is_some_and(|k| blocks[i + 1..].iter().any(|(k2, _)| k2.as_ref() == Some(k)));
-        if !superseded {
-            for l in lines {
-                out.push_str(l);
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && !name.starts_with('.')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
-/// Guesses the quant format/label from a repo id, path or file name.
-pub fn infer_quant(text: &str) -> Option<Quant> {
-    let low = text.to_lowercase();
-    let bits = bpw(&low);
-    let gguf_label = gguf_label(text);
-    let format = if low.ends_with(".gguf") || low.contains("gguf") {
-        "gguf"
-    } else if low.contains("exl3") {
-        "exl3"
-    } else if low.contains("exl2") {
-        "exl2"
-    } else if low.contains("nvfp4") {
-        "nvfp4"
-    } else if low.contains("mxfp4") {
-        "mxfp4"
-    } else if low.contains("fp8") {
-        "fp8"
-    } else if low.contains("awq") {
-        "awq"
-    } else if low.contains("gptq") {
-        "gptq"
-    } else if low.contains("mlx") {
-        "mlx"
-    } else if low.contains("bf16") {
-        "bf16"
-    } else {
-        return None;
-    };
-    let label = if format == "gguf" { gguf_label } else { bits.map(|b| format!("{b}bpw")) };
-    Some(Quant { format: format.into(), bits, label })
-}
-
-fn bpw(low: &str) -> Option<f64> {
-    let idx = low.find("bpw")?;
-    let head = &low[..idx];
-    let start =
-        head.char_indices().rev().take_while(|(_, c)| c.is_ascii_digit() || *c == '.').last().map(|(i, _)| i)?;
-    head[start..].parse().ok()
-}
-
-fn gguf_label(text: &str) -> Option<String> {
-    let file = text.rsplit('/').next().unwrap_or(text);
-    let stem = file.strip_suffix(".gguf").unwrap_or(file);
-    stem.split(['-', '.'])
-        .rev()
-        .find(|t| {
-            let u = t.to_ascii_uppercase();
-            let quanty = (u.starts_with('Q') || u.starts_with("IQ"))
-                && u.trim_start_matches('I').chars().nth(1).is_some_and(|c| c.is_ascii_digit());
-            quanty || matches!(u.as_str(), "BF16" | "F16" | "F32" | "MXFP4")
-        })
-        .map(|t| t.to_ascii_uppercase())
-}
-
-// ---------------------------------------------------------------------------
-// lmswitch YAML compatibility
-// ---------------------------------------------------------------------------
-
-type YMap = serde_yaml::Mapping;
-
-fn y_str(map: &YMap, key: &str) -> Option<String> {
-    match map.get(key)? {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
-fn y_u64(map: &YMap, key: &str) -> Option<u64> {
-    match map.get(key)? {
-        serde_yaml::Value::Number(n) => n.as_u64(),
-        serde_yaml::Value::String(s) => s.trim().parse().ok(),
-        _ => None,
-    }
-}
-
-fn y_bool(map: &YMap, key: &str) -> Option<bool> {
-    match map.get(key)? {
-        serde_yaml::Value::Bool(b) => Some(*b),
-        serde_yaml::Value::String(s) => match s.to_lowercase().as_str() {
-            "true" | "yes" | "on" | "1" => Some(true),
-            "false" | "no" | "off" | "0" => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// `extra_args`-style value: a list (one token each) or a shell-split string.
-fn y_args(map: &YMap, key: &str) -> Vec<String> {
-    match map.get(key) {
-        Some(serde_yaml::Value::Sequence(seq)) => seq
-            .iter()
-            .filter_map(|v| match v {
-                serde_yaml::Value::String(s) => Some(s.clone()),
-                serde_yaml::Value::Number(n) => Some(n.to_string()),
-                serde_yaml::Value::Bool(b) => Some(b.to_string()),
-                _ => None,
-            })
-            .collect(),
-        Some(serde_yaml::Value::String(s)) => shlex::split(s).unwrap_or_default(),
-        _ => vec![],
-    }
-}
-
-fn y_env(map: &YMap) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    match map.get("env") {
-        Some(serde_yaml::Value::Mapping(m)) => {
-            for (k, v) in m {
-                if let (Some(k), Some(v)) = (k.as_str(), yaml_scalar(v)) {
-                    out.insert(k.to_string(), v);
-                }
-            }
-        }
-        Some(serde_yaml::Value::Sequence(seq)) => {
-            for item in seq {
-                if let Some((k, v)) = item.as_str().and_then(|s| s.split_once('=')) {
-                    out.insert(k.to_string(), v.to_string());
-                }
-            }
-        }
-        _ => {}
-    }
-    out
-}
-
-fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
-    match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
-/// First comment line of the file, as a description.
-fn leading_comment(text: &str) -> Option<String> {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .take_while(|l| l.is_empty() || l.starts_with('#'))
-        .find_map(|l| l.strip_prefix('#').map(str::trim).filter(|l| !l.is_empty()))?;
-    let mut s: String = line.chars().take(140).collect();
-    if line.chars().count() > 140 {
-        s.push('…');
-    }
-    Some(s)
-}
-
-/// Converts an lmswitch model YAML into a [`Recipe`].
-pub fn from_lmswitch(map: &YMap, stem: &str, text: &str) -> Result<Recipe> {
-    let runtime = y_str(map, "runtime").unwrap_or_else(|| "llama".into());
-    let (engine, nodes) = match runtime.as_str() {
-        "llama" => (Engine::LlamaCpp, 1),
-        "llama-dual" => (Engine::LlamaCpp, 2),
-        "vllm" => (Engine::Vllm, 1),
-        "vllm-dual" | "vllm-dual-ray" => (Engine::Vllm, 2),
-        "sglang" => (Engine::Sglang, 1),
-        "sglang-dual" => (Engine::Sglang, 2),
-        "exllamav3" | "tabbyapi" => (Engine::TabbyApi, 1),
-        "exllamav3-dual" => (Engine::TabbyApi, 2),
-        other => bail!("unsupported lmswitch runtime '{other}'"),
-    };
-    let rel = y_str(map, "model").unwrap_or_default();
-    if rel.is_empty() {
-        bail!("lmswitch recipe has no `model:` path");
-    }
-    let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
-
-    let mut model = ModelSpec { path: Some(rel.clone()), ..Default::default() };
-    // lmswitch's convention mirrors Hugging Face: <org>/<repo>[/<file>].
-    if parts.len() >= 2 && !rel.starts_with('/') && !rel.starts_with('~') {
-        model.source = ModelSource::Hf;
-        model.repo = Some(format!("{}/{}", parts[0], parts[1]));
-        if engine == Engine::LlamaCpp && parts.len() > 2 {
-            model.files.push(parts[2..].join("/"));
-            if let Some(mm) = y_str(map, "mmproj") {
-                if let Some(rest) = mm.strip_prefix(&format!("{}/{}/", parts[0], parts[1])) {
-                    model.files.push(rest.to_string());
-                }
-            }
-        }
-    } else {
-        model.source = ModelSource::Local;
-    }
-
-    let mut spec = EngineSpec::new(engine);
-    spec.port = y_u64(map, "port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
-    spec.ctx = y_u64(map, "ctx");
-    spec.ready_timeout = y_u64(map, "ready_timeout");
-    spec.env = y_env(map);
-    spec.volumes = y_args(map, "extra_mounts");
-    let mut args: Vec<String> = vec![];
-    let flag = |args: &mut Vec<String>, k: &str, f: &str| {
-        if let Some(v) = y_str(map, k) {
-            args.push(f.to_string());
-            args.push(v);
-        }
-    };
-    match engine {
-        Engine::LlamaCpp => {
-            spec.bin = y_str(map, "llama_bin");
-            flag(&mut args, "gpu_layers", "--n-gpu-layers");
-            flag(&mut args, "threads", "--threads");
-            flag(&mut args, "batch", "--batch-size");
-            flag(&mut args, "ubatch", "--ubatch-size");
-            flag(&mut args, "alias", "--alias");
-            if let Some(mm) = y_str(map, "mmproj") {
-                args.push("--mmproj".into());
-                args.push(format!("{{models_dir}}/{mm}"));
-            }
-            // lmswitch passes `-fit off` unless told otherwise (GB10 cudaMemGetInfo abort).
-            let fit = match map.get("fit") {
-                Some(serde_yaml::Value::Bool(false)) => Some("off".to_string()),
-                Some(_) => y_str(map, "fit"),
-                None => Some("off".to_string()),
-            };
-            if let Some(fit) = fit.filter(|f| !matches!(f.as_str(), "" | "none" | "skip")) {
-                args.push("-fit".into());
-                args.push(fit);
-            }
-        }
-        Engine::Vllm => {
-            spec.image = Some(y_str(map, "image").unwrap_or_else(|| "vllm/vllm-openai:cu130-nightly".into()));
-            if let Some(ep) = map.get("entrypoint") {
-                spec.entrypoint = match ep {
-                    serde_yaml::Value::String(s) => shlex::split(s).unwrap_or_default(),
-                    _ => y_args(map, "entrypoint"),
-                };
-            }
-            let default_util = if nodes > 1 { "0.80" } else { "0.15" };
-            args.push(format!(
-                "--gpu-memory-utilization={}",
-                y_str(map, "gpu_memory_utilization").unwrap_or_else(|| default_util.into())
-            ));
-            args.push(format!("--max-num-seqs={}", y_str(map, "max_num_seqs").unwrap_or_else(|| "32".into())));
-            if y_bool(map, "enforce_eager").unwrap_or(true) {
-                args.push("--enforce-eager".into());
-            }
-            vllm_like_flags(map, &mut args);
-            for (k, f) in [
-                ("limit_mm_per_prompt", "--limit-mm-per-prompt"),
-                ("attention_backend", "--attention-backend"),
-                ("load_format", "--load-format"),
-            ] {
-                if let Some(v) = y_str(map, k) {
-                    args.push(format!("{f}={v}"));
-                }
-            }
-            if !y_bool(map, "no_chat_template").unwrap_or(false) {
-                if let Some(v) = y_str(map, "chat_template") {
-                    args.push(format!("--chat-template={v}"));
-                }
-            }
-        }
-        Engine::Sglang => {
-            spec.image = Some(y_str(map, "image").unwrap_or_else(|| "lmsysorg/sglang:latest".into()));
-            flag(&mut args, "mem_fraction_static", "--mem-fraction-static");
-            flag(&mut args, "attention_backend", "--attention-backend");
-            flag(&mut args, "kv_cache_dtype", "--kv-cache-dtype");
-            flag(&mut args, "chunked_prefill_size", "--chunked-prefill-size");
-            flag(&mut args, "max_running_requests", "--max-running-requests");
-            vllm_like_flags(map, &mut args);
-        }
-        Engine::TabbyApi => {
-            spec.dir = y_str(map, "exllamav3_repo");
-            if let Some(q) = y_str(map, "cache_quant") {
-                args.push("--cache-mode".into());
-                args.push(if q.chars().all(|c| c.is_ascii_digit()) { format!("Q{q}") } else { q });
-            }
-        }
-        _ => {}
-    }
-    args.extend(y_args(map, "extra_args"));
-    spec.args = args;
-
-    let mut tags = vec!["lmswitch".to_string(), runtime.clone()];
-    if nodes > 1 {
-        tags.push("multi-node".into());
-    }
-    let quant = infer_quant(&rel).or_else(|| infer_quant(stem));
-    if let Some(q) = &quant {
-        tags.push(q.format.clone());
-    }
-    Ok(Recipe {
-        name: stem.to_string(),
-        display_name: y_str(map, "display_name"),
-        description: leading_comment(text),
-        tags,
-        model,
-        quant,
-        engine: spec,
-        hardware: HardwareReq { nodes: (nodes > 1).then_some(nodes), ..Default::default() },
-    })
-}
-
-fn vllm_like_flags(map: &YMap, args: &mut Vec<String>) {
-    if let Some(p) = y_str(map, "tool_call_parser") {
-        args.push("--enable-auto-tool-choice".into());
-        args.push("--tool-call-parser".into());
-        args.push(p);
-    }
-    if let Some(p) = y_str(map, "reasoning_parser") {
-        args.push(format!("--reasoning-parser={p}"));
-    }
-    if y_bool(map, "trust_remote_code").unwrap_or(false) {
-        args.push("--trust-remote-code".into());
-    }
 }
 
 #[cfg(test)]
@@ -846,16 +561,8 @@ min_memory_gb = 4
 "#;
 
     #[test]
-    fn duplicate_yaml_keys_last_wins() {
-        let text = "runtime: llama\nmodel: \"a/b/c.gguf\"\nruntime: \"vllm\"\nextra_args:\n  - --x\n";
-        let r = Recipe::parse(text, Format::Yaml, "dup").unwrap();
-        assert_eq!(r.engine.name, Engine::Vllm);
-        assert!(r.engine.args.contains(&"--x".to_string()));
-    }
-
-    #[test]
     fn parses_native_toml() {
-        let r = Recipe::parse(NATIVE, Format::Toml, "ignored").unwrap();
+        let r = Recipe::parse(NATIVE, "ignored").unwrap();
         assert_eq!(r.name, "qwen3-4b-q4km");
         assert_eq!(r.engine.name, Engine::LlamaCpp);
         assert_eq!(r.port(), 8085);
@@ -869,15 +576,15 @@ min_memory_gb = 4
 
     #[test]
     fn toml_roundtrip_is_lossless() {
-        let r = Recipe::parse(NATIVE, Format::Toml, "x").unwrap();
-        let again = Recipe::parse(&r.to_toml().unwrap(), Format::Toml, "x").unwrap();
+        let r = Recipe::parse(NATIVE, "x").unwrap();
+        let again = Recipe::parse(&r.to_toml().unwrap(), "x").unwrap();
         assert_eq!(r, again);
     }
 
     #[test]
-    fn native_yaml_and_stem_name() {
-        let y = "model:\n  repo: mlx-community/Qwen3-4B-4bit\nengine:\n  name: mlx\n";
-        let r = Recipe::parse(y, Format::Yaml, "qwen-mlx").unwrap();
+    fn stem_names_the_recipe() {
+        let t = "[model]\nrepo = \"mlx-community/Qwen3-4B-4bit\"\n[engine]\nname = \"mlx\"\n";
+        let r = Recipe::parse(t, "qwen-mlx").unwrap();
         assert_eq!(r.name, "qwen-mlx");
         assert_eq!(r.engine.name, Engine::Mlx);
         assert_eq!(r.port(), 8080);
@@ -887,21 +594,19 @@ min_memory_gb = 4
     #[test]
     fn validation_errors() {
         let bad_repo = "[model]\nrepo = \"noslash\"\n[engine]\nname = \"vllm\"\n";
-        assert!(Recipe::parse(bad_repo, Format::Toml, "a").is_err());
+        assert!(Recipe::parse(bad_repo, "a").is_err());
         let no_gguf = "[model]\nrepo = \"a/b\"\n[engine]\nname = \"llama.cpp\"\n";
-        assert!(Recipe::parse(no_gguf, Format::Toml, "a").is_err());
+        assert!(Recipe::parse(no_gguf, "a").is_err());
         let custom = "[model]\nsource = \"local\"\npath = \"x\"\n[engine]\nname = \"custom\"\n";
-        assert!(Recipe::parse(custom, Format::Toml, "a").is_err());
+        assert!(Recipe::parse(custom, "a").is_err());
         let bad_engine = "[model]\nrepo = \"a/b\"\n[engine]\nname = \"ollama2\"\n";
-        assert!(Recipe::parse(bad_engine, Format::Toml, "a").is_err());
-        assert!(Recipe::parse("[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n", Format::Toml, "bad name").is_err());
+        assert!(Recipe::parse(bad_engine, "a").is_err());
+        assert!(Recipe::parse("[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n", "bad name").is_err());
     }
 
     #[test]
     fn non_recipes_are_flagged() {
-        let e = Recipe::parse("title = \"x\"", Format::Toml, "a").unwrap_err();
-        assert!(is_not_a_recipe(&e));
-        let e = Recipe::parse("name: ci\non: [push]\n", Format::Yaml, "a").unwrap_err();
+        let e = Recipe::parse("title = \"x\"", "a").unwrap_err();
         assert!(is_not_a_recipe(&e));
     }
 
@@ -913,69 +618,82 @@ min_memory_gb = 4
         assert!("nope".parse::<Engine>().is_err());
     }
 
-    #[test]
-    fn converts_lmswitch_llama_yaml() {
-        let y = r#"# Qwen3.6 35B MTP on the Spark
-runtime: llama
-model: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf"
-port: 8089
-ctx: 262144
-display_name: "Qwen3.6-35B-A3B Q8 MTP"
-mmproj: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF/mmproj-BF16.gguf"
-batch: 2048
-extra_args: ["-fa", "on", "--jinja"]
+    const WRAPPER: &str = r#"
+[source]
+repo = "https://github.com/example/server"
+ref = "main"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "my-server"
+logs = ["docker", "logs", "-f", "my-server"]
+port = 8888
+env = { PORT = "{port}" }
 "#;
-        let r = Recipe::parse(y, Format::Yaml, "qwen3.6-35b-q8-mtp").unwrap();
-        assert_eq!(r.name, "qwen3.6-35b-q8-mtp");
-        assert_eq!(r.engine.name, Engine::LlamaCpp);
-        assert_eq!(r.model.repo.as_deref(), Some("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"));
-        assert_eq!(r.model.files, vec!["Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf", "mmproj-BF16.gguf"]);
-        assert_eq!(r.port(), 8089);
-        assert_eq!(r.engine.ctx, Some(262144));
-        assert_eq!(r.quant_short(), "gguf Q8_K_XL");
-        assert_eq!(r.description.as_deref(), Some("Qwen3.6 35B MTP on the Spark"));
-        let a = &r.engine.args;
-        assert!(a.windows(2).any(|w| w == ["--batch-size", "2048"]));
-        assert!(a.windows(2).any(|w| w == ["-fit", "off"]));
-        assert!(a.contains(&"{models_dir}/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/mmproj-BF16.gguf".to_string()));
-        assert_eq!(a[a.len() - 3..], ["-fa", "on", "--jinja"]);
+
+    #[test]
+    fn wrapper_recipe_needs_no_model() {
+        let r = Recipe::parse(WRAPPER, "wrapped").unwrap();
+        assert_eq!(r.name, "wrapped");
+        assert_eq!(r.engine.name, Engine::Custom);
+        assert!(r.model.is_empty());
+        let src = r.source.as_ref().unwrap();
+        assert_eq!((src.repo.as_str(), src.git_ref.as_deref()), ("https://github.com/example/server", Some("main")));
+        assert_eq!(r.engine.stop, ["./stop.sh"]);
+        assert!(r.engine.detached);
+        assert_eq!(r.engine.container.as_deref(), Some("my-server"));
+        assert_eq!(r.engine.logs, ["docker", "logs", "-f", "my-server"]);
+        assert_eq!(r.engine.env["PORT"], "{port}");
+        assert_eq!(r.port(), 8888);
+        // Round-trips without growing an empty [model] table.
+        let toml = r.to_toml().unwrap();
+        assert!(!toml.contains("[model]") && toml.contains("ref = \"main\""), "{toml}");
+        assert_eq!(Recipe::parse(&toml, "wrapped").unwrap(), r);
+        // The smallest wrapper.
+        let tiny = "[engine]\nname = \"custom\"\ncommand = [\"./start.sh\"]\n";
+        assert!(Recipe::parse(tiny, "tiny").is_ok());
     }
 
     #[test]
-    fn converts_lmswitch_vllm_and_dual() {
-        let y = "runtime: \"vllm\"\nmodel: nvidia/qwen3.6-35b-a3b-nvfp4\nport: 8114\ngpu_memory_utilization: 0.55\ntool_call_parser: qwen3_coder\nenforce_eager: false\nenv:\n  A: 1\n";
-        let r = Recipe::parse(y, Format::Yaml, "q").unwrap();
-        assert_eq!(r.engine.name, Engine::Vllm);
-        assert_eq!(r.engine.image.as_deref(), Some("vllm/vllm-openai:cu130-nightly"));
-        assert!(r.engine.args.contains(&"--gpu-memory-utilization=0.55".to_string()));
-        assert!(!r.engine.args.contains(&"--enforce-eager".to_string()));
-        assert_eq!(r.engine.env.get("A").map(String::as_str), Some("1"));
-        assert_eq!(r.quant.as_ref().unwrap().format, "nvfp4");
-        assert_eq!(r.nodes(), 1);
-
-        let d = "runtime: vllm-dual\nmodel: org/big\n";
-        let r = Recipe::parse(d, Format::Yaml, "big").unwrap();
-        assert_eq!(r.nodes(), 2);
-        assert!(r.tags.contains(&"multi-node".to_string()));
-
-        assert!(Recipe::parse("runtime: banana\nmodel: a/b\n", Format::Yaml, "x").is_err());
+    fn wrapper_fields_are_custom_only() {
+        let t = "[model]\nrepo = \"a/b\"\n[engine]\nname = \"vllm\"\ndetached = true\n";
+        assert!(Recipe::parse(t, "a").unwrap_err().to_string().contains("only for engine"));
+        let t = "[model]\nrepo = \"a/b\"\n[source]\nrepo = \"x\"\n[engine]\nname = \"vllm\"\n";
+        assert!(Recipe::parse(t, "a").is_err());
+        let t = "[engine]\nname = \"custom\"\ncommand = [\"x\"]\nlogs = [\"tail\"]\n";
+        assert!(Recipe::parse(t, "a").unwrap_err().to_string().contains("detached"));
+        // Non-custom engines still need a model.
+        assert!(Recipe::parse("[engine]\nname = \"vllm\"\n", "a").is_err());
     }
 
     #[test]
-    fn infers_quants() {
-        assert_eq!(infer_quant("Qwen3-4B-Q4_K_M.gguf").unwrap().short(), "gguf Q4_K_M");
-        assert_eq!(infer_quant("x/IQ1_M.gguf").unwrap().label.as_deref(), Some("IQ1_M"));
-        let q = infer_quant("turboderp/Qwen3-30B-A3B-exl3-4.0bpw").unwrap();
-        assert_eq!((q.format.as_str(), q.bits), ("exl3", Some(4.0)));
-        assert_eq!(infer_quant("nvidia/Foo-NVFP4").unwrap().format, "nvfp4");
-        assert!(infer_quant("Qwen/Qwen3-4B").is_none());
+    fn yaml_recipes_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["old.yaml", "old.yml"] {
+            let p = dir.path().join(f);
+            fs::write(&p, "runtime: llama\nmodel: a/b/c.gguf\n").unwrap();
+            let e = format!("{:#}", Recipe::load(&p).unwrap_err());
+            assert!(e.contains("YAML recipes are no longer supported") && e.contains("TOML"), "{e}");
+        }
+        assert!(is_recipe_file(Path::new("x.TOML")) && !is_recipe_file(Path::new("x.yaml")));
+    }
+
+    #[test]
+    fn lmdeploy_engine() {
+        assert_eq!("lmdeploy".parse::<Engine>().unwrap(), Engine::LmDeploy);
+        assert_eq!("TurboMind".parse::<Engine>().unwrap(), Engine::LmDeploy);
+        assert_eq!(Engine::LmDeploy.default_port(), 23333);
+        assert!(Engine::ALL.contains(&Engine::LmDeploy));
     }
 
     #[test]
     fn tabby_default_dir_includes_revision() {
         let t =
             "[model]\nrepo = \"turboderp/Qwen3-30B-A3B-exl3\"\nrevision = \"4.0bpw\"\n[engine]\nname = \"tabbyapi\"\n";
-        let r = Recipe::parse(t, Format::Toml, "q").unwrap();
+        let r = Recipe::parse(t, "q").unwrap();
         assert_eq!(r.local_path(Path::new("/m")).unwrap(), PathBuf::from("/m/turboderp/Qwen3-30B-A3B-exl3-4.0bpw"));
     }
 }

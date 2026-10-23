@@ -7,12 +7,6 @@ use std::path::PathBuf;
 
 use crate::paths::{expand, Paths};
 
-/// The recipe repository every fresh config starts with: the community
-/// recipes that shipped with lmswitch (lmswitch-format YAML, which lmdeck
-/// reads natively).
-pub const DEFAULT_SOURCE_NAME: &str = "ai-models";
-pub const DEFAULT_SOURCE_SPEC: &str = "github:jvr0x/ai-models";
-
 /// User configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -45,6 +39,9 @@ pub struct EngineOverrides {
     /// A TabbyAPI checkout (the directory holding `main.py`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabbyapi_dir: Option<String>,
+    /// The `lmdeploy` CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lmdeploy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lms: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,7 +56,7 @@ pub struct EngineOverrides {
     pub lmstudio_port: Option<u16>,
 }
 
-/// A named recipe repository, e.g. `{ name = "ai-models", spec = "github:jvr0x/ai-models" }`.
+/// A named recipe repository, e.g. `{ name = "mine", spec = "github:me/recipes" }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceEntry {
     pub name: String,
@@ -81,7 +78,9 @@ impl Default for Config {
             host: default_host(),
             theme: None,
             engines: EngineOverrides::default(),
-            sources: vec![SourceEntry { name: DEFAULT_SOURCE_NAME.into(), spec: DEFAULT_SOURCE_SPEC.into() }],
+            // No default source: the lmswitch community repo (jvr0x/ai-models)
+            // is YAML, which lmdeck no longer reads.
+            sources: vec![],
         }
     }
 }
@@ -182,10 +181,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_include_ai_models_source() {
+    fn defaults_have_no_sources() {
         let c = Config::default();
         assert_eq!(c.models_dir, "~/models");
-        assert_eq!(c.sources[0].spec, DEFAULT_SOURCE_SPEC);
+        assert!(c.sources.is_empty());
     }
 
     #[test]
@@ -231,7 +230,7 @@ mod tests {
         let paths = Paths { config_dir: dir.join("cfg"), cache_dir: dir.join("cache"), state_dir: dir.join("state") };
         Config::save_theme(&paths, Some("kanagawa")).unwrap();
         assert_eq!(Config::load(&paths).unwrap().theme.as_deref(), Some("kanagawa"));
-        assert_eq!(Config::load(&paths).unwrap().sources[0].spec, DEFAULT_SOURCE_SPEC);
+        assert!(Config::load(&paths).unwrap().sources.is_empty());
         fs::write(paths.config_file(), "# hand-written\nmodels_dir = \"/m\"\n").unwrap();
         Config::save_theme(&paths, Some("white")).unwrap();
         let text = fs::read_to_string(paths.config_file()).unwrap();

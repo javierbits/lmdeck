@@ -1,0 +1,44 @@
+# Example (not a built-in): Ornith-1.5-122B on LMDeploy, in Docker on one DGX Spark.
+# LMDeploy can't read EXL3, so this points at an AWQ build of the model.
+#
+# PLACEHOLDER: "<your-org>/Ornith-1.5-122B-AWQ" is not a real repo. No AWQ build of
+# Ornith has been checked to exist; replace it with one before using this recipe.
+#
+# lmdeck adds the model, --model-name, --server-name, --server-port and --session-len
+# itself, and mounts the Hugging Face cache into the container, so `args` only holds
+# the tuning flags. Untested on a Spark.
+
+name = "ornith-1.5-122b-awq-lmdeploy-spark"
+display_name = "Ornith-1.5-122B AWQ 4-bit (LMDeploy, 1x Spark)"
+tags = ["spark", "awq", "moe", "lmdeploy", "example"]
+
+[model]
+repo = "<your-org>/Ornith-1.5-122B-AWQ"   # PLACEHOLDER, see above
+size_gb = 65
+
+[quant]
+format = "awq"
+bits = 4
+label = "AWQ int4"
+
+[engine]
+name = "lmdeploy"
+image = "openmmlab/lmdeploy:latest"
+port = 23333
+ctx = 262144
+args = [
+  "--model-format", "awq",
+  "--max-batch-size", "4",
+  "--cache-max-entry-count", "0.6",
+  "--quant-policy", "8",               # int8 KV cache
+]
+ready_timeout = 1800
+
+[engine.env]
+HF_HUB_ENABLE_HF_TRANSFER = "1"
+
+[hardware]
+accelerator = ["nvidia"]
+os = ["linux"]
+arch = ["aarch64"]
+min_memory_gb = 92

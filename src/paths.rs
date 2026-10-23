@@ -61,6 +61,11 @@ impl Paths {
     }
 
     /// Run records (`<name>.json`) for models lmdeck started.
+    /// `[source]` git checkouts for wrapped recipes, one per recipe.
+    pub fn checkouts_dir(&self) -> PathBuf {
+        self.cache_dir.join("checkouts")
+    }
+
     pub fn run_dir(&self) -> PathBuf {
         self.state_dir.join("run")
     }

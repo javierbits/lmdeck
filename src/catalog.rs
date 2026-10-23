@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::recipe::{is_not_a_recipe, Format, Recipe};
+use crate::recipe::{is_not_a_recipe, is_recipe_file, is_yaml_file, Recipe};
 use crate::sources::{load_dir, Found};
 
 pub const DECK: &str = "deck";
@@ -22,6 +22,7 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
     ("qwen3-4b-lmstudio.toml", include_str!("../recipes/qwen3-4b-lmstudio.toml")),
     ("qwen3.5-2b-tensorfold.toml", include_str!("../recipes/qwen3.5-2b-tensorfold.toml")),
     ("qwen3.6-35b-a3b-mtp-tensorfold-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-mtp-tensorfold-spark.toml")),
+    ("ornith-1.5-122b-tensorfold.toml", include_str!("../recipes/ornith-1.5-122b-tensorfold.toml")),
 ];
 
 pub fn builtin() -> Vec<Found> {
@@ -29,7 +30,7 @@ pub fn builtin() -> Vec<Found> {
         .iter()
         .map(|(file, text)| {
             let stem = file.trim_end_matches(".toml");
-            let recipe = Recipe::parse(text, Format::Toml, stem).expect("builtin recipes are valid");
+            let recipe = Recipe::parse(text, stem).expect("builtin recipes are valid");
             Found { recipe, origin: BUILTIN.into(), file: (*file).into() }
         })
         .collect()
@@ -43,7 +44,8 @@ pub fn deck(paths: &Paths) -> (Vec<Found>, Vec<(String, String)>) {
     let mut files: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     files.sort();
     for path in files {
-        if Format::from_path(&path).is_none() {
+        // A leftover `.yaml` is reported (YAML is no longer read), not skipped.
+        if !(is_recipe_file(&path) || is_yaml_file(&path)) {
             continue;
         }
         match Recipe::load(&path) {
@@ -122,13 +124,6 @@ pub fn add_to_deck(paths: &Paths, recipe: &Recipe, force: bool) -> Result<std::p
     if path.exists() && !force {
         bail!("{} is already in the deck ({}); use --force to overwrite", recipe.name, path.display());
     }
-    // Remove a same-named YAML so the deck has one file per recipe.
-    for ext in ["yaml", "yml"] {
-        let other = dir.join(format!("{}.{ext}", recipe.name));
-        if other.exists() && force {
-            fs::remove_file(other)?;
-        }
-    }
     let header = format!("# lmdeck recipe '{}'\n", recipe.name);
     fs::write(&path, header + &recipe.to_toml()?)?;
     Ok(path)
@@ -148,7 +143,8 @@ pub fn remove_from_deck(paths: &Paths, name: &str) -> Result<bool> {
 
 /// Is `s` a path to an existing recipe file?
 pub fn is_file_ref(s: &str) -> bool {
-    Path::new(s).is_file() && Format::from_path(Path::new(s)).is_some()
+    let p = Path::new(s);
+    p.is_file() && (is_recipe_file(p) || is_yaml_file(p))
 }
 
 #[cfg(test)]
@@ -190,5 +186,32 @@ mod tests {
         assert!(err.contains("did you mean"), "{err}");
         assert!(remove_from_deck(&paths, &r.name).unwrap());
         assert!(!remove_from_deck(&paths, &r.name).unwrap());
+    }
+
+    #[test]
+    fn yaml_in_the_deck_is_an_error() {
+        let (_d, paths) = tmp();
+        fs::create_dir_all(paths.recipes_dir()).unwrap();
+        fs::write(paths.recipes_dir().join("old.yaml"), "runtime: llama\nmodel: a/b/c.gguf\n").unwrap();
+        fs::write(paths.recipes_dir().join("notes.txt"), "x").unwrap();
+        let (found, errors) = deck(&paths);
+        assert!(found.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].1.contains("YAML recipes are no longer supported"), "{:?}", errors);
+    }
+
+    #[test]
+    fn ornith_wrapper_builtin() {
+        let r = builtin().into_iter().find(|f| f.recipe.name == "ornith-1.5-122b-tensorfold").unwrap().recipe;
+        let e = &r.engine;
+        assert_eq!(e.name, crate::recipe::Engine::Custom);
+        assert!(e.detached);
+        assert_eq!(e.container.as_deref(), Some("ornith-122b-tf"));
+        assert_eq!(r.port(), 8888);
+        assert_eq!(e.command, ["./start.sh"]);
+        assert_eq!(e.stop, ["./stop.sh"]);
+        assert_eq!(e.logs, ["docker", "logs", "-f", "ornith-122b-tf"]);
+        assert!(e.ready_timeout.unwrap() >= 3600);
+        assert!(r.source.unwrap().repo.contains("MiaAI-Lab/Ornith-1.5-122B-TensorFold"));
     }
 }

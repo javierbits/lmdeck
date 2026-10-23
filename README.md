@@ -14,13 +14,16 @@ servers, searches recipe repos on GitHub and Hugging Face, and checks whether
 a recipe fits the machine you're on.
 
 Supported engines: **llama.cpp** (`llama-server`), **vLLM** (native or Docker),
-**SGLang** (native or Docker), **TabbyAPI / exllamav3** (EXL3), **LM Studio**
-(`lms`), **MLX** (`mlx_lm.server`), **TensorFold** (`tensorfold serve`, Metal + CUDA),
-plus `custom` for anything with an
+**SGLang** (native or Docker), **LMDeploy** (native or Docker), **TabbyAPI /
+exllamav3** (EXL3), **LM Studio** (`lms`), **MLX** (`mlx_lm.server`), **TensorFold**
+(`tensorfold serve`, Metal + CUDA), plus `custom` for anything with an
 OpenAI-compatible `/v1/models`.
 
-It reads [lmswitch](https://github.com/jvr0x/lmswitch) YAML recipes as-is, and
-its default source is [`jvr0x/ai-models`](https://github.com/jvr0x/ai-models).
+`custom` can also *wrap* a repo that already ships its own `start.sh` / `stop.sh`
+(see [Wrapped recipes](#wrapped-recipes)). lmdeck clones it, runs its scripts and
+watches the server. It never patches or builds an engine itself.
+
+Recipes are TOML only.
 
 ## Install
 
@@ -35,10 +38,10 @@ x86_64. Windows isn't supported.
 
 ```sh
 lmdeck doctor                 # hardware, engines, and which recipes fit
-lmdeck source update          # fetch recipes from github:jvr0x/ai-models
+lmdeck source add github:someone/recipes   # optional: more recipes
 lmdeck recipe search qwen --compatible
-lmdeck recipe add ai-models/qwen3.6-35b-a3b-nvfp4-fast
-lmdeck pull qwen3.6-35b-a3b-nvfp4-fast     # hf download …
+lmdeck recipe add qwen3-4b-gguf
+lmdeck pull qwen3-4b-gguf     # hf download …
 lmdeck use 1                  # start deck entry #1, wait for /v1/models
 lmdeck list                   # ● loaded  ○ stopped  ✓ downloaded
 lmdeck switch qwen3-4b-gguf   # stop the others, start this one
@@ -296,8 +299,9 @@ column and Machine panel there still describe that VM.
 | `lmdeck list [-a] [-l] [-d] [--json]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port. `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache). |
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
-| `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`. |
-| `lmdeck pull <ref> [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. |
+| `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
+| `lmdeck pull <ref> [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). |
+| `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
 | `lmdeck logs <ref> [-n N]` | Prints the tail of the server log. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
 | `lmdeck recipe add <ref\|file\|url> [--name N] [--force]` | Copies a recipe into your deck as TOML. |
@@ -311,13 +315,13 @@ column and Machine panel there still describe that VM.
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
-(`ai-models/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from
+(`mine/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from
 `lmdeck list`. When the same name exists in several places, the deck copy wins.
 
 ## Sources
 
 ```sh
-lmdeck source add github:jvr0x/ai-models               # whole repo, default branch
+lmdeck source add github:someone/recipes               # whole repo, default branch
 lmdeck source add github:someone/recipes/spark@v2      # subdirectory at a ref
 lmdeck source add https://github.com/o/r/tree/main/recipes
 lmdeck source add hf:someone/lmdeck-recipes            # a Hugging Face model repo
@@ -330,7 +334,7 @@ Sources are fetched over public HTTPS endpoints only:
 - **GitHub:** the git trees API (`api.github.com`), then `raw.githubusercontent.com` for the files.
 - **Hugging Face:** `huggingface.co/api/.../tree`, then `/resolve/` for the files.
 
-Only `.toml`, `.yaml` and `.yml` files are fetched. A source is capped at 500
+Only `.toml` files are fetched. A source is capped at 500
 files, and each file at 512 KB. Files that aren't recipes, like CI configs or
 notes, are skipped without a warning. Recipes that fail to parse are listed by
 `lmdeck doctor`.
@@ -343,8 +347,9 @@ Each source is mirrored to `~/.cache/lmdeck/sources/<name>/`. Run
 
 ## Recipe format
 
-lmdeck's own recipes are TOML. YAML with the same schema works too. A recipe's
-name defaults to its file name.
+Recipes are TOML. A recipe's name defaults to its file name. YAML is not
+supported: a `.yaml`/`.yml` file in the deck, or passed to `recipe add`, is an
+error that says so, and sources skip YAML files.
 
 ```toml
 display_name = "Qwen3 30B-A3B (EXL3 4.0bpw)"
@@ -365,18 +370,19 @@ bits   = 4.0
 label  = "4.0bpw"
 
 [engine]
-name  = "tabbyapi"     # llama.cpp | vllm | sglang | tabbyapi | lmstudio | mlx | tensorfold | custom
+name  = "tabbyapi"     # llama.cpp | vllm | sglang | lmdeploy | tabbyapi | lmstudio | mlx | tensorfold | custom
 port  = 5000
 ctx   = 32768
 args  = ["--cache-mode", "Q8"]            # appended last; placeholders below
 # env        = { CUDA_VISIBLE_DEVICES = "0" }
-# image      = "vllm/vllm-openai:cu130-nightly"   # vllm/sglang: run in Docker
+# image      = "vllm/vllm-openai:cu130-nightly"   # vllm/sglang/lmdeploy: run in Docker
 # entrypoint = ["vllm", "serve"]                  # docker --entrypoint override
 # volumes    = ["/data:/data:ro"]
 # bin        = "/opt/llama.cpp/build/bin/llama-server"
 # dir        = "~/tabbyAPI"                       # tabbyapi checkout
 # command    = ["my-server", "--port", "{port}"]  # custom engines
 # ready_timeout = 900
+# stop / detached / container / logs: custom only, see "Wrapped recipes"
 
 [hardware]             # all optional
 min_memory_gb = 24     # unified memory (GB10, Apple), VRAM (discrete GPUs) or RAM (CPU)
@@ -388,7 +394,9 @@ nodes         = 1
 ```
 
 Placeholders in `args` and `command`: `{name}`, `{port}`, `{ctx}`, `{model}`,
-`{models_dir}`, `{host}`, `{repo}`, `{revision}`.
+`{models_dir}`, `{host}`, `{repo}`, `{revision}`. `custom` recipes also get
+`{dir}` (the working directory) and `{container}`, and the placeholders work in
+`env`, `stop` and `logs` too.
 
 If `args` already sets one of lmdeck's default flags (for example
 `--n-gpu-layers` or `--gpu-memory-utilization`), lmdeck doesn't add its
@@ -401,11 +409,12 @@ default.
 | `llama.cpp` | `llama-server --model <models_dir>/<repo>/<file> --alias <name> --host --port --ctx-size …`. If the GGUF isn't on disk, it uses `--hf-repo <repo> --hf-file <file>` instead. |
 | `vllm` | Native: `vllm serve <repo or path> --served-model-name <name> --host --port --max-model-len [--revision]`. With `image`, it runs `docker run --rm --name lmdeck-<name> --gpus all --network host --ipc host` with the HF cache mounted. `HF_TOKEN` is forwarded by name only. |
 | `sglang` | `python3 -m sglang.launch_server --model-path … --served-model-name … --context-length …`, natively or in Docker. |
+| `lmdeploy` | `lmdeploy serve api_server <repo or path> --model-name <name> --server-name --server-port --session-len [--revision]` (default port 23333). With `image` (e.g. `openmmlab/lmdeploy:latest`) it runs in Docker like vLLM, with `lmdeploy serve api_server` after the image. Aliases: `lm-deploy`, `turbomind`. Set `engines.lmdeploy` if the binary isn't on `PATH`; `doctor` also accepts the `lmdeploy` Python module. |
 | `tabbyapi` | `python3 main.py --model-dir … --model-name … --backend exllamav3 --max-seq-len …`, run in the TabbyAPI checkout. Weights must be local: `lmdeck pull` puts EXL3 branches in `<models_dir>/<repo>-<revision>`. |
 | `lmstudio` | `lms server start`, then `lms load <model> --identifier <name>`. `stop` runs `lms unload`. |
 | `mlx` | `mlx_lm.server --model <repo or path> --host --port`. |
 | `tensorfold` | `tensorfold serve <repo or checkpoint dir> --name <name> --host --port [--context <ctx>]`. See [TensorFold](#tensorfold) below. |
-| `custom` | Your `command`. |
+| `custom` | Your `command`, run in `dir` (or the `[source]` checkout). Nothing is appended unless you put it in `args`. |
 
 ### TensorFold
 
@@ -458,27 +467,59 @@ ctx  = 8192
 args = ["--no-thinking"]
 ```
 
-### lmswitch compatibility
+### Wrapped recipes
 
-lmswitch YAML recipes are converted when loaded. The mapping:
+Some model repos ship their own launcher: a `start.sh` that builds or pulls an
+image, downloads weights and starts the server, and a `stop.sh`. lmdeck can run
+those as they are. It applies no patches and builds nothing; the scripts do
+everything, and lmdeck clones the repo, hands the scripts its settings as
+environment variables, waits for `/v1/models`, shows the logs, and stops it.
 
-- `runtime` becomes the engine:
-  - `llama` → llama.cpp
-  - `vllm` → vllm
-  - `sglang` → sglang
-  - `exllamav3` → tabbyapi
-  - `*-dual` → `nodes = 2`
-- `model: org/repo/file.gguf` becomes `repo` plus `files`. It also becomes `path`, resolved against `models_dir`, the same `~/models` layout lmswitch uses.
-- These keys carry over into engine flags:
-  - `gpu_layers`, `threads`, `batch`, `ubatch`, `mmproj`
-  - llama.cpp's `fit` (defaults to `-fit off`, as in lmswitch)
-  - `gpu_memory_utilization`, `max_num_seqs`, `enforce_eager`
-  - `tool_call_parser`, `reasoning_parser`, `trust_remote_code`
-  - `image`, `entrypoint`, `env`, `extra_mounts`, `extra_args`
-- The recipe description comes from the file's first comment line.
+```sh
+lmdeck add MiaAI-Lab/Ornith-1.5-122B-TensorFold   # or a URL, or a local directory
+lmdeck use ornith-1.5-122b-tensorfold --dry-run
+```
 
-Multi-node (`*-dual`) recipes are listed and checked, but v0.1 refuses to
-launch them. Use lmswitch for those.
+`lmdeck add` needs `start.sh` and `stop.sh` at the repo root. It reads
+`VAR=${VAR:-default}` lines in the root `*.sh`, `scripts/*.sh` and
+`.env.example` to find the port and Docker container name, pins the commit it
+cloned, and leaves `TODO` comments for whatever it can't tell. Review the file
+it writes in `~/.config/lmdeck/recipes/`.
+
+```toml
+[source]                       # cloned into ~/.cache/lmdeck/checkouts/<recipe>/
+repo = "https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold"
+ref  = "0c8fd6a0d1e2ece7557978a7d8c3d96d137eb075"   # branch, tag or commit
+
+[engine]
+name      = "custom"
+command   = ["./start.sh"]     # run in the checkout (or in `dir`, relative to it)
+stop      = ["./stop.sh"]      # same cwd and env as start
+detached  = true               # start.sh exits once the server is up
+container = "ornith-122b-tf"   # liveness: `docker inspect`; stop falls back to `docker stop`
+logs      = ["docker", "logs", "-f", "ornith-122b-tf"]   # what the log views show
+port      = 8888
+ready_timeout = 10800          # first runs build images and download weights
+
+[engine.env]                   # how lmdeck's settings reach the scripts
+PORT           = "{port}"
+HOST           = "{host}"
+CONTAINER_NAME = "{container}"
+```
+
+- `[model]` is optional for `custom` recipes; leave it out when the scripts fetch
+  their own weights.
+- `[source]` is cloned on the first `use` (never fetched then). `lmdeck pull`
+  fetches and checks out `ref` again; it refuses if you've changed tracked files
+  in the checkout. Untracked files such as `.env` are kept.
+- `dir` defaults to the checkout. A relative `dir` is resolved inside it.
+- `detached = true`: start exiting with status 0 isn't a crash. The server is
+  alive while `container` is running (or, without `container`, while the port
+  answers). A non-zero exit is a failure, unless the container is still running.
+- `stop` runs the stop script, then `docker stop` if the container is still up,
+  then terminates whatever lmdeck started.
+- `stop`, `detached`, `container`, `logs` and `[source]` are only allowed on
+  `custom` recipes; `logs` needs `detached`.
 
 ## Files
 
@@ -487,6 +528,7 @@ launch them. Use lmswitch for those.
 | config | `~/.config/lmdeck/config.toml` (`$XDG_CONFIG_HOME`) |
 | your deck | `~/.config/lmdeck/recipes/*.toml` |
 | source mirrors | `~/.cache/lmdeck/sources/` (`$XDG_CACHE_HOME`) |
+| wrapped-recipe checkouts | `~/.cache/lmdeck/checkouts/<recipe>/` |
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
 | model weights | `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) plus the Hugging Face cache |
@@ -506,11 +548,12 @@ theme = "tokyo-night"     # lmdeck theme set …; omp when unset
 # python = "~/venvs/vllm/bin/python"
 # lms = "~/.lmstudio/bin/lms"
 # tensorfold = "~/.tensorfold/bin/tensorfold"
+# lmdeploy = "~/venvs/lmdeploy/bin/lmdeploy"
 # docker = "docker"
 
-[[sources]]
-name = "ai-models"
-spec = "github:jvr0x/ai-models"
+[[sources]]               # none by default
+name = "mine"
+spec = "github:someone/recipes"
 ```
 
 ## Built-in examples
@@ -528,6 +571,11 @@ is empty. Every Hugging Face id below was checked against the Hub.
 | `qwen3-4b-lmstudio` | `unsloth/Qwen3-4B-GGUF` | lmstudio | LM Studio |
 | `qwen3.5-2b-tensorfold` | `mlx-community/Qwen3.5-2B-MLX-4bit` @ `93760be` | tensorfold | Apple Silicon or NVIDIA (TensorFold's quick-start model) |
 | `qwen3.6-35b-a3b-mtp-tensorfold-spark` | `TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP` @ `81169a9` | tensorfold | NVIDIA / DGX Spark (CUDA only) |
+| `ornith-1.5-122b-tensorfold` | wraps [MiaAI-Lab/Ornith-1.5-122B-TensorFold](https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold) @ `0c8fd6a` (its scripts fetch the EXL3 weights) | custom (wrapped, detached) | DGX Spark, ~100 GB |
+
+[`examples/`](examples/) has recipes that aren't built in, such as
+`ornith-122b-awq-lmdeploy.toml` (LMDeploy in Docker; its model repo is a
+placeholder).
 
 ## Development
 

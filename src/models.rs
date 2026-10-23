@@ -188,7 +188,6 @@ pub fn presence(r: &Recipe, models_dir: &Path, hf_cache: &Path) -> Presence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::Format;
 
     #[test]
     fn shard_parsing() {
@@ -231,17 +230,11 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].id.as_str(), found[0].size), ("mlx-community/Qwen3-4B-4bit", 42));
 
-        let r =
-            Recipe::parse("[model]\nrepo=\"mlx-community/Qwen3-4B-4bit\"\n[engine]\nname=\"mlx\"\n", Format::Toml, "m")
-                .unwrap();
+        let r = Recipe::parse("[model]\nrepo=\"mlx-community/Qwen3-4B-4bit\"\n[engine]\nname=\"mlx\"\n", "m").unwrap();
         let p = presence(&r, Path::new("/nonexistent"), d.path());
         assert!(p.cached && !p.local && p.present());
-        let r = Recipe::parse(
-            "[model]\nrepo=\"a/b\"\nfiles=[\"x.gguf\"]\n[engine]\nname=\"llama.cpp\"\n",
-            Format::Toml,
-            "m",
-        )
-        .unwrap();
+        let r =
+            Recipe::parse("[model]\nrepo=\"a/b\"\nfiles=[\"x.gguf\"]\n[engine]\nname=\"llama.cpp\"\n", "m").unwrap();
         assert!(!presence(&r, d.path(), d.path()).present());
         fs::create_dir_all(d.path().join("a/b")).unwrap();
         fs::write(d.path().join("a/b/x.gguf"), vec![0u8; 5]).unwrap();

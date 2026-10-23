@@ -407,6 +407,7 @@ impl Deck {
                 bail!("{} needs ~{need:.1} GB but only {avail:.1} GB is free; stop something first", r.name);
             }
         }
+        crate::checkout::ensure(&self.paths, r)?;
         runner::start(&self.paths, &r.name, r.engine.name.as_str(), &plan)?;
         let mut msg = format!("starting {} on :{}", r.name, plan.port);
         if !stopped.is_empty() {
@@ -435,6 +436,12 @@ impl Deck {
         let r = &resolve(&cat, target)?.recipe;
         if self.pulling(&r.name) {
             return Ok(format!("{} is already downloading", r.name));
+        }
+        // A wrapped recipe's `[source]` is updated in place; its scripts fetch their own weights.
+        if let Some(o) = crate::checkout::update(&self.paths, r)? {
+            if r.model.repo.is_none() {
+                return Ok(format!("{}: checkout {}", r.name, o.describe()));
+            }
         }
         let argv = pull_argv(&self.cfg, r)?;
         if which(&argv[0]).is_none() {

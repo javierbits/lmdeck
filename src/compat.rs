@@ -193,7 +193,7 @@ fn tensorfold_checks(r: &Recipe, hw: &Hardware) -> Vec<(Level, &'static str, Str
 mod tests {
     use super::*;
     use crate::hardware::{parse_nvidia_smi, Hardware};
-    use crate::recipe::{Format, Recipe};
+    use crate::recipe::Recipe;
 
     fn spark() -> Hardware {
         Hardware::assemble(
@@ -220,8 +220,7 @@ mod tests {
     }
 
     fn r(hw: &str) -> Recipe {
-        Recipe::parse(&format!("[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n[hardware]\n{hw}"), Format::Toml, "t")
-            .unwrap()
+        Recipe::parse(&format!("[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n[hardware]\n{hw}"), "t").unwrap()
     }
 
     #[test]
@@ -265,7 +264,6 @@ mod tests {
         let tf = |extra: &str| {
             Recipe::parse(
                 &format!("[model]\nrepo=\"a/b\"\n{extra}[engine]\nname=\"tensorfold\"\n[hardware]\nmin_memory_gb=4\n"),
-                Format::Toml,
                 "t",
             )
             .unwrap()
@@ -289,7 +287,6 @@ mod tests {
     fn multi_node_and_reserve() {
         let rec = Recipe::parse(
             "[model]\nrepo=\"a/b\"\n[engine]\nname=\"sglang\"\nargs=[\"--mem-fraction-static\",\"0.95\"]\n[hardware]\nnodes=2\nmin_memory_gb=10\n",
-            Format::Toml,
             "t",
         )
         .unwrap();

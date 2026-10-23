@@ -8,6 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use lmdeck::catalog::{self, Catalog, BUILTIN, DECK};
+use lmdeck::checkout;
 use lmdeck::compat::{self, Level, Report};
 use lmdeck::config::{Config, SourceEntry};
 use lmdeck::deck::{self, listed, memory_need_gb, resolve, status_word, Deck};
@@ -16,11 +17,12 @@ use lmdeck::hardware::{which, Hardware};
 use lmdeck::hosts::{self, HostView, HostsFile};
 use lmdeck::models::{self, hf_cache_dir, Presence};
 use lmdeck::paths::{home_dir, Paths};
-use lmdeck::recipe::{valid_name, Engine, Format, Recipe};
+use lmdeck::recipe::{is_recipe_file, is_yaml_file, valid_name, Engine, Recipe, YAML_UNSUPPORTED};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
+use lmdeck::wrap;
 
 #[derive(Parser)]
 #[command(name = "lmdeck", version, about = "A deck of local LLM recipes: list, switch, search, and check what fits.")]
@@ -53,7 +55,21 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// Download a recipe's weights (via the Hugging Face CLI).
+    /// Wrap a repo that ships start.sh / stop.sh as a recipe in the deck.
+    Add {
+        /// GitHub owner/repo, a GitHub or git URL, or a local directory.
+        repo: String,
+        /// Recipe name (default: the repo name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Branch, tag or commit to pin (default: the default branch's current commit).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+        /// Overwrite a deck recipe with the same name.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Download a recipe's weights (via the Hugging Face CLI), or update a wrapped recipe's checkout.
     Pull {
         target: String,
         /// Print the download command only.
@@ -341,6 +357,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Use(a)) => use_recipe(&ctx, &a),
         Some(Cmd::Switch(a)) => use_recipe(&ctx, &UseArgs { only: true, ..a }),
         Some(Cmd::Stop { target, all }) => stop(&ctx, target.as_deref(), all),
+        Some(Cmd::Add { repo, name, git_ref, force }) => add_wrapper(&ctx, &repo, name, git_ref, force),
         Some(Cmd::Pull { target, dry_run }) => pull(&ctx, &target, dry_run),
         Some(Cmd::Logs { target, lines }) => logs(&ctx, &target, lines),
         Some(Cmd::Recipe(c)) => recipe_cmd(&ctx, c),
@@ -819,15 +836,35 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         for pre in &plan.pre {
             println!("  pre:  {}", shlex::try_join(pre.iter().map(String::as_str)).unwrap_or_default());
         }
+        if let (Some(src), Some(co)) = (&r.source, &plan.checkout) {
+            for line in checkout::describe_sync(src, co, false) {
+                println!("  git:  {line}");
+            }
+        }
         if let Some(cwd) = &plan.cwd {
             println!("  cwd:  {}", cwd.display());
         }
-        for k in plan.env.keys() {
-            println!("  env:  {k}");
+        for (k, v) in &plan.env {
+            // Values only for wrapped recipes, whose env is how settings reach the scripts.
+            if r.engine.name == Engine::Custom && !k.contains("TOKEN") && !k.contains("KEY") {
+                println!("  env:  {k}={v}");
+            } else {
+                println!("  env:  {k}");
+            }
         }
         println!("  run:  {}", plan.command_line());
+        if plan.detached {
+            let how = match &plan.container {
+                Some(c) => format!("container {c}"),
+                None => format!("port {}", plan.port),
+            };
+            println!("  mode: detached (exits 0 once up; liveness from {how})");
+        }
         if let Some(s) = &plan.stop {
-            println!("  stop: {}", s.join(" "));
+            println!("  stop: {}", shlex::try_join(s.iter().map(String::as_str)).unwrap_or_else(|_| s.join(" ")));
+        }
+        if let Some(l) = &plan.logs {
+            println!("  logs: {}", shlex::try_join(l.iter().map(String::as_str)).unwrap_or_else(|_| l.join(" ")));
         }
         println!("  url:  http://localhost:{}/v1", plan.port);
         return Ok(());
@@ -887,6 +924,14 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         }
     }
 
+    if let (Some(src), Some(co)) = (&r.source, &plan.checkout) {
+        if !co.join(".git").exists() {
+            println!("{} cloning {} {}", cyan("↓"), src.repo, dim(&format!("→ {}", co.display())));
+        }
+        if let Some(o) = checkout::ensure(&ctx.paths, r)? {
+            println!("  {}", dim(&format!("checkout {}", o.describe())));
+        }
+    }
     println!("{} starting {} {}", cyan("▶"), bold(&r.name), dim(&format!("({}, port {})", r.engine.name, plan.port)));
     println!("  {}", dim(&plan.command_line()));
     let rec = runner::start(&ctx.paths, &r.name, r.engine.name.as_str(), &plan)?;
@@ -966,6 +1011,23 @@ fn logs(ctx: &Ctx, target: &str, lines: usize) -> Result<()> {
 fn pull(ctx: &Ctx, target: &str, dry_run: bool) -> Result<()> {
     let cat = ctx.catalog();
     let r = &resolve(&cat, target)?.recipe;
+    // A wrapped recipe: update its checkout. Its scripts fetch their own weights,
+    // so there is nothing more to do unless it also names an HF repo.
+    if let Some(src) = &r.source {
+        let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &r.name);
+        if dry_run {
+            for line in checkout::describe_sync(src, &co, true) {
+                println!("{line}");
+            }
+        } else {
+            println!("{} {} {}", cyan("↓"), src.repo, dim(&format!("→ {}", co.display())));
+            let o = checkout::update(&ctx.paths, r)?.expect("has a source");
+            println!("{} {} checkout {}", green("✓"), bold(&r.name), o.describe());
+        }
+        if r.model.repo.is_none() {
+            return Ok(());
+        }
+    }
     let argv = deck::pull_argv(&ctx.cfg, r)?;
     let line = shlex::try_join(argv.iter().map(String::as_str)).unwrap_or_else(|_| argv.join(" "));
     if dry_run {
@@ -1102,15 +1164,76 @@ fn fetch_url(url: &str) -> Result<String> {
     Ok(resp.into_string()?)
 }
 
+/// `lmdeck add <repo>`: clone it, read its scripts, write a wrapper recipe.
+fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<String>, force: bool) -> Result<()> {
+    let (url, url_ref, default_name) = wrap::parse_repo_arg(repo)?;
+    let name = name.unwrap_or(default_name);
+    if !valid_name(&name) {
+        bail!("invalid name '{name}': use letters, digits, '.', '_' or '-' (or pass --name)");
+    }
+    let deck_file = ctx.paths.recipes_dir().join(format!("{name}.toml"));
+    if deck_file.exists() && !force {
+        bail!("{name} is already in the deck ({}); use --force to overwrite", deck_file.display());
+    }
+    let wanted_ref = git_ref.or(url_ref);
+    let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &name);
+    if co.join(".git").exists() {
+        let origin = checkout::origin_url(&co).unwrap_or_default();
+        if origin != url {
+            if !force {
+                bail!("{} already holds a checkout of {origin}; use --force to replace it", co.display());
+            }
+            std::fs::remove_dir_all(&co).with_context(|| format!("removing {}", co.display()))?;
+        }
+    }
+    println!("{} {} {}", cyan("↓"), url, dim(&format!("→ {}", co.display())));
+    let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone() };
+    let outcome = checkout::sync(&src, &co, true)?;
+    let det = wrap::detect(&co)?;
+    let branch = checkout::default_branch(&co);
+    // Pin the commit unless a ref was asked for.
+    let pinned = wanted_ref.clone().unwrap_or_else(|| outcome.commit().to_string());
+    let display = url.rsplit(['/', ':']).next().unwrap_or(&name).trim_end_matches(".git").to_string();
+    let pin = wrap::SourcePin {
+        repo: &url,
+        git_ref: &pinned,
+        branch: if wanted_ref.is_none() { branch.as_deref() } else { None },
+    };
+    let text = wrap::recipe_toml(&name, &display, &pin, &det);
+    Recipe::parse(&text, &name).context("the generated recipe does not parse (please report this)")?;
+    std::fs::create_dir_all(ctx.paths.recipes_dir())?;
+    std::fs::write(&deck_file, &text).with_context(|| format!("writing {}", deck_file.display()))?;
+    println!("{} added {} to the deck {}", green("✓"), bold(&name), dim(&format!("({})", deck_file.display())));
+    let found = |label: &str, v: Option<String>| match v {
+        Some(v) => println!("  {label:<10} {v}"),
+        None => println!("  {label:<10} {}", yellow("not found (TODO in the recipe)")),
+    };
+    found("port", det.port.map(|p| format!("{p} (from {})", det.port_var.clone().unwrap_or_default())));
+    if det.uses_docker || det.container.is_some() {
+        found("container", det.container.clone());
+    }
+    println!("  {:<10} {}", "detached", if det.detached { "yes" } else { "no (TODO: check)" });
+    let todos = text.matches("TODO").count();
+    if todos > 0 {
+        println!("{} {todos} TODO(s) to review in {}", yellow("!"), deck_file.display());
+    }
+    println!("  try: lmdeck use {name} --dry-run");
+    Ok(())
+}
+
 fn recipe_add(ctx: &Ctx, reference: &str, name: Option<String>, force: bool) -> Result<()> {
     let mut recipe = if catalog::is_file_ref(reference) {
         Recipe::load(Path::new(reference))?
     } else if reference.starts_with("https://") || reference.starts_with("http://") {
         let path_part = reference.split(['?', '#']).next().unwrap_or(reference);
-        let format =
-            Format::from_path(Path::new(path_part)).ok_or_else(|| anyhow!("URL must end in .toml, .yaml or .yml"))?;
+        if is_yaml_file(Path::new(path_part)) {
+            bail!("{YAML_UNSUPPORTED}");
+        }
+        if !is_recipe_file(Path::new(path_part)) {
+            bail!("URL must end in .toml (to wrap a repo's start.sh / stop.sh, use `lmdeck add <repo>`)");
+        }
         let stem = Path::new(path_part).file_stem().and_then(|s| s.to_str()).unwrap_or("recipe").to_string();
-        Recipe::parse(&fetch_url(reference)?, format, &stem)?
+        Recipe::parse(&fetch_url(reference)?, &stem)?
     } else {
         let cat = ctx.catalog();
         let f = cat.resolve(reference)?;
@@ -1188,16 +1311,28 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
     if !r.model.files.is_empty() {
         kv("files", r.model.files.join(", "));
     }
+    if let Some(src) = &r.source {
+        let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &r.name);
+        let state = if co.join(".git").exists() { "checked out" } else { "not cloned yet" };
+        kv(
+            "source",
+            format!("{}{} {}", src.repo, src.git_ref.as_ref().map(|v| format!("@{v}")).unwrap_or_default(), dim(state)),
+        );
+    }
     kv("quant", r.quant_short());
     let p = ctx.presence(r);
-    kv(
-        "weights",
-        if p.present() {
-            format!("{} {}", green("✓"), human_bytes(p.size))
-        } else {
-            format!("{} {}", dim("✗ not downloaded"), size_cell(r, &p))
-        },
-    );
+    if r.model.is_empty() {
+        kv("weights", dim("fetched by the recipe's own scripts").to_string());
+    } else {
+        kv(
+            "weights",
+            if p.present() {
+                format!("{} {}", green("✓"), human_bytes(p.size))
+            } else {
+                format!("{} {}", dim("✗ not downloaded"), size_cell(r, &p))
+            },
+        );
+    }
     kv(
         "engine",
         format!(
@@ -1209,6 +1344,15 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
     );
     if let Some(img) = &r.engine.image {
         kv("image", img.clone());
+    }
+    if r.engine.detached {
+        kv(
+            "mode",
+            format!("detached{}", r.engine.container.as_ref().map(|c| format!(" · container {c}")).unwrap_or_default()),
+        );
+    }
+    if !r.engine.stop.is_empty() {
+        kv("stop", r.engine.stop.join(" "));
     }
     if !r.tags.is_empty() {
         kv("tags", r.tags.join(", "));

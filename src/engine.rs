@@ -43,7 +43,7 @@ impl Inventory {
 
     /// `Ok(())` when the recipe's engine can be launched here.
     pub fn can_launch(&self, r: &Recipe) -> std::result::Result<(), String> {
-        if r.engine.image.is_some() && matches!(r.engine.name, Engine::Vllm | Engine::Sglang) {
+        if r.engine.image.is_some() && matches!(r.engine.name, Engine::Vllm | Engine::Sglang | Engine::LmDeploy) {
             return if self.tool_available("docker") {
                 Ok(())
             } else {
@@ -56,6 +56,11 @@ impl Inventory {
         }
         if r.engine.name == Engine::Custom {
             let bin = r.engine.command.first().map(String::as_str).unwrap_or("");
+            // `./start.sh` lives in the recipe's working dir / [source] checkout,
+            // which may not be cloned yet; `start` checks it once it is.
+            if Path::new(bin).is_relative() && bin.contains('/') {
+                return Ok(());
+            }
             return which(bin).map(|_| ()).ok_or_else(|| format!("custom command '{bin}' not found"));
         }
         match self.engine(r.engine.name) {
@@ -69,7 +74,7 @@ impl Inventory {
     pub fn detect(cfg: &Config) -> Inventory {
         let o = &cfg.engines;
         let python = o.python.clone().unwrap_or_else(|| "python3".into());
-        let modules = python_modules(&python, &["vllm", "sglang", "exllamav3", "mlx_lm"]);
+        let modules = python_modules(&python, &["vllm", "sglang", "exllamav3", "mlx_lm", "lmdeploy"]);
         let has_mod = |m: &str| modules.iter().any(|x| x == m);
         let found = |name: &str, p: Option<PathBuf>, missing: &str| ToolStatus {
             name: name.into(),
@@ -116,6 +121,27 @@ impl Inventory {
                     "not installed natively; Docker recipes still work".into()
                 } else {
                     "not installed".into()
+                },
+            },
+        );
+        let lmdeploy_bin = which(o.lmdeploy.as_deref().unwrap_or("lmdeploy"));
+        engines.insert(
+            "lmdeploy".into(),
+            match (lmdeploy_bin, has_mod("lmdeploy")) {
+                (Some(p), _) => found("lmdeploy", Some(p), ""),
+                (None, true) => ToolStatus {
+                    name: "lmdeploy".into(),
+                    available: true,
+                    detail: format!("python module ({python}); run as `lmdeploy` needs its entry point on PATH"),
+                },
+                (None, false) => ToolStatus {
+                    name: "lmdeploy".into(),
+                    available: false,
+                    detail: if docker_ok {
+                        "not installed natively (pip install lmdeploy); Docker recipes still work".into()
+                    } else {
+                        "not installed (pip install lmdeploy)".into()
+                    },
                 },
             },
         );
@@ -251,6 +277,8 @@ pub struct PlanCtx {
     pub local_present: bool,
     /// Resolved binaries (from detection) keyed by engine; fall back to names.
     pub bins: BTreeMap<String, String>,
+    /// Where `[source]` checkouts live (`<cache>/checkouts`).
+    pub checkouts_dir: PathBuf,
 }
 
 impl PlanCtx {
@@ -275,6 +303,7 @@ impl PlanCtx {
             home: home_dir(),
             local_present,
             bins,
+            checkouts_dir: crate::paths::Paths::from_env().checkouts_dir(),
         }
     }
 }
@@ -291,9 +320,15 @@ pub struct LaunchPlan {
     pub container: Option<String>,
     /// `argv` exits once the model is loaded (LM Studio) instead of serving.
     pub oneshot: bool,
-    /// Command that unloads a oneshot model.
+    /// Command that unloads a oneshot model, or a wrapped recipe's `stop`.
     pub stop: Option<Vec<String>>,
     pub port: u16,
+    /// `argv` exits 0 once the server is up (wrapped `custom` recipes).
+    pub detached: bool,
+    /// Streams the server log after a detached `argv` exits.
+    pub logs: Option<Vec<String>>,
+    /// The `[source]` checkout this plan runs from, if any.
+    pub checkout: Option<PathBuf>,
 }
 
 impl LaunchPlan {
@@ -319,14 +354,26 @@ pub fn container_name(recipe: &str) -> String {
     format!("lmdeck-{recipe}")
 }
 
+/// `./start.sh` → `<dir>/start.sh`, so the program is found the same way on
+/// every platform (posix_spawn on macOS resolves relative programs against
+/// the parent's directory, not the child's).
+pub fn resolve_program(argv: &mut [String], cwd: Option<&Path>) {
+    if let (Some(first), Some(dir)) = (argv.first_mut(), cwd) {
+        if first.contains('/') && Path::new(first.as_str()).is_relative() {
+            *first = dir.join(first.trim_start_matches("./")).display().to_string();
+        }
+    }
+}
+
+/// Where a recipe's `[source]` is checked out.
+pub fn checkout_dir(checkouts_dir: &Path, recipe: &str) -> PathBuf {
+    checkouts_dir.join(recipe)
+}
+
 /// Builds the launch plan for `r`.
 pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     if r.nodes() > 1 {
-        bail!(
-            "'{}' spans {} nodes; multi-node launch is not supported in lmdeck v0.1 (use lmswitch for dual-Spark recipes)",
-            r.name,
-            r.nodes()
-        );
+        bail!("'{}' spans {} nodes; multi-node launch is not supported in lmdeck v0.1", r.name, r.nodes());
     }
     let port = r.port();
     let local = r.local_path(&ctx.models_dir);
@@ -346,6 +393,19 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     vars.insert("host", ctx.host.clone());
     vars.insert("repo", repo.clone());
     vars.insert("revision", revision.clone());
+    // The working directory: a [source] checkout (a relative `dir` resolves
+    // inside it), else `dir` as written.
+    let checkout = r.source.as_ref().map(|_| checkout_dir(&ctx.checkouts_dir, &r.name));
+    let work_dir: Option<PathBuf> = match (&checkout, r.engine.dir.as_deref()) {
+        (Some(co), Some(d)) if !expand(d).is_absolute() => Some(co.join(d)),
+        (Some(co), None) => Some(co.clone()),
+        (_, Some(d)) => Some(expand(d)),
+        (None, None) => None,
+    };
+    if r.engine.name == Engine::Custom {
+        vars.insert("dir", work_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default());
+        vars.insert("container", r.engine.container.clone().unwrap_or_default());
+    }
     let args: Vec<String> = r.engine.args.iter().map(|a| substitute(a, &vars)).collect();
     let env: BTreeMap<String, String> = r.engine.env.iter().map(|(k, v)| (k.clone(), substitute(v, &vars))).collect();
     let ctx_len = r.engine.ctx;
@@ -359,6 +419,9 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
         oneshot: false,
         stop: None,
         port,
+        detached: false,
+        logs: None,
+        checkout,
     };
     let host = ctx.host.clone();
     let bin_or = |engine: Engine, cfg: &Option<String>, default: &str| -> String {
@@ -404,24 +467,31 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             plan.argv = a;
             plan.env = env;
         }
-        Engine::Vllm | Engine::Sglang => {
-            let vllm = r.engine.name == Engine::Vllm;
+        Engine::Vllm | Engine::Sglang | Engine::LmDeploy => {
+            let engine = r.engine.name;
+            let vllm = engine == Engine::Vllm;
+            let lmdeploy = engine == Engine::LmDeploy;
+            // Flag names per engine: (model-name, host, port, context).
+            let (name_flag, host_flag, port_flag, ctx_flag) = match engine {
+                Engine::Vllm => ("--served-model-name", "--host", "--port", "--max-model-len"),
+                Engine::Sglang => ("--served-model-name", "--host", "--port", "--context-length"),
+                _ => ("--model-name", "--server-name", "--server-port", "--session-len"),
+            };
             let mut serve_args: Vec<String> = vec![];
-            if vllm {
-                serve_args.push(model_arg.clone());
-            } else {
+            if engine == Engine::Sglang {
                 serve_args.extend(["--model-path".into(), model_arg.clone()]);
+            } else {
+                serve_args.push(model_arg.clone());
             }
-            if !has_flag(&args, &["--served-model-name"]) {
-                serve_args.extend(["--served-model-name".into(), r.name.clone()]);
+            if !has_flag(&args, &[name_flag]) {
+                serve_args.extend([name_flag.into(), r.name.clone()]);
             }
-            if !has_flag(&args, &["--host"]) {
-                serve_args.extend(["--host".into(), host.clone()]);
+            if !has_flag(&args, &[host_flag]) {
+                serve_args.extend([host_flag.into(), host.clone()]);
             }
-            if !has_flag(&args, &["--port"]) {
-                serve_args.extend(["--port".into(), port.to_string()]);
+            if !has_flag(&args, &[port_flag]) {
+                serve_args.extend([port_flag.into(), port.to_string()]);
             }
-            let ctx_flag = if vllm { "--max-model-len" } else { "--context-length" };
             if let Some(c) = ctx_len.filter(|_| !has_flag(&args, &[ctx_flag])) {
                 serve_args.extend([ctx_flag.into(), c.to_string()]);
             }
@@ -466,11 +536,14 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
                 if std::env::var_os("HF_TOKEN").is_some() && !env.contains_key("HF_TOKEN") {
                     a.extend(["-e".into(), "HF_TOKEN".into()]);
                 }
-                let mut ep = r.engine.entrypoint.clone();
-                if ep.is_empty() && !vllm {
-                    ep = vec!["python3".into(), "-m".into(), "sglang.launch_server".into()];
+                let ep = r.engine.entrypoint.clone();
+                if ep.is_empty() && lmdeploy {
+                    // openmmlab/lmdeploy images have no serving entrypoint.
                     a.push(image.clone());
-                    a.extend(ep);
+                    a.extend(["lmdeploy".into(), "serve".into(), "api_server".into()]);
+                } else if ep.is_empty() && !vllm {
+                    a.push(image.clone());
+                    a.extend(["python3".into(), "-m".into(), "sglang.launch_server".into()]);
                 } else if ep.is_empty() {
                     // The vllm/vllm-openai image's ENTRYPOINT is already `vllm serve`.
                     a.push(image.clone());
@@ -481,6 +554,15 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
                 a.extend(serve_args);
                 plan.argv = a;
                 plan.container = Some(name);
+            } else if lmdeploy {
+                let mut a = vec![
+                    bin_or(Engine::LmDeploy, &ctx.overrides.lmdeploy, "lmdeploy"),
+                    "serve".into(),
+                    "api_server".into(),
+                ];
+                a.extend(serve_args);
+                plan.argv = a;
+                plan.env = env;
             } else if vllm {
                 let mut a = vec![bin_or(Engine::Vllm, &ctx.overrides.vllm, "vllm"), "serve".into()];
                 a.extend(serve_args);
@@ -589,11 +671,20 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             plan.env = env;
         }
         Engine::Custom => {
+            // `args` are appended only when the recipe gives some.
             let mut a: Vec<String> = r.engine.command.iter().map(|c| substitute(c, &vars)).collect();
             a.extend(args);
             plan.argv = a;
-            plan.cwd = r.engine.dir.as_deref().map(expand);
+            plan.cwd = work_dir;
             plan.env = env;
+            plan.detached = r.engine.detached;
+            plan.container = r.engine.container.clone();
+            if !r.engine.stop.is_empty() {
+                plan.stop = Some(r.engine.stop.iter().map(|c| substitute(c, &vars)).collect());
+            }
+            if !r.engine.logs.is_empty() {
+                plan.logs = Some(r.engine.logs.iter().map(|c| substitute(c, &vars)).collect());
+            }
         }
     }
     Ok(plan)
@@ -602,7 +693,6 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::Format;
 
     fn ctx(local_present: bool) -> PlanCtx {
         PlanCtx {
@@ -612,11 +702,12 @@ mod tests {
             home: PathBuf::from("/home/j"),
             local_present,
             bins: BTreeMap::new(),
+            checkouts_dir: PathBuf::from("/c/checkouts"),
         }
     }
 
     fn recipe(t: &str) -> Recipe {
-        Recipe::parse(t, Format::Toml, "test").unwrap()
+        Recipe::parse(t, "test").unwrap()
     }
 
     const GGUF: &str = "[model]\nrepo = \"unsloth/Qwen3-4B-GGUF\"\nfiles = [\"Qwen3-4B-Q4_K_M.gguf\"]\n[engine]\nname = \"llama.cpp\"\nport = 8085\nctx = 32768\nargs = [\"-fa\", \"on\", \"--mmproj\", \"{models_dir}/x.gguf\"]\n";
@@ -808,6 +899,69 @@ mod tests {
         assert_eq!(parse_tensorfold_version("tensorfold 1.0.8").as_deref(), Some("1.0.8"));
         assert_eq!(parse_tensorfold_version("usage: something"), None);
         assert_eq!(parse_tensorfold_version(""), None);
+    }
+
+    #[test]
+    fn lmdeploy_native_and_docker() {
+        let r = recipe("[model]\nrepo=\"org/Model-AWQ\"\nrevision=\"r1\"\n[engine]\nname=\"lmdeploy\"\nctx=32768\nargs=[\"--model-format\",\"awq\"]\n");
+        let p = plan(&r, &ctx(false)).unwrap();
+        assert_eq!(
+            p.argv,
+            [
+                "lmdeploy",
+                "serve",
+                "api_server",
+                "org/Model-AWQ",
+                "--model-name",
+                "test",
+                "--server-name",
+                "0.0.0.0",
+                "--server-port",
+                "23333",
+                "--session-len",
+                "32768",
+                "--revision",
+                "r1",
+                "--model-format",
+                "awq"
+            ]
+        );
+        let r = recipe("[model]\nrepo=\"a/b\"\n[engine]\nname=\"lmdeploy\"\nimage=\"openmmlab/lmdeploy:latest\"\nargs=[\"--server-port\",\"9000\"]\n");
+        let p = plan(&r, &ctx(false)).unwrap();
+        let line = p.command_line();
+        assert!(line.starts_with("docker run --rm --name lmdeck-test"), "{line}");
+        assert!(
+            line.contains("openmmlab/lmdeploy:latest lmdeploy serve api_server a/b --model-name test --server-name 0.0.0.0 --server-port 9000"),
+            "{line}"
+        );
+        assert_eq!(p.container.as_deref(), Some("lmdeck-test"));
+    }
+
+    #[test]
+    fn custom_wrapper_runs_from_checkout() {
+        let r = recipe("[source]\nrepo=\"https://example.com/srv.git\"\n[engine]\nname=\"custom\"\ncommand=[\"./start.sh\"]\nstop=[\"./stop.sh\",\"{container}\"]\ndetached=true\nport=8888\ncontainer=\"srv\"\nlogs=[\"docker\",\"logs\",\"-f\",\"{container}\"]\nenv={PORT=\"{port}\",WHERE=\"{dir}\"}\n");
+        let p = plan(&r, &ctx(false)).unwrap();
+        assert_eq!(p.argv, ["./start.sh"], "no args appended");
+        assert_eq!(p.cwd, Some(PathBuf::from("/c/checkouts/test")));
+        assert_eq!(p.checkout, Some(PathBuf::from("/c/checkouts/test")));
+        assert_eq!(p.stop.as_deref().unwrap(), ["./stop.sh", "srv"]);
+        assert_eq!(p.logs.as_deref().unwrap(), ["docker", "logs", "-f", "srv"]);
+        assert_eq!(p.env["PORT"], "8888");
+        assert_eq!(p.env["WHERE"], "/c/checkouts/test");
+        assert!(p.detached && !p.oneshot);
+        assert_eq!(p.container.as_deref(), Some("srv"));
+
+        let r = recipe("[source]\nrepo=\"x\"\n[engine]\nname=\"custom\"\ndir=\"server\"\ncommand=[\"./run\"]\n");
+        assert_eq!(plan(&r, &ctx(false)).unwrap().cwd, Some(PathBuf::from("/c/checkouts/test/server")));
+        let r = recipe("[source]\nrepo=\"x\"\n[engine]\nname=\"custom\"\ndir=\"/opt/s\"\ncommand=[\"./run\"]\n");
+        assert_eq!(plan(&r, &ctx(false)).unwrap().cwd, Some(PathBuf::from("/opt/s")));
+
+        let mut argv = vec!["./start.sh".to_string(), "x".into()];
+        resolve_program(&mut argv, Some(Path::new("/c/co")));
+        assert_eq!(argv, ["/c/co/start.sh", "x"]);
+        let mut argv = vec!["docker".to_string()];
+        resolve_program(&mut argv, Some(Path::new("/c/co")));
+        assert_eq!(argv, ["docker"]);
     }
 
     #[test]

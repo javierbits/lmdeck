@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::paths::expand;
-use crate::recipe::{is_not_a_recipe, Format, Recipe};
+use crate::recipe::{is_not_a_recipe, is_recipe_file, Recipe};
 use crate::util::now_secs;
 
 /// Files fetched per source, at most (keeps a mistaken `source add` cheap).
@@ -167,7 +167,8 @@ impl SourceSpec {
     }
 }
 
-/// Is this repo-relative path a candidate recipe file?
+/// Is this repo-relative path a candidate recipe file? Only `.toml`: YAML
+/// files (lmswitch recipes) are not recipes any more.
 pub fn is_candidate(path: &str, subdir: Option<&str>) -> bool {
     if let Some(sub) = subdir {
         let sub = sub.trim_matches('/');
@@ -178,7 +179,7 @@ pub fn is_candidate(path: &str, subdir: Option<&str>) -> bool {
     if path.split('/').any(|seg| seg.starts_with('.')) {
         return false;
     }
-    Format::from_path(Path::new(path)).is_some()
+    is_recipe_file(Path::new(path))
 }
 
 /// Written next to the mirrored files.
@@ -416,9 +417,11 @@ pub fn load_dir(origin: &str, dir: &Path) -> (Vec<Found>, Vec<(String, String)>)
     for rel in files {
         let path = dir.join(&rel);
         let Ok(text) = fs::read_to_string(&path) else { continue };
-        let Some(format) = Format::from_path(&path) else { continue };
+        if !is_recipe_file(&path) {
+            continue; // a mirror fetched before YAML support was dropped
+        }
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("recipe");
-        match Recipe::parse(&text, format, stem) {
+        match Recipe::parse(&text, stem) {
             Ok(recipe) => found.push(Found { recipe, origin: origin.into(), file: rel }),
             Err(e) if is_not_a_recipe(&e) => {}
             Err(e) => errors.push((rel, format!("{e:#}"))),
@@ -472,7 +475,8 @@ mod tests {
 
     #[test]
     fn candidate_filter() {
-        assert!(is_candidate("qwen.yaml", None));
+        assert!(is_candidate("qwen.toml", None));
+        assert!(!is_candidate("qwen.yaml", None) && !is_candidate("qwen.yml", None));
         assert!(is_candidate("recipes/a.toml", Some("recipes")));
         assert!(!is_candidate("other/a.toml", Some("recipes")));
         assert!(!is_candidate(".github/workflows/ci.yml", None));
@@ -483,15 +487,16 @@ mod tests {
     fn syncs_local_dir_and_loads() {
         let src = tempfile::tempdir().unwrap();
         fs::write(
-            src.path().join("gpt.yaml"),
-            "runtime: llama\nmodel: \"openai/gpt-oss-20b-GGUF/gpt-oss-20b-Q4.gguf\"\nport: 8086\n",
+            src.path().join("gpt.toml"),
+            "[model]\nrepo = \"openai/gpt-oss-20b-GGUF\"\nfiles = [\"gpt-oss-20b-Q4.gguf\"]\n[engine]\nname = \"llama.cpp\"\nport = 8086\n",
         )
         .unwrap();
         fs::create_dir_all(src.path().join("nested")).unwrap();
         fs::write(src.path().join("nested/x.toml"), "[model]\nrepo=\"a/b\"\n[engine]\nname=\"vllm\"\n").unwrap();
         fs::write(src.path().join("broken.toml"), "[model]\nrepo=\"bad\"\n[engine]\nname=\"vllm\"\n").unwrap();
         fs::write(src.path().join("README.md"), "# hi").unwrap();
-        fs::write(src.path().join("notes.yaml"), "title: not a recipe\n").unwrap();
+        fs::write(src.path().join("notes.toml"), "title = \"not a recipe\"\n").unwrap();
+        fs::write(src.path().join("old.yaml"), "runtime: llama\nmodel: a/b/c.gguf\n").unwrap();
         let cache = tempfile::tempdir().unwrap();
         let dest = cache.path().join("sources/local");
         let idx = sync(&SourceSpec::Local(src.path().into()), &dest).unwrap();
@@ -503,7 +508,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, "broken.toml");
         // Re-sync replaces the mirror.
-        fs::remove_file(src.path().join("gpt.yaml")).unwrap();
+        fs::remove_file(src.path().join("gpt.toml")).unwrap();
         sync(&SourceSpec::Local(src.path().into()), &dest).unwrap();
         assert_eq!(load_dir("local", &dest).0.len(), 1);
     }
