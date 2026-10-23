@@ -331,3 +331,50 @@ fn telemetry_and_hosts_aggregate_real_servers() {
     assert_eq!(list[3]["online"], false);
     assert!(list[3]["telemetry"].is_null());
 }
+
+#[test]
+fn themes_api_lists_and_saves_to_config() {
+    let s = serve(&[], |root| {
+        fs::create_dir_all(root.join("home/config")).unwrap();
+        fs::write(root.join("home/config/config.toml"), "# mine\ntheme = \"nord\"\n").unwrap();
+    });
+    let j = s.get("/api/themes").unwrap();
+    assert_eq!(j["current"], "nord");
+    assert_eq!(j["default"], "omp");
+    let themes = j["themes"].as_array().unwrap();
+    assert!(themes.len() >= 23, "{}", themes.len());
+    assert_eq!(themes[0]["slug"], "omp");
+    for t in themes {
+        assert_eq!(t["swatch"].as_array().unwrap().len(), 8, "{t}");
+        for var in ["--page", "--fg", "--accent", "--ok", "--on-pill"] {
+            assert!(t["vars"][var].as_str().is_some_and(|v| v.starts_with('#')), "{var} in {t}");
+        }
+    }
+    let latte = themes.iter().find(|t| t["slug"] == "catppuccin-latte").unwrap();
+    assert_eq!(latte["light"], true);
+    assert_eq!(latte["vars"]["color-scheme"], "light");
+    assert!(latte["source"].as_str().unwrap().contains("themes/catppuccin-latte/colors.toml"));
+
+    // Saving: forgiving names, canonical slug in the file, the rest kept.
+    let r = ureq::post(&format!("{}/api/theme", s.base))
+        .set("X-Lmdeck", "1")
+        .send_string(r#"{"name":"Rosé Pine"}"#)
+        .unwrap()
+        .into_json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(r["theme"], "rose-pine");
+    let cfg = fs::read_to_string(s.path("home/config/config.toml")).unwrap();
+    assert_eq!(cfg, "# mine\ntheme = \"rose-pine\"\n");
+    assert_eq!(s.get("/api/themes").unwrap()["current"], "rose-pine");
+    assert!(s.lmdeck().args(["theme", "show"]).output().unwrap().stdout.starts_with("Rosé Pine".as_bytes()));
+
+    let bad = |body: &str| {
+        status(ureq::post(&format!("{}/api/theme", s.base)).set("X-Lmdeck", "1").send_string(body).unwrap_err())
+    };
+    assert_eq!(bad(r#"{"name":"solarized"}"#), 404);
+    assert_eq!(bad("{nope"), 400);
+    // Like every other POST it needs the header.
+    let err = ureq::post(&format!("{}/api/theme", s.base)).send_string(r#"{"name":"nord"}"#).unwrap_err();
+    assert_eq!(status(err), 403);
+    assert_eq!(s.get("/api/themes").unwrap()["current"], "rose-pine");
+}

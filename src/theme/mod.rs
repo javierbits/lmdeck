@@ -201,17 +201,35 @@ impl Palette {
     }
 
     /// CSS custom properties for the web dashboard.
+    /// The text colour (background or foreground) that reads best on `c`.
+    pub fn on(&self, c: u32) -> u32 {
+        if contrast(self.bg, c) >= contrast(self.fg, c) {
+            self.bg
+        } else {
+            self.fg
+        }
+    }
+
+    /// CSS custom properties for the web dashboard.
     pub fn css_vars(&self) -> Vec<(&'static str, String)> {
         let h = |c: u32| format!("#{c:06x}");
+        // The dashboard's original surfaces, kept exactly for the default theme.
+        let (top, page, card, card2, line, line2) = if self.slug == DEFAULT {
+            (0x121217, 0x18181e, 0x1e1e24, 0x24242c, 0x2e3038, 0x3d424a)
+        } else {
+            (self.bar_bg, self.bg, self.panel, self.selected_bg, self.gauge_bg, self.border)
+        };
+        let fg = if self.slug == DEFAULT { 0xe4e4e7 } else { self.fg };
+        let muted = if self.slug == DEFAULT { 0x9aa0aa } else { self.muted };
         vec![
-            ("--bg", h(self.bar_bg)),
-            ("--page", h(self.bg)),
-            ("--card", h(self.panel)),
-            ("--card2", h(self.selected_bg)),
-            ("--line", h(self.gauge_bg)),
-            ("--line2", h(self.border)),
-            ("--fg", h(self.fg)),
-            ("--muted", h(self.muted)),
+            ("--bg", h(top)),
+            ("--page", h(page)),
+            ("--card", h(card)),
+            ("--card2", h(card2)),
+            ("--line", h(line)),
+            ("--line2", h(line2)),
+            ("--fg", h(fg)),
+            ("--muted", h(muted)),
             ("--dim", h(self.dim)),
             ("--accent", h(self.accent)),
             ("--blue", h(self.blue)),
@@ -223,11 +241,17 @@ impl Palette {
             ("--pink", h(self.seg[0])),
             ("--violet", h(self.seg[2])),
             ("--purple", h(self.magenta)),
-            ("--on-pill", h(self.on_pill)),
             ("--seg1", h(self.seg[0])),
             ("--seg2", h(self.seg[1])),
             ("--seg3", h(self.seg[2])),
             ("--seg4", h(self.seg[3])),
+            ("--on-pill", h(self.on_pill)),
+            ("--on-accent", h(self.on(self.accent))),
+            ("--on-ok", h(self.on(self.ok))),
+            ("--on-warn", h(self.on(self.warn))),
+            ("--on-info", h(self.on(self.info))),
+            ("--shadow", (if self.light { "#0000001f" } else { "#00000066" }).to_string()),
+            ("color-scheme", (if self.light { "light" } else { "dark" }).to_string()),
         ]
     }
 }
@@ -492,6 +516,30 @@ mod tests {
             }
             assert!(contrast(p.gauge_bg, p.bg) >= 1.1, "{n}: gauge invisible");
             assert_eq!(p.light, luminance(p.bg) > 0.5, "{n}: light flag");
+        }
+    }
+
+    #[test]
+    fn web_variables_are_readable() {
+        for p in all() {
+            let v: std::collections::HashMap<_, _> = p.css_vars().into_iter().collect();
+            let c = |k: &str| u32::from_str_radix(v[k].trim_start_matches('#'), 16).unwrap();
+            let n = p.slug;
+            for surface in ["--bg", "--page", "--card", "--card2"] {
+                assert!(contrast(c("--fg"), c(surface)) >= 4.5, "{n}: fg on {surface}");
+            }
+            for surface in ["--bg", "--page", "--card"] {
+                assert!(contrast(c("--muted"), c(surface)) >= 2.5, "{n}: muted on {surface}");
+            }
+            for (on, role) in
+                [("--on-accent", "--accent"), ("--on-ok", "--ok"), ("--on-warn", "--warn"), ("--on-info", "--cyan")]
+            {
+                assert!(contrast(c(on), c(role)) >= 3.0, "{n}: {on} on {role}");
+            }
+            for s in ["--seg1", "--seg2", "--seg3", "--seg4"] {
+                assert!(contrast(c("--on-pill"), c(s)) >= 3.0, "{n}: on-pill on {s}");
+            }
+            assert_eq!(v["color-scheme"], if p.light { "light" } else { "dark" });
         }
     }
 

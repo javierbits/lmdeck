@@ -48,12 +48,15 @@ pub struct State {
     pub loopback: bool,
     cache: Mutex<Option<(Instant, Arc<Snapshot>)>>,
     pub sampler: Sampler,
+    /// The saved theme (config.toml `theme`), updated by `POST /api/theme`.
+    theme: Mutex<Option<String>>,
 }
 
 impl State {
     pub fn new(deck: Deck, token: Option<String>, loopback: bool) -> State {
         let sampler = Sampler::spawn(deck.paths.clone(), true);
-        State { deck: Arc::new(deck), token, loopback, cache: Mutex::new(None), sampler }
+        let theme = Mutex::new(deck.cfg.theme.clone());
+        State { deck: Arc::new(deck), token, loopback, cache: Mutex::new(None), sampler, theme }
     }
 
     fn snapshot(&self) -> Arc<Snapshot> {
@@ -269,6 +272,11 @@ fn handle(st: &State, mut req: Request) {
                 )
             }
             "sources" => json_reply(req, 200, &json!(st.snapshot().sources)),
+            "themes" => {
+                let saved = st.theme.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let current = crate::theme::resolve(None, saved.as_deref()).map_or(crate::theme::DEFAULT, |p| p.slug);
+                json_reply(req, 200, &themes_json(current))
+            }
             "telemetry" => {
                 st.sampler.wait_first(Duration::from_secs(8));
                 let history = query_param(&query, "history").is_some_and(|v| v == "1" || v == "true");
@@ -300,9 +308,12 @@ fn handle(st: &State, mut req: Request) {
             if header(&req, "X-Lmdeck").as_deref() != Some("1") {
                 return error(req, 403, "state-changing requests need the X-Lmdeck: 1 header");
             }
-            let Some((verb, target)) = api.split_once('/') else { return error(req, 404, "not found") };
             let mut body = String::new();
             let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
+            if api == "theme" {
+                return set_theme(st, req, &body);
+            }
+            let Some((verb, target)) = api.split_once('/') else { return error(req, 404, "not found") };
             let opts: ActionBody = if body.trim().is_empty() {
                 ActionBody::default()
             } else {
@@ -325,6 +336,41 @@ fn handle(st: &State, mut req: Request) {
             }
         }
         _ => error(req, 405, "method not allowed"),
+    }
+}
+
+/// Every theme for the dashboard's picker: CSS variables plus swatches.
+pub fn themes_json(current: &str) -> Value {
+    let themes: Vec<Value> = crate::theme::all()
+        .iter()
+        .map(|p| {
+            let vars: serde_json::Map<String, Value> =
+                p.css_vars().into_iter().map(|(k, v)| (k.to_string(), Value::String(v))).collect();
+            json!({"slug": p.slug, "name": p.name, "light": p.light, "source": p.source(),
+                   "swatch": p.swatch().map(|c| format!("#{c:06x}")), "vars": vars})
+        })
+        .collect();
+    json!({"current": current, "default": crate::theme::DEFAULT, "themes": themes})
+}
+
+fn set_theme(st: &State, req: Request, body: &str) {
+    #[derive(Deserialize)]
+    struct Body {
+        name: String,
+    }
+    let b: Body = match serde_json::from_str(body) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &format!("bad JSON body (want {{\"name\": \"<theme>\"}}): {e}")),
+    };
+    let Some(p) = crate::theme::by_name(&b.name) else {
+        return error(req, 404, &format!("{:#}", crate::theme::unknown(&b.name)));
+    };
+    match crate::config::Config::save_theme(&st.deck.paths, Some(p.slug)) {
+        Ok(file) => {
+            *st.theme.lock().unwrap_or_else(|e| e.into_inner()) = Some(p.slug.to_string());
+            json_reply(req, 200, &json!({"ok": true, "theme": p.slug, "saved_to": file}))
+        }
+        Err(e) => error(req, 500, &format!("couldn't save the theme: {e:#}")),
     }
 }
 
