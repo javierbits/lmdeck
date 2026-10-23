@@ -191,7 +191,7 @@ impl Palette {
         if self.slug == DEFAULT {
             "lmdeck (the oh-my-pi palette)".into()
         } else {
-            format!("basecamp/omarchy themes/{}/colors.toml", self.slug)
+            format!("omarchy (github.com/omacom/omarchy) themes/{}/colors.toml", self.slug)
         }
     }
 

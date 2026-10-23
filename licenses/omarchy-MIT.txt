@@ -1,4 +1,4 @@
-Omarchy (https://github.com/basecamp/omarchy)
+Omarchy (https://github.com/omacom/omarchy)
 lmdeck ships colour palettes taken from Omarchy's themes/<name>/colors.toml.
 
 The MIT License (MIT)

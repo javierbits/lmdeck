@@ -90,15 +90,14 @@ Quitting leaves servers running.
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
 | `1 2 3 4`, `tab` | deck · hosts · machine · sources (on Hosts, `↑ ↓` picks a host) |
-| `t` | next theme |
+| `t` | next theme (saved to config) |
+| `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
 | `?` | help |
 | `q`, `esc`, `ctrl-c` | quit |
 
-Themes: `omp` (default, the oh-my-pi palette), `catppuccin` (mocha) and
-`tokyo-night`. Pick one with `lmdeck tui --theme catppuccin` or
-`LMDECK_THEME=tokyo-night`. If your terminal font is a Nerd Font, `--nerd` (or
-`LMDECK_NERD_FONT=1`) draws rounded powerline caps on the pills.
+If your terminal font is a Nerd Font, `--nerd` (or `LMDECK_NERD_FONT=1`)
+draws rounded powerline caps on the pills. Themes are covered [below](#themes).
 
 ![hosts tab (LMDECK_DEMO=1 data)](docs/screenshots/tui-hosts.png)
 
@@ -106,6 +105,57 @@ Themes: `omp` (default, the oh-my-pi palette), `catppuccin` (mocha) and
 |---|---|
 | ![deck tab with live telemetry (LMDECK_DEMO=1 data)](docs/screenshots/tui-deck-telemetry.png) | |
 | ![machine tab](docs/screenshots/tui-machine.png) | ![catppuccin theme](docs/screenshots/tui-catppuccin.png) |
+
+## Themes
+
+lmdeck has 24 themes: its own `omp` (the default, the oh-my-pi palette) and
+every theme that ships with [Omarchy](https://omarchy.org/): Catppuccin,
+Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Gruvbox, Hackerman,
+Kanagawa, Last Horizon, Lumon, Lupine, Matte Black, Miasma, Nord, Osaka Jade,
+Retro 82, Ristretto, Rosé Pine, Solitude, Starship, Tokyo Night, Vantablack
+and White. The TUI and the web dashboard use the same theme.
+
+```sh
+lmdeck theme list               # every theme with swatches; ● marks the current one
+lmdeck theme set rose-pine      # saved as `theme = "rose-pine"` in config.toml
+lmdeck theme show [name]        # its colours, by role, and where they come from
+lmdeck theme sync-omarchy       # use the theme Omarchy is currently on
+lmdeck theme reset              # back to omp
+```
+
+Theme names are forgiving: `"Rosé Pine"`, `rose-pine`, `ROSE PINE` and `rose`
+all mean the same theme. In the TUI, `t` cycles through the themes and `T`
+opens a picker with swatches and a live preview. Both save your choice. In the
+browser, the swatch menu in the top bar applies a theme straight away and saves
+it to the same config file. If saving fails, for example on a read-only config,
+the choice is kept in that browser only. `?theme=nord` in the URL previews a
+theme without saving it. To use a theme for one run only, pass
+`lmdeck tui --theme nord` or set `LMDECK_THEME=nord`. Either one takes
+priority over the saved theme.
+
+![the TUI in six themes (LMDECK_DEMO=1 data)](docs/screenshots/themes-tui.png)
+
+| | |
+|---|---|
+| ![TUI theme picker](docs/screenshots/tui-theme-picker.png) | ![web dashboard in three themes](docs/screenshots/web-themes.png) |
+
+The colours are Omarchy's, copied verbatim from
+[`themes/<name>/colors.toml`](https://github.com/omacom/omarchy/tree/967bbdd7346e6e2ff1a6af33c5d762ea784832cc/themes)
+at commit `967bbdd` (the repo is now `omacom/omarchy`, formerly
+`basecamp/omarchy`; MIT, © David Heinemeier Hansson; see [licenses/omarchy-MIT.txt](licenses/omarchy-MIT.txt)).
+Each of lmdeck's roles (text, accent, ok, warning, error, borders, selection,
+pills) takes the first colour in the theme's own palette that meets a contrast
+threshold against the background: 4.5:1 for text and 3:1 for status colours.
+This keeps light themes readable. No colour is invented (the web page only
+adds translucent tints and gradient ends mixed from these colours), and the
+tests check both rules for every theme. Monochrome themes such as White and
+Vantablack therefore show status in greys, just like the originals. To
+regenerate the table after Omarchy adds or changes a theme:
+
+```sh
+git clone https://github.com/omacom/omarchy /tmp/omarchy
+python3 scripts/import-omarchy-themes.py /tmp/omarchy > src/theme/omarchy.rs
+```
 
 ## Web dashboard
 
@@ -255,7 +305,8 @@ column and Machine panel there still describe that VM.
 | `lmdeck source add <spec> [--name N] [--no-fetch]` / `list` / `update [name]` / `remove <name>` | Manages recipe sources. |
 | `lmdeck doctor [--json]` | Shows the platform (GB10, Apple Silicon, NVIDIA, CPU), memory, GPUs and compute capability, which engines are installed, paths, sources, and a per-recipe fit table. |
 | `lmdeck init [--models-dir DIR]` | Writes `~/.config/lmdeck/config.toml`. |
-| `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. |
+| `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
+| `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |
 | `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. |
 
@@ -447,6 +498,7 @@ The tests use this. macOS uses the same XDG layout.
 # ~/.config/lmdeck/config.toml
 models_dir = "~/models"
 host = "0.0.0.0"
+theme = "tokyo-night"     # lmdeck theme set …; omp when unset
 
 [engines]                 # only needed when auto-detection misses something
 # llama_server = "~/llama.cpp/build/bin/llama-server"
@@ -488,4 +540,6 @@ cargo fmt --check
 
 ## License
 
-MIT
+MIT. The colour palettes in `src/theme/omarchy.rs` come from
+[Omarchy](https://github.com/omacom/omarchy), which is also MIT licensed. Its
+licence is in [licenses/omarchy-MIT.txt](licenses/omarchy-MIT.txt).
