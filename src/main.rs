@@ -21,6 +21,7 @@ use lmdeck::recipe::{is_recipe_file, is_yaml_file, valid_name, Engine, Recipe, Y
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
+use lmdeck::updates::{self, UpdateView};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
 use lmdeck::wrap;
 
@@ -75,6 +76,21 @@ enum Cmd {
         /// Print the download command only.
         #[arg(long)]
         dry_run: bool,
+        /// Wrapped recipes pinned to a commit or tag: move the pin to the
+        /// upstream branch head (rewrites `ref` in the deck recipe).
+        #[arg(long)]
+        latest: bool,
+    },
+    /// Check wrapped recipes' repos for new commits (always asks the remotes).
+    #[command(visible_alias = "updates")]
+    Outdated {
+        /// Only these recipes (default: every wrapped recipe).
+        targets: Vec<String>,
+        /// Fetch into the checkouts to count commits behind (does not move them).
+        #[arg(long)]
+        fetch: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Show the last lines of a recipe's server log.
     Logs {
@@ -358,7 +374,8 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Switch(a)) => use_recipe(&ctx, &UseArgs { only: true, ..a }),
         Some(Cmd::Stop { target, all }) => stop(&ctx, target.as_deref(), all),
         Some(Cmd::Add { repo, name, git_ref, force }) => add_wrapper(&ctx, &repo, name, git_ref, force),
-        Some(Cmd::Pull { target, dry_run }) => pull(&ctx, &target, dry_run),
+        Some(Cmd::Pull { target, dry_run, latest }) => pull(&ctx, &target, dry_run, latest),
+        Some(Cmd::Outdated { targets, fetch, json }) => outdated(&ctx, &targets, fetch, json),
         Some(Cmd::Logs { target, lines }) => logs(&ctx, &target, lines),
         Some(Cmd::Recipe(c)) => recipe_cmd(&ctx, c),
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
@@ -612,7 +629,41 @@ fn downloaded_cell(p: &Presence) -> String {
     }
 }
 
+/// Update status for the wrapped recipes among `entries`: stale cache
+/// entries are re-checked first (bounded by a short timeout; never fails).
+fn update_views(ctx: &Ctx, entries: &[&Found]) -> std::collections::BTreeMap<String, UpdateView> {
+    let s = updates::Settings::from(&ctx.cfg);
+    let recipes = || entries.iter().map(|f| &f.recipe);
+    updates::refresh(&ctx.paths, &s, recipes(), false, s.timeout.min(updates::QUICK_TIMEOUT), false);
+    updates::views(&ctx.paths, &s, recipes())
+}
+
+/// `⬆ update` / `⬆ newer` after a recipe name ("" otherwise).
+fn update_tag(u: Option<&UpdateView>) -> String {
+    match u.map(|u| u.state) {
+        Some(updates::State::Behind) => yellow("⬆ update"),
+        Some(updates::State::PinnedNewer) => cyan("⬆ newer"),
+        _ => String::new(),
+    }
+}
+
+fn update_json(u: Option<&UpdateView>) -> serde_json::Value {
+    u.map(|u| json!(u)).unwrap_or(serde_json::Value::Null)
+}
+
+fn update_hint(ups: &std::collections::BTreeMap<String, UpdateView>) {
+    let n = ups.values().filter(|u| u.available()).count();
+    if n > 0 {
+        println!(
+            "{} {n} wrapped recipe(s) have upstream updates {}",
+            cyan("⬆"),
+            dim("· lmdeck outdated for details, lmdeck pull <name> to update")
+        );
+    }
+}
+
 fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) -> Result<()> {
+    let ups = update_views(ctx, entries);
     let mut cache: HashMap<u16, Probe> = HashMap::new();
     let mut t = Table::new(&["#", "", "name", "engine", "quant", "size", "dl", "port", "origin"])
         .right(&[0, 5, 7])
@@ -629,6 +680,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
             "index": i + 1, "name": r.name, "origin": f.origin, "engine": r.engine.name.as_str(),
             "quant": r.quant_short(), "port": r.port(), "status": status_word(&st),
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
+            "update": update_json(ups.get(&r.name)),
         }));
         let glyph = match st {
             Status::Loaded | Status::External => green("●"),
@@ -639,6 +691,10 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         let mut name = bold(&r.name);
         if st != Status::Stopped {
             name = format!("{name} {}", status_tag(&st));
+        }
+        let up = update_tag(ups.get(&r.name));
+        if !up.is_empty() {
+            name = format!("{name} {up}");
         }
         t.row(vec![
             (i + 1).to_string(),
@@ -660,6 +716,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         println!("{}", dim(if loaded_only { "nothing is running" } else { "no recipes" }));
     } else {
         print!("{}", t.render());
+        update_hint(&ups);
     }
     Ok(())
 }
@@ -1008,21 +1065,40 @@ fn logs(ctx: &Ctx, target: &str, lines: usize) -> Result<()> {
 
 // ───────────────────────────── pull ─────────────────────────────
 
-fn pull(ctx: &Ctx, target: &str, dry_run: bool) -> Result<()> {
+fn pull(ctx: &Ctx, target: &str, dry_run: bool, latest: bool) -> Result<()> {
     let cat = ctx.catalog();
-    let r = &resolve(&cat, target)?.recipe;
+    let found = resolve(&cat, target)?;
+    let r = &found.recipe;
+    if latest && r.source.is_none() {
+        bail!("--latest is for wrapped recipes (with a [source]); {} has none", r.name);
+    }
     // A wrapped recipe: update its checkout. Its scripts fetch their own weights,
     // so there is nothing more to do unless it also names an HF repo.
     if let Some(src) = &r.source {
         let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &r.name);
         if dry_run {
+            if latest {
+                println!("# move ref to the head of the tracked branch, in {}", found.file);
+            }
             for line in checkout::describe_sync(src, &co, true) {
                 println!("{line}");
             }
         } else {
             println!("{} {} {}", cyan("↓"), src.repo, dim(&format!("→ {}", co.display())));
-            let o = checkout::update(&ctx.paths, r)?.expect("has a source");
-            println!("{} {} checkout {}", green("✓"), bold(&r.name), o.describe());
+            let msg = deck::update_source(&ctx.paths, &ctx.cfg, found, latest)?.expect("has a source");
+            println!("{} {} {msg}", green("✓"), bold(&r.name));
+            if !latest {
+                let s = updates::Settings::from(&ctx.cfg);
+                if let Some(u) = updates::view(&ctx.paths, &s, r).filter(|u| u.available()) {
+                    println!(
+                        "  {} pinned to {}; upstream is newer ({}). {}",
+                        cyan("⬆"),
+                        src.git_ref.as_deref().map(updates::short).unwrap_or_default(),
+                        u.delta(),
+                        dim(&format!("lmdeck pull --latest {}", r.name))
+                    );
+                }
+            }
         }
         if r.model.repo.is_none() {
             return Ok(());
@@ -1187,7 +1263,7 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
         }
     }
     println!("{} {} {}", cyan("↓"), url, dim(&format!("→ {}", co.display())));
-    let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone() };
+    let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone(), branch: None };
     let outcome = checkout::sync(&src, &co, true)?;
     let det = wrap::detect(&co)?;
     let branch = checkout::default_branch(&co);
@@ -1256,13 +1332,15 @@ fn recipe_add(ctx: &Ctx, reference: &str, name: Option<String>, force: bool) -> 
 fn recipe_list(ctx: &Ctx, source: Option<String>, json_out: bool) -> Result<()> {
     let cat = ctx.catalog();
     let entries: Vec<&Found> = cat.entries.iter().filter(|f| source.as_deref().is_none_or(|s| s == f.origin)).collect();
+    let ups = update_views(ctx, &entries);
     if json_out {
         let rows: Vec<_> = entries
             .iter()
             .map(|f| {
                 json!({"ref": format!("{}/{}", f.origin, f.recipe.name), "name": f.recipe.name, "origin": f.origin,
                 "file": f.file, "engine": f.recipe.engine.name.as_str(), "quant": f.recipe.quant_short(),
-                "model": f.recipe.model.repo.clone().or(f.recipe.model.path.clone())})
+                "model": f.recipe.model.repo.clone().or(f.recipe.model.path.clone()),
+                "update": update_json(ups.get(&f.recipe.name))})
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -1270,9 +1348,10 @@ fn recipe_list(ctx: &Ctx, source: Option<String>, json_out: bool) -> Result<()> 
     }
     let mut t = Table::new(&["origin", "name", "engine", "quant", "model"]).max_width(4, 56);
     for f in &entries {
+        let up = update_tag(ups.get(&f.recipe.name));
         t.row(vec![
             dim(&f.origin),
-            bold(&f.recipe.name),
+            if up.is_empty() { bold(&f.recipe.name) } else { format!("{} {up}", bold(&f.recipe.name)) },
             f.recipe.engine.name.as_str().into(),
             f.recipe.quant_short(),
             f.recipe.model.repo.clone().or(f.recipe.model.path.clone()).unwrap_or_default(),
@@ -1283,6 +1362,7 @@ fn recipe_list(ctx: &Ctx, source: Option<String>, json_out: bool) -> Result<()> 
     } else {
         print!("{}", t.render());
         println!("{}", dim(&format!("{} recipe(s)", entries.len())));
+        update_hint(&ups);
     }
     Ok(())
 }
@@ -1318,6 +1398,9 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
             "source",
             format!("{}{} {}", src.repo, src.git_ref.as_ref().map(|v| format!("@{v}")).unwrap_or_default(), dim(state)),
         );
+        if let Some(u) = update_views(ctx, &[f]).remove(&r.name) {
+            kv("upstream", upstream_text(&u, &r.name));
+        }
     }
     kv("quant", r.quant_short());
     let p = ctx.presence(r);
@@ -1365,6 +1448,113 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
     match engine::plan(r, &PlanCtx::new(&ctx.cfg, p.local)) {
         Ok(plan) => println!("\n  {}\n  {}", bold("launch"), plan.command_line()),
         Err(e) => println!("\n  {} {e:#}", yellow("launch:")),
+    }
+    Ok(())
+}
+
+/// One line about a wrapped recipe's upstream, for `recipe show` / `outdated`.
+fn upstream_text(u: &UpdateView, name: &str) -> String {
+    use updates::State as U;
+    let follows = u.follows.as_deref().map(|b| format!(" ({b})")).unwrap_or_default();
+    match u.state {
+        U::Behind => format!(
+            "{} {} {}",
+            yellow(&format!("⬆ update available{follows}")),
+            u.delta(),
+            dim(&format!("· lmdeck pull {name}"))
+        ),
+        U::PinnedNewer => format!(
+            "{} {} {}",
+            cyan(&format!("⬆ pinned; upstream{follows} is newer")),
+            u.delta(),
+            dim(&format!("· lmdeck pull --latest {name}"))
+        ),
+        U::Current => format!(
+            "{} {}",
+            green(&format!("✓ up to date{follows}")),
+            dim(&u.local.as_deref().map(updates::short).unwrap_or_default())
+        ),
+        U::NotCloned => dim("not cloned yet (cloned at the latest commit on first use)"),
+        U::Unknown => dim(&match &u.error {
+            Some(e) => format!("? unknown: {e}"),
+            None => "? not checked yet".into(),
+        }),
+        U::Disabled => dim("update checks are off ([updates] check = false or LMDECK_NO_UPDATE_CHECK)"),
+    }
+}
+
+// ───────────────────────────── outdated ─────────────────────────────
+
+fn outdated(ctx: &Ctx, targets: &[String], fetch: bool, json_out: bool) -> Result<()> {
+    let cat = ctx.catalog();
+    let entries: Vec<&Found> = if targets.is_empty() {
+        cat.entries.iter().filter(|f| f.recipe.source.is_some()).collect()
+    } else {
+        targets.iter().map(|t| resolve(&cat, t)).collect::<Result<Vec<_>>>()?
+    };
+    // One wrapped recipe per name (the deck shadows built-ins and sources).
+    let mut seen = std::collections::HashSet::new();
+    let entries: Vec<&Found> = entries.into_iter().filter(|f| seen.insert(f.recipe.name.clone())).collect();
+    let s = updates::Settings::from(&ctx.cfg);
+    if !s.enabled && !json_out {
+        println!(
+            "{}",
+            dim("update checks are off ([updates] check = false or LMDECK_NO_UPDATE_CHECK); showing cached results")
+        );
+    }
+    updates::refresh(&ctx.paths, &s, entries.iter().map(|f| &f.recipe), true, s.timeout, fetch);
+    let ups = updates::views(&ctx.paths, &s, entries.iter().map(|f| &f.recipe));
+    if json_out {
+        let rows: Vec<_> = entries
+            .iter()
+            .filter_map(|f| {
+                let u = ups.get(&f.recipe.name)?;
+                Some(json!({"name": f.recipe.name, "ref": format!("{}/{}", f.origin, f.recipe.name),
+                    "available": u.available(), "hint": u.hint(&f.recipe.name), "update": u}))
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    let mut t = Table::new(&["name", "status", "local", "remote", "behind", "follows", "repo"]).max_width(6, 56);
+    for f in &entries {
+        let Some(u) = ups.get(&f.recipe.name) else { continue };
+        use updates::State as U;
+        let status = match u.state {
+            U::Behind => yellow("⬆ update"),
+            U::PinnedNewer => cyan("⬆ newer (pinned)"),
+            U::Current => green("✓ current"),
+            U::NotCloned => dim("not cloned"),
+            U::Unknown => dim("? unknown"),
+            U::Disabled => dim("off"),
+        };
+        let sha = |c: &Option<String>| c.as_deref().map(updates::short).unwrap_or_else(|| dim("—"));
+        t.row(vec![
+            bold(&f.recipe.name),
+            status,
+            sha(&u.local),
+            sha(&u.remote),
+            u.behind.map(|n| n.to_string()).unwrap_or_else(|| dim(if u.available() { "?" } else { "—" })),
+            u.follows.clone().unwrap_or_default(),
+            u.repo.clone(),
+        ]);
+    }
+    if t.is_empty() {
+        println!("{}", dim("no wrapped recipes (recipes with a [source])"));
+        return Ok(());
+    }
+    print!("{}", t.render());
+    for f in &entries {
+        let Some(u) = ups.get(&f.recipe.name) else { continue };
+        if let Some(h) = u.hint(&f.recipe.name) {
+            println!("  {} {}", cyan("→"), h);
+        }
+        if let (updates::State::Unknown, Some(e)) = (u.state, &u.error) {
+            println!("  {} {}: {e}", dim("?"), f.recipe.name);
+        }
+    }
+    if !fetch && ups.values().any(|u| u.available() && u.behind.is_none()) {
+        println!("{}", dim("  (--fetch counts the commits behind)"));
     }
     Ok(())
 }

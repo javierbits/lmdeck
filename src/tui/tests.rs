@@ -37,6 +37,7 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         command: Some(format!("llama-server -m {name}.gguf --port 8080")),
         plan_error: None,
         pulling: false,
+        update: None,
     }
 }
 
@@ -459,4 +460,49 @@ fn every_theme_renders() {
             let _ = render(&a, 120, 36);
         }
     }
+}
+
+fn upd(state: crate::updates::State) -> crate::updates::UpdateView {
+    crate::updates::UpdateView {
+        state,
+        repo: "https://github.com/x/wrapped".into(),
+        git_ref: Some("main".into()),
+        pinned: state == crate::updates::State::PinnedNewer,
+        follows: Some("main".into()),
+        local: Some("1111111aaaa".into()),
+        remote: Some("2222222bbbb".into()),
+        behind: Some(3),
+        checked_at: Some(0),
+        error: None,
+    }
+}
+
+#[test]
+fn wrapped_recipes_show_an_update_badge_and_u_takes_it() {
+    use crate::updates::State as U;
+    let mut s = demo();
+    s.recipes[0].update = Some(upd(U::Behind));
+    s.recipes[1].update = Some(upd(U::Current));
+    s.recipes[2].update = Some(upd(U::PinnedNewer));
+    let mut a = App::default();
+    a.set_snapshot(s);
+    let text = buffer_text(&render(&a, 160, 42));
+    assert!(text.contains("qwen3-4b-gguf ⬆ update"), "{text}");
+    assert!(text.contains("glm-big-exl3 ⬆ newer"), "{text}");
+    assert!(!text.contains("gpt-oss-20b-vllm ⬆"), "{text}");
+    assert!(text.contains("update available (main): 1111111 → 2222222 (3 commits)"), "{text}");
+    // The badge uses the theme's warn colour.
+    let buf = render(&a, 160, 42);
+    let warn = a.theme().warn;
+    let found = (0..buf.area.height)
+        .any(|y| (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "⬆" && buf[(x, y)].fg == warn));
+    assert!(found, "⬆ drawn in the warn colour");
+    let sel = |a: &App| a.selected().unwrap().reference.clone();
+    assert_eq!(a.on_key(key('u')), Action::Update(sel(&a)));
+    a.on_key(key('j'));
+    assert_eq!(a.on_key(key('u')), Action::None, "nothing to take on an up-to-date recipe");
+    a.on_key(key('j'));
+    assert_eq!(a.on_key(key('u')), Action::Update(sel(&a)));
+    let text = buffer_text(&render(&a, 160, 42));
+    assert!(text.contains("pinned; upstream (main) is newer"), "{text}");
 }

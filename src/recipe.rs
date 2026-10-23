@@ -180,6 +180,10 @@ pub struct GitSource {
     /// Branch, tag or commit. Empty = the remote's default branch.
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub git_ref: Option<String>,
+    /// For a commit or tag `ref`: the branch whose newer commits count as an
+    /// update (default: the remote's default branch). Unused for branch refs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

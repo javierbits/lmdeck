@@ -25,6 +25,47 @@ pub struct Config {
     /// Recipe repositories.
     #[serde(default)]
     pub sources: Vec<SourceEntry>,
+    /// Checking wrapped recipes' `[source]` repos for new commits.
+    #[serde(default, skip_serializing_if = "UpdateChecks::is_default")]
+    pub updates: UpdateChecks,
+}
+
+/// `[updates]`: how lmdeck looks for new commits upstream of wrapped recipes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateChecks {
+    /// `false` turns the checks off (also `LMDECK_NO_UPDATE_CHECK=1`).
+    #[serde(default = "yes")]
+    pub check: bool,
+    /// How long a result is reused before the remote is asked again.
+    #[serde(default = "default_ttl_hours")]
+    pub ttl_hours: f64,
+    /// Per-repo limit for one `git ls-remote`.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_ttl_hours() -> f64 {
+    6.0
+}
+
+fn default_timeout_secs() -> u64 {
+    5
+}
+
+impl Default for UpdateChecks {
+    fn default() -> Self {
+        UpdateChecks { check: true, ttl_hours: default_ttl_hours(), timeout_secs: default_timeout_secs() }
+    }
+}
+
+impl UpdateChecks {
+    pub fn is_default(&self) -> bool {
+        *self == UpdateChecks::default()
+    }
 }
 
 /// Explicit locations for engines that are not on `$PATH`.
@@ -81,6 +122,7 @@ impl Default for Config {
             // No default source: the lmswitch community repo (jvr0x/ai-models)
             // is YAML, which lmdeck no longer reads.
             sources: vec![],
+            updates: UpdateChecks::default(),
         }
     }
 }

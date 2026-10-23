@@ -170,6 +170,9 @@ pub struct RecipeView {
     pub plan_error: Option<String>,
     /// A pull for this recipe is running.
     pub pulling: bool,
+    /// Wrapped recipes: whether the `[source]` repo has newer commits
+    /// (from the update-check cache; `None` for native recipes).
+    pub update: Option<crate::updates::UpdateView>,
 }
 
 impl RecipeView {
@@ -279,6 +282,11 @@ impl Deck {
         let inv = self.inventory(refresh_inventory);
         let listed_refs: Vec<String> = listed(&cat).iter().map(|f| reference(f)).collect();
         let mut cache: HashMap<u16, Probe> = HashMap::new();
+        let mut updates = crate::updates::views(
+            &self.paths,
+            &crate::updates::Settings::from(&self.cfg),
+            cat.entries.iter().map(|f| &f.recipe),
+        );
         let mut recipes = vec![];
         for f in &cat.entries {
             let r = &f.recipe;
@@ -321,6 +329,7 @@ impl Deck {
                 command,
                 plan_error,
                 pulling: self.pulling(&r.name),
+                update: updates.remove(&r.name),
             });
         }
         // Listed recipes first, in list order; then the rest by origin.
@@ -431,16 +440,19 @@ impl Deck {
     }
 
     /// Downloads a recipe's weights in the background, logging to [`Deck::pull_log`].
-    pub fn pull(&self, target: &str) -> Result<String> {
+    /// A wrapped recipe's checkout is updated first; `latest` also moves a
+    /// pinned `ref` to the upstream head (see [`update_source`]).
+    pub fn pull(&self, target: &str, latest: bool) -> Result<String> {
         let cat = self.catalog();
-        let r = &resolve(&cat, target)?.recipe;
+        let found = resolve(&cat, target)?;
+        let r = &found.recipe;
         if self.pulling(&r.name) {
             return Ok(format!("{} is already downloading", r.name));
         }
         // A wrapped recipe's `[source]` is updated in place; its scripts fetch their own weights.
-        if let Some(o) = crate::checkout::update(&self.paths, r)? {
+        if let Some(msg) = update_source(&self.paths, &self.cfg, found, latest)? {
             if r.model.repo.is_none() {
-                return Ok(format!("{}: checkout {}", r.name, o.describe()));
+                return Ok(format!("{}: {msg}", r.name));
             }
         }
         let argv = pull_argv(&self.cfg, r)?;
@@ -510,6 +522,41 @@ impl Drop for Deck {
             }
         }
     }
+}
+
+/// `pull` for a wrapped recipe: fetch and check out its `[source]` again.
+/// With `latest`, a recipe pinned to a commit or tag first has its `ref`
+/// rewritten to the tracked branch's head (deck recipes only). Refreshes the
+/// update-check cache afterwards. `None` for recipes without a `[source]`.
+pub fn update_source(paths: &Paths, cfg: &Config, found: &Found, latest: bool) -> Result<Option<String>> {
+    let r = &found.recipe;
+    if r.source.is_none() {
+        return Ok(None);
+    }
+    let mut bumped = None;
+    let mut recipe = r.clone();
+    if latest {
+        if found.origin != crate::catalog::DECK {
+            bail!(
+                "{} comes from {}; copy it into the deck first (lmdeck recipe add {}) so its ref can be moved",
+                r.name,
+                found.origin,
+                reference(found)
+            );
+        }
+        let timeout = crate::updates::Settings::from(cfg).timeout;
+        if let Some((old, new)) = crate::updates::bump_pin(Path::new(&found.file), r, timeout)? {
+            recipe.source.as_mut().expect("has a source").git_ref = Some(new.clone());
+            bumped = Some((old, new));
+        }
+    }
+    let outcome = crate::checkout::update(paths, &recipe)?.expect("has a source");
+    crate::updates::after_pull(paths, cfg, &recipe);
+    let mut msg = format!("checkout {}", outcome.describe());
+    if let Some((old, new)) = bumped {
+        msg.push_str(&format!(" · ref {} → {}", crate::updates::short(&old), crate::updates::short(&new)));
+    }
+    Ok(Some(msg))
 }
 
 fn reference(f: &Found) -> String {

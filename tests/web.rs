@@ -388,3 +388,87 @@ fn themes_api_lists_and_saves_to_config() {
     assert_eq!(status(err), 403);
     assert_eq!(s.get("/api/themes").unwrap()["current"], "rose-pine");
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git {args:?}");
+}
+
+fn wait_for(s: &Served, name: &str, state: &str) -> serde_json::Value {
+    let t0 = Instant::now();
+    loop {
+        let recipes = s.get("/api/recipes").unwrap();
+        let r = recipes.as_array().unwrap().iter().find(|r| r["name"] == name).unwrap().clone();
+        if r["update"]["state"] == state {
+            return r;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(20), "{name} never reached {state}: {r}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The dashboard reports upstream commits for wrapped recipes and its Pull
+/// (with `{"latest":true}` for a pin) takes them.
+#[test]
+fn wrapped_recipe_updates_show_and_pull_clears() {
+    let s = serve(&[], |root| {
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("start.sh"), "#!/usr/bin/env bash\nPORT=\"${PORT:-8124}\"\n").unwrap();
+        fs::write(work.join("stop.sh"), "#!/usr/bin/env bash\n").unwrap();
+        git(&work, &["init", "-q"]);
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-qm", "one"]);
+        let bare = root.join("remote.git");
+        git(root, &["clone", "-q", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        for args in [["--name", "follow", "--ref", "main"].as_slice(), ["--name", "pinned"].as_slice()] {
+            assert!(lmdeck_cmd(root).arg("add").arg(&bare).args(args).output().unwrap().status.success());
+        }
+    });
+    // The background check fills the cache on startup.
+    wait_for(&s, "follow", "current");
+    let native = s.get("/api/recipes").unwrap();
+    assert!(native.as_array().unwrap().iter().any(|r| r["update"].is_null()), "native recipes have no update");
+
+    let work = s.path("work");
+    fs::write(work.join("two.txt"), "2\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "two"]);
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    assert!(s.lmdeck().arg("outdated").output().unwrap().status.success());
+    let r = wait_for(&s, "follow", "behind");
+    assert_eq!(r["update"]["follows"], "main", "{r}");
+    wait_for(&s, "pinned", "pinned_newer");
+    let html = ureq::get(&format!("{}/", s.base)).call().unwrap().into_string().unwrap();
+    assert!(html.contains("⬆ Update") && html.contains("latest:true"));
+
+    let j = s.post("/api/pull/follow").unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    wait_for(&s, "follow", "current");
+    assert!(s.path("home/cache/checkouts/follow/two.txt").exists());
+    // A plain pull keeps the pin; latest moves it.
+    s.post("/api/pull/pinned").unwrap();
+    wait_for(&s, "pinned", "pinned_newer");
+    let j: serde_json::Value = ureq::post(&format!("{}/api/pull/pinned", s.base))
+        .set("X-Lmdeck", "1")
+        .send_string(r#"{"latest":true}"#)
+        .unwrap()
+        .into_json()
+        .unwrap();
+    assert!(j["message"].as_str().unwrap().contains("ref "), "{j}");
+    wait_for(&s, "pinned", "current");
+    assert!(s.path("home/cache/checkouts/pinned/two.txt").exists());
+}

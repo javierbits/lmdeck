@@ -53,6 +53,8 @@ pub enum Action {
     Stop(String),
     Switch(String),
     Pull(String),
+    /// Pull a wrapped recipe and move a pinned ref to the upstream head.
+    Update(String),
     /// Re-snapshot now, re-probing engines too.
     Refresh,
     /// Persist this theme (a slug) as the config's `theme`.
@@ -374,6 +376,12 @@ impl App {
             }
             KeyCode::Char('p') => {
                 return self.on_selected(|r| if r.pulling { Action::None } else { Action::Pull(r.reference.clone()) })
+            }
+            KeyCode::Char('u') => {
+                return self.on_selected(|r| match &r.update {
+                    Some(u) if u.available() => Action::Update(r.reference.clone()),
+                    _ => Action::None,
+                })
             }
             KeyCode::Char('l') => {
                 self.logs_max = !self.logs_max;

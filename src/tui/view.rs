@@ -14,6 +14,7 @@ use crate::runner::Status;
 use crate::telemetry::Metric;
 use crate::tui::app::{App, Mode, Tab};
 use crate::tui::theme::Theme;
+use crate::updates::{short, State as UpdState};
 use crate::util::{human_bytes, human_duration, human_gb, now_secs};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -285,10 +286,14 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Level::Warn => Span::styled("! tight", Style::new().fg(t.warn)),
                 Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
             };
-            let name = Line::from(vec![
+            let mut name = Line::from(vec![
                 Span::styled(r.name.clone(), Style::new().fg(t.fg).bold()),
                 Span::styled(if r.listed { String::new() } else { format!(" {}", r.origin) }, Style::new().fg(t.dim)),
             ]);
+            if let Some(badge) = update_badge(r, t) {
+                name.spans.push(Span::raw(" "));
+                name.spans.push(badge);
+            }
             Row::new(vec![
                 Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
                 Cell::from(name),
@@ -330,6 +335,44 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
         let inner = area.inner(ratatui::layout::Margin::new(2, 3));
         f.render_widget(Paragraph::new(Span::styled(msg, Style::new().fg(t.muted).italic())), inner);
     }
+}
+
+/// `⬆` after a wrapped recipe whose `[source]` repo has newer commits:
+/// the warn colour when a pull takes it, muted for a pin (`u` moves it).
+fn update_badge<'a>(r: &RecipeView, t: &Theme) -> Option<Span<'a>> {
+    let u = r.update.as_ref()?;
+    match u.state {
+        UpdState::Behind => Some(Span::styled("⬆ update", Style::new().fg(t.warn).bold())),
+        UpdState::PinnedNewer => Some(Span::styled("⬆ newer", Style::new().fg(t.info))),
+        _ => None,
+    }
+}
+
+fn update_line<'a>(r: &RecipeView, t: &Theme) -> Option<Line<'a>> {
+    let u = r.update.as_ref()?;
+    let follows = u.follows.as_deref().map(|b| format!(" ({b})")).unwrap_or_default();
+    let (text, color) = match u.state {
+        UpdState::Behind => (format!("update available{follows}: {} · press u or p", u.delta()), t.warn),
+        UpdState::PinnedNewer => {
+            (format!("pinned; upstream{follows} is newer: {} · press u to move the pin", u.delta()), t.info)
+        }
+        UpdState::Current => {
+            (format!("up to date{follows} at {}", u.local.as_deref().map(short).unwrap_or_default()), t.ok)
+        }
+        UpdState::NotCloned => ("cloned on first start".into(), t.muted),
+        UpdState::Unknown => (
+            match &u.error {
+                Some(e) => format!("unknown ({e})"),
+                None => "not checked yet".into(),
+            },
+            t.muted,
+        ),
+        UpdState::Disabled => ("update checks are off".into(), t.muted),
+    };
+    Some(Line::from(vec![
+        Span::styled(format!("{:<10}", "upstream"), Style::new().fg(t.muted)),
+        Span::styled(text, Style::new().fg(color)),
+    ]))
 }
 
 fn draw_details(f: &mut Frame, app: &App, area: Rect) {
@@ -376,6 +419,9 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         format!("not downloaded ({}) · press p", size_text(r))
     };
     lines.push(kv("weights", weights, t));
+    if let Some(l) = update_line(r, t) {
+        lines.push(l);
+    }
     if let Some(need) = r.need_gb {
         lines.push(kv("memory", format!("needs ~{}", human_gb(need)), t));
     }
@@ -665,7 +711,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ("↵ / space", "start or stop the selected server"),
     ("s", "switch: stop the others, start this one"),
     ("x", "stop"),
-    ("p", "pull (download) the weights"),
+    ("p", "pull: download weights / update a checkout"),
+    ("u", "take a ⬆ update (moves a pinned ref)"),
     ("l", "expand / collapse the live log"),
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),

@@ -87,7 +87,8 @@ Quitting leaves servers running.
 | `↵` / `space` | start or stop the selected recipe |
 | `s` | switch: stop the others, start this one |
 | `x` | stop |
-| `p` | pull the weights (runs in the background; the log pane shows progress) |
+| `p` | pull the weights, or update a wrapped recipe's checkout (runs in the background; the log pane shows progress) |
+| `u` | take a `⬆` upstream update; for a pinned wrapped recipe this also moves the pin (`pull --latest`) |
 | `l` | expand the log pane (`j k` then scroll it) |
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
@@ -170,7 +171,8 @@ lmdeck serve --host 0.0.0.0 --token "$(openssl rand -hex 16)"   # see the warnin
 
 `lmdeck serve` runs the same controls in a browser: a card for each recipe
 with status, fit, size, a memory bar, checks and the launch command; Start /
-Stop / Switch / Pull buttons; search and filters (fits, running, on disk);
+Stop / Switch / Pull buttons (wrapped recipes with new upstream commits get a
+`⬆ update` badge and an `⬆ Update` button); search and filters (fits, running, on disk);
 machine, engine and source panels; a live log drawer; and a Hosts row with
 one card per host (memory, temperature, power, tok/s, sparklines, the
 running models) that updates every 2.5 s. The page and its
@@ -203,7 +205,7 @@ API (JSON unless noted):
 | `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry` and `history` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
 | `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
-| `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks. |
+| `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks; `{"latest": true}` on `pull` moves a pinned wrapped recipe to the upstream head (`pull --latest`). |
 
 `{recipe}` is a name or an `origin/name` reference. Start and switch return as
 soon as the server process is launched; poll `/api/status` to see it come up.
@@ -300,7 +302,8 @@ column and Machine panel there still describe that VM.
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
-| `lmdeck pull <ref> [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). |
+| `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
+| `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
 | `lmdeck logs <ref> [-n N]` | Prints the tail of the server log. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
@@ -521,6 +524,50 @@ CONTAINER_NAME = "{container}"
 - `stop`, `detached`, `container`, `logs` and `[source]` are only allowed on
   `custom` recipes; `logs` needs `detached`.
 
+#### Update checks
+
+lmdeck tells you when the repo behind a wrapped recipe has new commits:
+
+```text
+$ lmdeck list
+│ 1 │ ○ │ mia ⬆ update │ custom │ … │ deck │
+│ 2 │ ○ │ pin ⬆ newer  │ custom │ … │ deck │
+⬆ 2 wrapped recipe(s) have upstream updates · lmdeck outdated for details, lmdeck pull <name> to update
+
+$ lmdeck outdated
+│ name │ status           │ local   │ remote  │ behind │ follows │ repo … │
+│ mia  │ ⬆ update         │ 41d3b99 │ 1edc7da │ 1      │ main    │ …      │
+│ pin  │ ⬆ newer (pinned) │ 41d3b99 │ 1edc7da │ 1      │ main    │ …      │
+  → lmdeck pull mia
+  → lmdeck pull --latest pin
+```
+
+- **`⬆ update`**: `ref` is a branch (or unset, so the default branch) and the
+  branch has moved past the checkout. `lmdeck pull <name>` takes it.
+- **`⬆ newer`**: `ref` is a tag or commit and the upstream branch has moved on.
+  A plain `pull` keeps the pin (that's what pins are for);
+  `lmdeck pull --latest <name>` rewrites `ref` in your deck recipe to the new
+  head and updates the checkout. The branch compared against is the remote's
+  default branch, or `branch = "…"` in `[source]`.
+- Only recipes whose checkout exists are checked; recipes that aren't cloned yet
+  show `not cloned`, and native recipes show nothing.
+- The check is `git ls-remote` with a timeout (no fetch, never a credential
+  prompt). Offline, or for a remote that's gone, the state is `unknown` and
+  nothing fails.
+- Results are cached in `~/.cache/lmdeck/update-check.json`. `list`,
+  `recipe list` and `recipe show` re-check entries older than the TTL (3 s
+  timeout); the TUI and `lmdeck serve` only read the cache and re-check in a
+  background thread; `outdated` always asks. The marker clears as soon as the
+  checkout reaches the upstream commit, e.g. right after a pull.
+
+```toml
+# ~/.config/lmdeck/config.toml
+[updates]
+check = true          # false turns the checks off (or LMDECK_NO_UPDATE_CHECK=1)
+ttl_hours = 6         # how long a result is reused; 0 re-checks every time
+timeout_secs = 5      # per ls-remote, 1-120
+```
+
 ## Files
 
 | what | where |
@@ -529,6 +576,7 @@ CONTAINER_NAME = "{container}"
 | your deck | `~/.config/lmdeck/recipes/*.toml` |
 | source mirrors | `~/.cache/lmdeck/sources/` (`$XDG_CACHE_HOME`) |
 | wrapped-recipe checkouts | `~/.cache/lmdeck/checkouts/<recipe>/` |
+| upstream update checks | `~/.cache/lmdeck/update-check.json` |
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
 | model weights | `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) plus the Hugging Face cache |
@@ -550,6 +598,11 @@ theme = "tokyo-night"     # lmdeck theme set …; omp when unset
 # tensorfold = "~/.tensorfold/bin/tensorfold"
 # lmdeploy = "~/venvs/lmdeploy/bin/lmdeploy"
 # docker = "docker"
+
+[updates]                 # upstream checks for wrapped recipes (these are the defaults)
+check = true
+ttl_hours = 6
+timeout_secs = 5
 
 [[sources]]               # none by default
 name = "mine"

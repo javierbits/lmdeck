@@ -19,6 +19,7 @@ pub mod telemetry;
 pub mod theme;
 pub mod tui;
 pub mod ui;
+pub mod updates;
 pub mod util;
 pub mod web;
 pub mod wrap;

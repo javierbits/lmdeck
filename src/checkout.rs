@@ -210,7 +210,7 @@ pub(crate) mod tests {
     fn clones_then_updates_and_pins() {
         let d = tempfile::tempdir().unwrap();
         let repo = fixture_repo(d.path(), &[("start.sh", "echo v1\n")]);
-        let src = GitSource { repo: repo.display().to_string(), git_ref: Some("main".into()) };
+        let src = GitSource { repo: repo.display().to_string(), git_ref: Some("main".into()), branch: None };
         let dest = d.path().join("cache/checkouts/r");
         assert_eq!(describe_sync(&src, &dest, false).len(), 1);
 
@@ -240,7 +240,7 @@ pub(crate) mod tests {
         let bad = GitSource { git_ref: Some("no-such-branch".into()), ..src.clone() };
         assert!(sync(&bad, &d.path().join("cache/checkouts/bad"), false).is_err());
         assert!(!d.path().join("cache/checkouts/bad").exists());
-        let missing = GitSource { repo: d.path().join("nope").display().to_string(), git_ref: None };
+        let missing = GitSource { repo: d.path().join("nope").display().to_string(), git_ref: None, branch: None };
         assert!(sync(&missing, &d.path().join("cache/checkouts/m"), false).is_err());
     }
 }

@@ -5,7 +5,7 @@
 //! - `GET  /api/health`
 //! - `GET  /api/snapshot`              everything below in one document
 //! - `GET  /api/recipes` · `/api/status` · `/api/doctor` · `/api/sources`
-//! - `POST /api/{start,stop,switch,pull}/{recipe}`  body optional `{"force":true}`
+//! - `POST /api/{start,stop,switch,pull}/{recipe}`  body optional `{"force":true}` (`pull`: `{"latest":true}`)
 //! - `GET  /api/logs/{recipe}?n=200`
 //! - `GET  /api/logs/{recipe}/stream`  Server-Sent Events, one `data:` per line
 //! - `GET  /api/telemetry[?history=1&since=<unix ms>]`  this machine, live
@@ -188,6 +188,9 @@ fn same(a: &str, b: &str) -> bool {
 struct ActionBody {
     #[serde(default)]
     force: bool,
+    /// `pull`: also move a pinned wrapped recipe to the upstream head.
+    #[serde(default)]
+    latest: bool,
 }
 
 fn handle(st: &State, mut req: Request) {
@@ -326,7 +329,7 @@ fn handle(st: &State, mut req: Request) {
                 "start" => st.deck.start(target, false, opts.force),
                 "switch" => st.deck.start(target, true, opts.force),
                 "stop" => st.deck.stop(target),
-                "pull" => st.deck.pull(target),
+                "pull" => st.deck.pull(target, opts.latest),
                 _ => return error(req, 404, "unknown action (start, stop, switch, pull)"),
             };
             st.invalidate();
@@ -522,6 +525,7 @@ pub fn run(deck: Deck, opts: WebOptions) -> Result<()> {
         );
     }
     println!("  ctrl-c to stop (servers it started keep running)");
+    crate::updates::spawn_background(deck.paths.clone(), deck.cfg.clone());
     let state = Arc::new(State::new(deck, token, loopback));
     serve(server, state);
     Ok(())

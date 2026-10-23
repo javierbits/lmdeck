@@ -497,3 +497,113 @@ fn add_wraps_a_repo_and_runs_it_detached() {
     e.run(&["pull", "my-server"]);
     assert!(checkout.join("README.md").exists(), "re-adding pins the new commit");
 }
+
+/// A bare repo as the "remote" plus a working clone to push new commits from.
+fn bare_remote(e: &Env) -> (std::path::PathBuf, std::path::PathBuf) {
+    let work = e.path("work");
+    write(&work, "start.sh", "#!/usr/bin/env bash\nPORT=\"${PORT:-8123}\"\nnohup sleep 1 >/dev/null 2>&1 &\n");
+    write(&work, "stop.sh", "#!/usr/bin/env bash\necho stop\n");
+    git(&work, &["init", "-q"]);
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "one"]);
+    let bare = e.path("remote.git");
+    git(e.root.path(), &["clone", "-q", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()]);
+    git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    (work, bare)
+}
+
+fn push_commit(work: &Path, file: &str) {
+    write(work, file, "new\n");
+    git(work, &["add", "."]);
+    git(work, &["commit", "-qm", file]);
+    git(work, &["push", "-q", "origin", "HEAD:main"]);
+}
+
+/// `outdated --json` rows for deck recipes (the built-in wrapper is listed too, as not cloned).
+fn outdated(e: &Env) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_str(&e.run(&["outdated", "--json"])).unwrap();
+    let builtin = v.as_array().unwrap().iter().find(|r| r["ref"].as_str().unwrap().starts_with("builtin/")).unwrap();
+    assert_eq!(builtin["update"]["state"], "not_cloned");
+    v.as_array().unwrap().iter().filter(|r| r["ref"].as_str().unwrap().starts_with("deck/")).cloned().collect()
+}
+
+/// New commits upstream of a wrapped recipe show up as "⬆ update" and
+/// `lmdeck pull` clears them; pinned recipes need `pull --latest`.
+#[test]
+fn wrapped_recipes_flag_upstream_commits() {
+    let e = Env::new();
+    let (work, bare) = bare_remote(&e);
+    let bare_s = bare.to_str().unwrap();
+    e.run(&["add", bare_s, "--name", "follow", "--ref", "main"]);
+    e.run(&["add", bare_s, "--name", "pinned"]);
+    let v = outdated(&e);
+    assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+    assert!(v.as_array().unwrap().iter().all(|r| r["update"]["state"] == "current"), "{v}");
+    assert!(!e.run(&["list"]).contains('⬆'));
+
+    push_commit(&work, "two.txt");
+    // Cached for ttl_hours; `outdated` always asks.
+    assert!(!e.run(&["list"]).contains('⬆'), "fresh cache: no re-check yet");
+    let text = e.run(&["outdated"]);
+    assert!(text.contains("⬆ update") && text.contains("⬆ newer (pinned)"), "{text}");
+    assert!(text.contains("lmdeck pull follow") && text.contains("lmdeck pull --latest pinned"), "{text}");
+    let list = e.run(&["list"]);
+    assert!(list.contains("follow ⬆ update") && list.contains("pinned ⬆ newer"), "{list}");
+    let v: serde_json::Value = serde_json::from_str(&e.run(&["recipe", "list", "--json"])).unwrap();
+    let row = v.as_array().unwrap().iter().find(|r| r["name"] == "follow").unwrap();
+    assert_eq!(row["update"]["state"], "behind", "{row}");
+    assert!(v.as_array().unwrap().iter().any(|r| r["update"].is_null()), "native recipes: no update field");
+    let show = e.run(&["recipe", "show", "follow"]);
+    assert!(show.contains("⬆ update available (main)"), "{show}");
+    let v = outdated_fetch(&e);
+    assert_eq!(v["follow"]["update"]["behind"], 1, "{v}");
+
+    // pull clears the branch recipe; the pinned one keeps its pin...
+    e.run(&["pull", "follow"]);
+    assert!(e.path("home/cache/checkouts/follow/two.txt").exists());
+    let out = e.run(&["pull", "pinned"]);
+    assert!(out.contains("pull --latest pinned"), "{out}");
+    assert!(!e.path("home/cache/checkouts/pinned/two.txt").exists());
+    let list = e.run(&["list"]);
+    assert!(!list.contains("follow ⬆") && list.contains("pinned ⬆ newer"), "{list}");
+    // ...until --latest moves it (rewriting the deck recipe's ref).
+    let before = fs::read_to_string(e.path("home/config/recipes/pinned.toml")).unwrap();
+    let out = e.run(&["pull", "--latest", "pinned"]);
+    assert!(out.contains("ref "), "{out}");
+    let after = fs::read_to_string(e.path("home/config/recipes/pinned.toml")).unwrap();
+    assert_ne!(before, after);
+    assert!(e.path("home/cache/checkouts/pinned/two.txt").exists());
+    assert!(!e.run(&["list"]).contains('⬆'));
+    let v = outdated(&e);
+    assert!(v.as_array().unwrap().iter().all(|r| r["update"]["state"] == "current"), "{v}");
+
+    // A remote that is gone: unknown, never an error; listings still work.
+    fs::rename(&bare, e.path("moved.git")).unwrap();
+    let text = e.run(&["outdated"]);
+    assert!(text.contains("? unknown"), "{text}");
+    assert!(outdated(&e).as_array().unwrap().iter().all(|r| r["update"]["state"] == "unknown"));
+    e.run(&["list"]);
+    e.run(&["recipe", "show", "follow"]);
+
+    // Checks can be turned off.
+    let out =
+        e.cmd().args(["outdated"]).env("LMDECK_NO_UPDATE_CHECK", "1").assert().success().get_output().stdout.clone();
+    assert!(String::from_utf8(out).unwrap().contains("checks are off"));
+}
+
+fn outdated_fetch(e: &Env) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_str(&e.run(&["outdated", "--json", "--fetch"])).unwrap();
+    v.as_array().unwrap().iter().map(|r| (r["name"].as_str().unwrap().to_string(), r.clone())).collect()
+}
+
+/// `[updates] ttl_hours = 0`: listings re-check every time.
+#[test]
+fn zero_ttl_rechecks_on_list() {
+    let e = Env::new();
+    let (work, bare) = bare_remote(&e);
+    write(&e.path("home/config"), "config.toml", "[updates]\nttl_hours = 0\n");
+    e.run(&["add", bare.to_str().unwrap(), "--name", "w", "--ref", "main"]);
+    assert!(!e.run(&["list"]).contains('⬆'));
+    push_commit(&work, "x.txt");
+    assert!(e.run(&["list"]).contains("w ⬆ update"));
+}

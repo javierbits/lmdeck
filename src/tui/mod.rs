@@ -78,6 +78,8 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
         });
     }
     let _ = work_tx.send(Work::Refresh { inventory: false });
+    // New commits upstream of wrapped recipes (cache only; checks run off-thread).
+    crate::updates::spawn_background(deck.paths.clone(), deck.cfg.clone());
     // Telemetry for this machine and every hosts.toml entry, on its own thread.
     let sampler = Sampler::spawn(deck.paths.clone(), true);
 
@@ -149,7 +151,8 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                 Action::Start(r) => (r.clone(), Box::new(move |d| d.start(&r, false, false))),
                 Action::Switch(r) => (r.clone(), Box::new(move |d| d.start(&r, true, false))),
                 Action::Stop(r) => (r.clone(), Box::new(move |d| d.stop(&r))),
-                Action::Pull(r) => (r.clone(), Box::new(move |d| d.pull(&r))),
+                Action::Pull(r) => (r.clone(), Box::new(move |d| d.pull(&r, false))),
+                Action::Update(r) => (r.clone(), Box::new(move |d| d.pull(&r, true))),
             };
             let name = app.selected().map(|r| r.name.clone()).unwrap_or(name);
             let (deck, tx, work) = (deck.clone(), msg_tx.clone(), work_tx.clone());

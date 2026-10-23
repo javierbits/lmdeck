@@ -3,8 +3,8 @@
 **Repo:** https://github.com/jvr0x/lmdeck. It is a **private** repo owned by `jvr0x` (Javier).
 
 **State (2026-10-23):**
-- `main`: `cacce29` (wrap-only recipes, LMDeploy, TOML only) on top of `80fe886`, then three test-hardening commits (`322532c`, `3295fc8`, `bcb7136`) and this doc update.
-- CI was green on ubuntu, macOS and MSRV 1.85 at `bcb7136`.
+- `main`: `cacce29` (wrap-only recipes, LMDeploy, TOML only) on top of `80fe886`, then three test-hardening commits (`322532c`, `3295fc8`, `bcb7136`), a doc update (`5be1e3c`), and the upstream update indicator for wrapped recipes (the commit after `5be1e3c`).
+- CI was green on ubuntu, macOS and MSRV 1.85 at `bcb7136`; see `gh run list` for the update-indicator commit.
 - macOS CI note: the runners now have Homebrew Python 3.15, and a fresh `python3 -m http.server` there has taken ~40 s to answer. Tests that use it have long ready timeouts, and `free_port()` never hands out the same port twice.
 - Crate `lmdeck` v0.1.0, Rust edition with `rust-version = "1.85"`, about 12.5k lines of Rust.
 - Nothing has been published to crates.io, PyPI, or npm.
@@ -44,6 +44,7 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - `detached = true`: start.sh exiting 0 is not a crash. A small `sh` wrapper writes the exit code to `run/<name>.exit`, then (if `logs` is set) `exec`s the log follower into the same log file, so TUI/web log views work unchanged. Liveness = `docker inspect` of `engine.container` if set, else exit 0 + port probe. Stop = stop script → `docker stop -t 20` (if still running) → kill the process group.
   - Args are not appended to custom commands unless given.
   - `lmdeck add <owner/repo | url | dir> [--name] [--ref] [--force]`: needs `start.sh` + `stop.sh` at the root, reads `VAR=${VAR:-default}` lines (root `*.sh`, `scripts/*.sh`, `.env.example`) for port/host/container, pins the cloned commit, writes TODOs for what it can't tell.
+  - **Upstream update checks** (`src/updates.rs`): for cloned checkouts, `git ls-remote --symref` (timeout via a killed process group, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode`/`ConnectTimeout`, http low-speed limit) compares the checkout's HEAD to the branch head. States: `current`, `behind` (branch ref moved → `⬆ update`, `lmdeck pull`), `pinned_newer` (tag/sha pin and the default branch, or `[source] branch`, moved → `⬆ newer`, `lmdeck pull --latest` rewrites `ref` in the deck recipe), `not_cloned` (never checked), `unknown` (offline/gone; never an error), `disabled`. Cache `~/.cache/lmdeck/update-check.json`, `[updates] check/ttl_hours (6)/timeout_secs (5)`, `LMDECK_NO_UPDATE_CHECK=1`; errors are re-tried after 15 min. CLI listings re-check stale entries (3 s timeout); TUI and `serve` read the cache only and refresh in a background thread. Status is recomputed from the local HEAD each read, so it clears right after a pull. Shown in `list`, `recipe list/show` (+ JSON `update`), `lmdeck outdated [--fetch] [--json]` (alias `updates`), the TUI (badge, details line, `u` key) and the web cards (badge, `⬆ Update` button posting `{"latest":true}` for pins).
   - Built-in `ornith-1.5-122b-tensorfold` wraps MiaAI-Lab/Ornith-1.5-122B-TensorFold @ `0c8fd6a` (detached, container `ornith-122b-tf`, port 8888, `./stop.sh`, `docker logs -f ornith-122b-tf`, ready_timeout 10800, no `[model]`).
   - `examples/ornith-122b-awq-lmdeploy.toml`: LMDeploy-in-Docker example with a clearly marked **placeholder** model repo (`<your-org>/…`). Not a built-in.
   - The health check polls `/v1/models`.
@@ -51,7 +52,8 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
 - **CLI commands:**
   - `list [-l|-d|-a] [--json]`
   - `use`/`on`/`start` and `switch`, both with `--dry-run` and `--force`
-  - `stop [--all]`, `logs`, `pull` (via the `hf` CLI, `lms get`, or `tensorfold pull`; updates the checkout for `[source]` recipes)
+  - `outdated [names] [--fetch] [--json]`
+  - `stop [--all]`, `logs`, `pull [--latest]` (via the `hf` CLI, `lms get`, or `tensorfold pull`; updates the checkout for `[source]` recipes)
   - `add <repo>` (wrap a start.sh/stop.sh repo)
   - `init`
   - `recipe search|add|list|show|run|remove`
@@ -78,7 +80,7 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - Colours are taken from `omacom/omarchy` `themes/<slug>/colors.toml` at commit 967bbdd. The repo moved there from basecamp/omarchy.
   - Contrast is tested. The theme is saved in `~/.config/lmdeck/config.toml`. `--theme` and `LMDECK_THEME` override it.
   - Omarchy's MIT licence is in `licenses/omarchy-MIT.txt`.
-- **Tests:** 133 (112 unit, 14 `tests/cli.rs`, 7 `tests/web.rs`). No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
+- **Tests:** 142 (118 unit, 16 `tests/cli.rs`, 8 `tests/web.rs`). Update checks use local bare repos as remotes: branch and pinned recipes going behind/newer, `pull`/`pull --latest` clearing it, a removed remote → unknown, TTL 0, the env switch, the TUI badge and `u`, and the web badge + pull. No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
 - **Docs:** the README covers install, quick start, TUI, themes, the web dashboard, hosts and telemetry, commands, sources, the recipe format, engines, TensorFold, wrapped recipes, and files. This file is also kept in the repo as `docs/HANDOVER.md`. Screenshots are in `docs/screenshots/`.
 
 ## Files and dirs at runtime
@@ -96,6 +98,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
 - Wrapped recipes: verified only with stub scripts and a stub HTTP server, plus `lmdeck add MiaAI-Lab/Ornith-1.5-122B-TensorFold` against the real GitHub repo (clone + detection + dry-run; it detects port 8888 and container `ornith-122b-tf`). Mia's start.sh has **never been run** by lmdeck: no Docker/GPU here. The `docker inspect` liveness and `docker logs -f` follower paths are untested against real Docker.
 - LMDeploy: only dry-run commands were checked. Assumed that `openmmlab/lmdeploy` images have no serving entrypoint (lmdeck puts `lmdeploy serve api_server` after the image); unverified. No AWQ Ornith build has been checked to exist.
 - The TUI has only been driven in a simulated terminal, never a real one.
+- Update checks: tested only against local bare repos. Real GitHub over HTTPS/SSH, the timeout on a hung network, and private repos that need credentials (they should show `unknown`, never prompt) are unverified. The web badge/button was checked through the API and a JS syntax check, not visually.
 
 ## Suggested next steps (rough priority)
 1. **Real-hardware pass on a Spark:**
