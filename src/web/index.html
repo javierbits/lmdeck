@@ -137,6 +137,38 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 .modal{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:#000a}
 .modal .box{width:380px}
 .modal input{width:100%;margin:10px 0;padding:9px 11px;background:#0e0e12;border:1px solid var(--line2);border-radius:8px}
+
+/* hosts */
+.hosts{padding:16px 22px 0}
+.hosts h2{display:flex;align-items:center;gap:10px;margin:0 0 10px;font:700 12px var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--accent)}
+.hosts h2 .dim{text-transform:none;letter-spacing:0;font-weight:600}
+.demo{font:700 11px var(--mono);padding:3px 9px;border-radius:99px;background:var(--warn);color:#121212;letter-spacing:.5px}
+.hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.host{display:flex;flex-direction:column;gap:10px;padding:14px 16px;background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:14px;transition:opacity .3s,filter .3s}
+.host.on{border-color:#178fb955}
+.host.off{opacity:.5;filter:grayscale(.9)}
+.host .hd{display:flex;align-items:center;gap:8px}
+.host .hd b{font:700 15px var(--mono)}
+.host .st{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px #89d28188}
+.host.off .st{background:var(--err);box-shadow:none}
+.host .url{font:12px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.host .lat{margin-left:auto;font:600 11.5px var(--mono);color:var(--muted);white-space:nowrap}
+.host .plat{font-size:12.5px;color:var(--muted);margin-top:-6px}
+.host .err{font:12px var(--mono);color:#ff7b86}
+.nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.num{background:#ffffff06;border:1px solid var(--line);border-radius:10px;padding:6px 8px;min-width:0;overflow:hidden}
+.num .k{font:600 10.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.num .v{font:700 15px var(--mono);white-space:nowrap}
+.num .v small{font-size:10.5px;font-weight:600;margin-left:2px}
+.up1{color:var(--warn)} .dn1{color:var(--ok)}
+.sparks{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.spark .k{display:flex;justify-content:space-between;font:600 10.5px var(--mono);color:var(--muted)}
+.spark svg{display:block;width:100%;height:34px}
+.host .models{font:12px var(--mono);display:flex;flex-direction:column;gap:3px}
+.host .models .m{display:flex;gap:8px;align-items:baseline}
+.host .models .m b{color:var(--fg)} .host .models .m .tps{margin-left:auto;color:var(--ok);font-weight:700}
+.live-line{font:600 11.5px var(--mono);color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
+.live-line b{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -150,6 +182,11 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
   <div class="gauge"><div class="lbl"><span>memory</span><span id="memtxt">…</span></div><div class="bar" id="membar"><i style="width:0"></i></div></div>
   <div class="gauge"><div class="lbl"><span>held by servers</span><span id="heldtxt">…</span></div><div class="bar held" id="heldbar"><i style="width:0"></i></div></div>
 </header>
+
+<section class="hosts hidden" id="hostsec">
+  <h2>Hosts <span class="dim" id="hostsum"></span><span class="demo hidden" id="demo" title="LMDECK_DEMO is set: synthetic numbers for screenshots">DEMO DATA</span></h2>
+  <div class="hgrid" id="hosts"></div>
+</section>
 
 <section class="toolbar">
   <label class="search">
@@ -195,7 +232,7 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const st = {snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null};
+const st = {hosts:null, snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null};
 
 // token: #token=… in the URL, else remembered
 (function(){ const m = location.hash.match(/token=([^&]+)/); if (m) { localStorage.setItem("lmdeck-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); } })();
@@ -234,6 +271,12 @@ function visible(){
 const up = r => ["loaded","loading","external"].includes(r.status);
 const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port busy", stopped:"stopped"};
 
+function liveLine(r){
+  const m = up(r) && localTel() && (localTel().models||[]).find(x => x.name === r.name); if (!m) return "";
+  const bits = [m.pid ? "pid " + m.pid : null, m.rss_gb != null ? "rss " + gb(m.rss_gb) + (m.mem_share_pct != null ? " · " + fmt(m.mem_share_pct) + "% of RAM" : "") : null,
+                m.tokens_per_s != null ? `<b>${fmt(m.tokens_per_s, 1)} tok/s</b>` : (m.metrics ? "idle" : null)].filter(Boolean);
+  return bits.length ? `<div class="live-line">${bits.join("<span class='dim'>·</span>")}</div>` : "";
+}
 function card(r){
   const total = st.snap.hardware.total_memory_gb || 1;
   const busy = st.busy.has(r.reference);
@@ -256,7 +299,7 @@ function card(r){
     <div class="tags"><span class="tag eng">${esc(r.engine)}</span><span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
       ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}
       ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}</div>
-    ${need}
+    ${need}${liveLine(r)}
     <details class="checks" data-ref="${ref}" ${st.open.has(r.reference)?"open":""}><summary>${(r.checks||[]).length} checks · launch command</summary><div class="chk">${checks}</div>${cmd}</details>
     <div class="actions">${toggle}
       <button class="btn" data-act="switch" data-ref="${ref}" title="stop the others, start this one" ${busy||up(r)?"disabled":""}>⇄ Switch</button>
@@ -270,9 +313,12 @@ function render(){
   const s = st.snap; if (!s) return;
   const hw = s.hardware;
   $("#ver").textContent = "v" + s.version;
-  const segs = [[hw.platform,"#d787af"],[hw.hostname,"#00afaf"],[hw.os + "/" + hw.arch,"#8787af"],[s.recipes.filter(up).length + " running","#5faf5f"]];
+  const L = localTel() || {};
+  const segs = [[L.platform || hw.platform,"#d787af"],[L.hostname || hw.hostname,"#00afaf"],[(L.os || hw.os) + "/" + (L.arch || hw.arch),"#8787af"],[s.recipes.filter(up).length + " running","#5faf5f"]];
   $("#segs").innerHTML = segs.map(([t,c]) => `<span class="seg" style="background:${c}">${esc(t)}</span>`).join("");
-  const total = hw.total_memory_gb || 1, used = hw.available_memory_gb == null ? null : total - hw.available_memory_gb;
+  const lt = localTel();
+  const total = (lt && lt.mem_total_gb) || hw.total_memory_gb || 1;
+  const used = lt && lt.mem_used_gb != null ? lt.mem_used_gb : (hw.available_memory_gb == null ? null : total - hw.available_memory_gb);
   $("#memtxt").textContent = used == null ? gb(total) : `${gb(used)} / ${gb(total)}`;
   setBar($("#membar"), used == null ? 0 : used / total);
   const held = s.recipes.filter(up).reduce((a, r) => a + (r.need_gb || 0), 0);
@@ -293,6 +339,76 @@ function render(){
     .concat(s.sources.map(x => [x.name, x.spec + (x.fetched_at ? " · " + ago(x.fetched_at) + " ago" : " · never fetched"), x.recipes ?? 0]))
     .map(([n,d,c]) => `<div class="tool ok"><span class="n">${esc(n)}</span><span class="d" title="${esc(d)}">${esc(d)}</span><span class="grow"></span><span style="color:var(--accent)">${c}</span></div>`).join("");
 }
+
+
+// ---- hosts & telemetry ----
+const METRICS = [["mem_pct","mem","%","#d787af",[0,100]],["temp_c","temp","°C","#e4c00f",[25,95]],["power_w","power","W","#febc38",null],["gpu_util_pct","gpu","%","#00afaf",[0,100]]];
+function fmt(v, d=0){ return v == null ? "–" : Number(v).toFixed(d); }
+function change(hist, key){
+  if (!hist || !hist.length) return null; const last = hist[hist.length-1]; if (last[key] == null) return null;
+  const target = last.at - 60000; let then = null;
+  for (let i = hist.length - 1; i >= 0; i--) if (hist[i].at <= target) { then = hist[i][key]; break; }
+  return then == null ? null : last[key] - then;
+}
+function delta(d, upBad=true){
+  if (d == null) return ""; if (Math.abs(d) < .5) return `<small class="dim">·</small>`;
+  const up = d > 0; return `<small class="${up === upBad ? "up1" : "dn1"}">${up ? "▲" : "▼"}${Math.abs(d).toFixed(0)}</small>`;
+}
+function sparkSvg(hist, key, color, range, id){
+  const vals = (hist||[]).map(s => s[key]);
+  const nums = vals.filter(v => v != null);
+  if (!nums.length) return `<svg viewBox="0 0 120 34"><text x="0" y="22" fill="#5f6673" font-size="10" font-family="monospace">no data</text></svg>`;
+  const [lo, hi] = range || [0, Math.max(20, Math.max(...nums) * 1.15)];
+  const n = vals.length, W = 120, H = 34;
+  const x = i => n <= 1 ? W : (i / (n - 1)) * W, y = v => H - 2 - Math.max(0, Math.min(1, (v - lo) / (hi - lo || 1))) * (H - 4);
+  let line = "", area = "", seg = [];
+  const flush = () => { if (seg.length) { line += "M" + seg.map(([a,b]) => a.toFixed(1) + "," + b.toFixed(1)).join("L");
+      area += `M${seg[0][0].toFixed(1)},${H}L` + seg.map(([a,b]) => a.toFixed(1) + "," + b.toFixed(1)).join("L") + `L${seg[seg.length-1][0].toFixed(1)},${H}Z`; } seg = []; };
+  vals.forEach((v, i) => { if (v == null) flush(); else seg.push([x(i), y(v)]); }); flush();
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="g${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".45"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <path d="${area}" fill="url(#g${id})"/><path d="${line}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+const telTemp = t => { const g = (t.gpus||[]).map(x => x.temp_c).filter(v => v != null); return g.length ? Math.max(...g) : t.cpu_temp_c; };
+const telPower = t => { if (t.system_power_w != null) return t.system_power_w; const p = (t.gpus||[]).map(x => x.power_w).filter(v => v != null); return p.length ? p.reduce((a,b) => a+b, 0) : null; };
+const telUtil = t => { const u = (t.gpus||[]).map(x => x.util_pct).filter(v => v != null); return u.length ? u.reduce((a,b) => a+b, 0) / u.length : null; };
+const telTps = t => { const v = (t.models||[]).map(m => m.tokens_per_s).filter(v => v != null); return v.length ? v.reduce((a,b) => a+b, 0) : null; };
+function hostCard(h, idx){
+  const t = h.telemetry, hist = h.history || [];
+  const lat = h.online ? `● ${h.local ? "this machine" : (h.latency_ms ?? 0) + " ms"}` : `offline · seen ${h.last_seen ? ago(h.last_seen/1000) + " ago" : "never"}`;
+  let body = "";
+  if (t) {
+    const memPct = t.mem_used_gb != null && t.mem_total_gb ? t.mem_used_gb / t.mem_total_gb : null;
+    const tps = telTps(t);
+    body += `<div class="nums">
+      <div class="num"><div class="k">memory</div><div class="v">${fmt(t.mem_used_gb)}<small class="dim">/${fmt(t.mem_total_gb)}G</small></div>${memPct == null ? "" : `<div class="bar ${memPct>.9?"err":memPct>.7?"warn":""}" style="height:4px;margin-top:4px"><i style="width:${(memPct*100).toFixed(1)}%"></i></div>`}</div>
+      <div class="num"><div class="k">temp</div><div class="v">${fmt(telTemp(t))}<small class="dim">°C</small>${h.online ? delta(change(hist, "temp_c")) : ""}</div></div>
+      <div class="num"><div class="k">${t.system_power_w != null ? "sys" : "gpu"} power</div><div class="v">${fmt(telPower(t))}<small class="dim">W</small>${h.online ? delta(change(hist, "power_w")) : ""}</div></div>
+      <div class="num"><div class="k">${tps != null ? "tok/s" : "gpu util"}</div><div class="v">${tps != null ? fmt(tps, 1) : fmt(telUtil(t))}<small class="dim">${tps != null ? "" : "%"}</small></div></div></div>`;
+    body += `<div class="sparks">` + METRICS.map(([key, label, unit, color, range], j) => {
+      const last = hist.length ? hist[hist.length-1][key] : null;
+      return `<div class="spark"><div class="k"><span>${label}</span><span>${fmt(last)}${unit}</span></div>${sparkSvg(hist, key, h.online ? color : "#777d88", range, idx + "_" + j)}</div>`;
+    }).join("") + `</div>`;
+    const models = (t.models||[]).map(m => `<div class="m"><b>${esc(m.name)}</b><span class="dim">${esc(m.engine)} :${m.port}${m.pid ? " · pid " + m.pid : ""}${m.rss_gb != null ? " · " + gb(m.rss_gb) + (m.mem_share_pct != null ? " (" + fmt(m.mem_share_pct) + "%)" : "") : ""}</span><span class="tps">${m.tokens_per_s != null ? fmt(m.tokens_per_s, 1) + " tok/s" : ""}</span></div>`).join("");
+    body += `<div class="models">${models || `<span class="dim">no models running</span>`}</div>`;
+    const extra = [t.cpu_util_pct != null ? "cpu " + fmt(t.cpu_util_pct) + "%" : null, t.load ? "load " + t.load.map(v => v.toFixed(1)).join(" ") : null,
+                   t.mem_pressure_pct != null ? "mem pressure " + fmt(t.mem_pressure_pct) + "%" : null, (t.sources||[]).length ? "via " + t.sources.join(", ") : null].filter(Boolean);
+    body += `<div class="dim mono" style="font-size:11px">${esc(extra.join(" · "))}</div>`;
+  }
+  return `<article class="host ${h.online ? "on" : "off"}">
+    <div class="hd"><span class="st"></span><b>${esc(h.name)}</b><span class="url">${esc(h.url || (t ? t.hostname : ""))}</span><span class="lat">${esc(lat)}</span></div>
+    ${t ? `<div class="plat">${esc(t.platform)} · ${esc(t.os)}/${esc(t.arch)} · ${t.cpu_cores} cores${t.unified_memory ? " · unified memory" : ""}</div>` : ""}
+    ${h.error ? `<div class="err">${esc(h.error)}</div>` : ""}${body}</article>`;
+}
+function renderHosts(){
+  const d = st.hosts; if (!d) return;
+  $("#hostsec").classList.toggle("hidden", !d.hosts.length);
+  $("#demo").classList.toggle("hidden", !d.demo);
+  const on = d.hosts.filter(h => h.online).length;
+  $("#hostsum").textContent = `${on}/${d.hosts.length} online · last ${Math.round(Math.max(0, ...d.hosts.map(h => h.history.length ? (h.history[h.history.length-1].at - h.history[0].at) / 60000 : 0)))} min`;
+  $("#hosts").innerHTML = d.hosts.map(hostCard).join("");
+}
+const localTel = () => st.hosts && st.hosts.hosts.find(h => h.local)?.telemetry;
+async function refreshHosts(){ try { st.hosts = await api("hosts"); renderHosts(); render(); } catch (e) {} }
 
 let failing = false;
 async function refresh(){
@@ -351,7 +467,8 @@ document.addEventListener("keydown", e => {
 const params = new URLSearchParams(location.search);
 if (params.get("scope") === "all") $("#scope [data-v=all]").click();
 if (params.get("logs")) openLogs(params.get("logs"));
-refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 2500);
+refresh(); refreshHosts();
+setInterval(() => { if (!document.hidden) { refresh(); refreshHosts(); } }, 2500);
 </script>
 </body>
 </html>
