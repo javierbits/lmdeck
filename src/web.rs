@@ -296,6 +296,23 @@ fn handle(st: &State, mut req: Request) {
         Method::Get => match api {
             "snapshot" => json_reply(req, 200, &json!(*st.snapshot())),
             "recipes" => json_reply(req, 200, &json!(st.snapshot().recipes)),
+            "status" if query_param(&query, "name").is_some() => {
+                // One recipe, without building a whole snapshot (controllers poll this while waiting).
+                let name = query_param(&query, "name").unwrap_or_default();
+                let cat = st.deck.catalog();
+                let rows: Vec<Value> = cat
+                    .entries
+                    .iter()
+                    .filter(|f| f.recipe.name == name)
+                    .take(1)
+                    .map(|f| {
+                        let s = crate::runner::status(&st.deck.paths, &f.recipe.name, f.recipe.port());
+                        json!({"name": f.recipe.name, "reference": format!("{}/{}", f.origin, f.recipe.name),
+                               "status": crate::deck::status_word(&s), "port": f.recipe.port()})
+                    })
+                    .collect();
+                json_reply(req, 200, &json!(rows))
+            }
             "status" => {
                 let s = st.snapshot();
                 let rows: Vec<Value> = s

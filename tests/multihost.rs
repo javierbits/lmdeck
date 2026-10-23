@@ -424,7 +424,16 @@ fn weights_index_and_nfs_placement_with_fake_docker() {
     fs::write(&exports, format!("{} 10.99.0.0/24(ro,no_subtree_check)\n", hf_a.display())).unwrap();
     let out = c.run(&["use", "tiny", "--on", "b", "--no-wait"]);
     assert!(out.contains("preflight") || out.contains("2 files"), "{out}");
-    let d = fs::read_to_string(&log).unwrap();
+    // The engine is spawned asynchronously on b: wait for its docker run.
+    let t0 = Instant::now();
+    let mut d = String::new();
+    while t0.elapsed() < Duration::from_secs(60) {
+        d = fs::read_to_string(&log).unwrap_or_default();
+        if d.contains("lmdeck-hf-a:/root/.cache/huggingface/hub:ro") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
     assert!(d.contains("volume create") && d.contains("addr=10.99.0.1"), "{d}");
     assert!(d.contains("lmdeck-hf-a:/root/.cache/huggingface/hub:ro"), "mounted read-only:\n{d}");
     assert!(!d.contains("rsync") && !d.contains("cp "), "{d}");

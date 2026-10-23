@@ -1261,7 +1261,18 @@ fn wait_on(deck: &Deck, host: &str, name: &str, port: u16, timeout: u64, node: &
     let t0 = std::time::Instant::now();
     let mut last = 0;
     loop {
-        match t.state(deck, name, port)? {
+        // A busy host (an engine still binding its port) can time out a read: keep waiting.
+        let state = match t.state(deck, name, port) {
+            Ok(s) => s,
+            Err(e) if t0.elapsed().as_secs() < timeout => {
+                if std::env::var_os("LMDECK_DEBUG").is_some() {
+                    eprintln!("debug: {host}: {e:#}");
+                }
+                lmdeck::ops::NodeState::Up("loading".into())
+            }
+            Err(e) => return Err(e),
+        };
+        match state {
             lmdeck::ops::NodeState::Up(s) if s == "loaded" || s == "external" => {
                 println!("{} {} is up on {} (port {port})", green("●"), bold(name), host_label(host, node));
                 return Ok(());

@@ -353,7 +353,12 @@ fn gate(deck: &Deck, t: &Target, n: &NodePlan, spec: &NodeSpec, timeout: Duratio
     let t0 = Instant::now();
     let delay = Duration::from_secs(spec.ready_delay.unwrap_or(3));
     loop {
-        let state = t.state(deck, &n.served_as, n.port)?;
+        // A slow reply from a busy host is not a failure; the timeout below still applies.
+        let state = match t.state(deck, &n.served_as, n.port) {
+            Ok(s) => s,
+            Err(_) if t0.elapsed() <= timeout => NodeState::Up("loading".into()),
+            Err(e) => return Err(e),
+        };
         if state == NodeState::Stopped {
             bail!("{} exited before its gate ({})", n.name, n.gate);
         }
