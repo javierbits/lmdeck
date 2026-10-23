@@ -607,3 +607,19 @@ fn zero_ttl_rechecks_on_list() {
     push_commit(&work, "x.txt");
     assert!(e.run(&["list"]).contains("w ⬆ update"));
 }
+
+#[test]
+fn tui_run_on_picker_and_topology_frames() {
+    let e = Env::new();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    e.run(&["host", "add", "spark9", &format!("http://127.0.0.1:{dead}")]);
+    let frame =
+        e.run(&["tui", "--render-text", "--run-on", "--select", "qwen3-4b-gguf", "--width", "130", "--height", "36"]);
+    for want in ["Run qwen3-4b-gguf on", "⌂", "spark9", "no weights", "weights never move", "RUN ON"] {
+        assert!(frame.contains(want), "missing {want:?} in\n{frame}");
+    }
+    let frame = e.run(&["tui", "--render-text", "--tab", "topology", "--width", "130", "--height", "30"]);
+    for want in ["Topology", "controller", "spark9", "offline", "no links matched"] {
+        assert!(frame.contains(want), "missing {want:?} in\n{frame}");
+    }
+}

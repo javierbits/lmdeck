@@ -38,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Some(s) => match app.tab {
             Tab::Deck => draw_deck(f, app, s, body),
             Tab::Hosts => crate::tui::hostsview::draw_hosts(f, app, body),
+            Tab::Topology => crate::tui::topoview::draw_topology(f, app, body),
             Tab::Machine => draw_machine(f, app, s, body),
             Tab::Sources => draw_sources(f, app, s, body),
         },
@@ -48,6 +49,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.mode == Mode::Themes {
         draw_theme_picker(f, app, area);
+    }
+    if app.mode == Mode::RunOn {
+        draw_run_on(f, app, area);
     }
 }
 
@@ -201,6 +205,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::Search => ("SEARCH", t.info),
         Mode::Help => ("HELP", t.seg[0]),
         Mode::Themes => ("THEME", t.seg[2]),
+        Mode::RunOn => ("RUN ON", t.seg[1]),
     };
     let mut segs = vec![(mode.to_string(), mode_bg)];
     if app.tab == Tab::Hosts {
@@ -234,8 +239,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     let hints: &[(&str, &str)] = match app.mode {
         Mode::Search => &[("↵", "keep"), ("esc", "clear"), ("↑↓", "move")],
-        _ if app.tab == Tab::Hosts => &[("↑↓", "host"), ("tab", "view"), ("t", "theme"), ("?", "help"), ("q", "quit")],
-        _ => &[("↵", "start/stop"), ("s", "switch"), ("p", "pull"), ("l", "logs"), ("/", "search"), ("?", "help")],
+        Mode::RunOn => &[("↑↓", "host"), ("↵", "start there"), ("s", "switch there"), ("esc", "cancel")],
+        _ if app.tab == Tab::Hosts => {
+            &[("↑↓", "host"), ("←→", "model"), ("↵", "run deck pick here"), ("x", "stop"), ("l", "logs"), ("?", "help")]
+        }
+        _ if app.tab == Tab::Topology => &[("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
+        _ => &[("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs"), ("?", "help")],
     };
     let mut right = vec![];
     for (k, label) in hints {
@@ -367,6 +376,26 @@ fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
         spans.push(Span::raw(" "));
         spans.push(b);
     }
+    // Where it runs and where its weights live, when that isn't just here.
+    let mut tags = vec![];
+    if !r.nodes.is_empty() {
+        tags.push(format!("×{}", r.nodes.len()));
+    }
+    if let Some(h) = &r.placed_on {
+        tags.push(format!("→{h}"));
+    }
+    if !r.weights_on.is_empty() && (r.weights_on.len() > 1 || !r.downloaded) {
+        tags.push(format!("⛁{}", r.weights_on.join(",")));
+    }
+    let mut used: usize = spans.iter().map(|s| s.width()).sum();
+    for tag in tags {
+        let tag = format!(" {tag}");
+        if used + tag.width() > w {
+            break;
+        }
+        used += tag.width();
+        spans.push(Span::styled(tag, Style::new().fg(t.info)));
+    }
     Line::from(spans)
 }
 
@@ -478,6 +507,40 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         format!("not downloaded ({}) · press p", size_text(r))
     };
     lines.push(kv("weights", weights, t));
+    if !r.weights_on.is_empty() {
+        let home = r.weights_home.as_deref().map(|h| format!(" · home {h}")).unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<10}", "on"), Style::new().fg(t.muted)),
+            Span::styled(format!("⛁ {}", r.weights_on.join(", ")), Style::new().fg(t.info)),
+            Span::styled(home, Style::new().fg(t.dim)),
+        ]));
+    }
+    if let Some(h) = &r.placed_on {
+        lines.push(kv("running", format!("on {h} (weights read over NFS from their home)"), t));
+    }
+    if !r.nodes.is_empty() {
+        let phase = r.cluster_phase.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();
+        lines.push(kv("nodes", format!("{} nodes, started in order{phase}", r.nodes.len()), t));
+        for (i, n) in r.nodes.iter().enumerate() {
+            let c = match n.status.as_str() {
+                "loaded" | "running" => t.ok,
+                "loading" => t.warn,
+                "offline" => t.err,
+                _ => t.dim,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", ""), Style::new()),
+                Span::styled(format!("{}. ", i + 1), Style::new().fg(t.dim)),
+                Span::styled(format!("{:<8}", n.name), Style::new().fg(t.fg).bold()),
+                Span::styled(format!("{:<7}", n.role), Style::new().fg(t.muted)),
+                Span::styled(format!("on {:<10}", n.host), Style::new().fg(t.info)),
+                Span::styled(format!("● {}", n.status), Style::new().fg(c)),
+            ]));
+        }
+        if let Some(e) = &r.cluster_error {
+            lines.push(Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(t.err))));
+        }
+    }
     if let Some(l) = update_line(r, t) {
         lines.push(l);
     }
@@ -773,10 +836,14 @@ pub const KEYS: &[(&str, &str)] = &[
     ("p", "pull: download weights / update a checkout"),
     ("u", "take a ⬆ update (moves a pinned ref)"),
     ("l", "expand / collapse the live log"),
+    ("o", "run on…: pick the host (weights stay home)"),
+    ("hosts ↵ s", "run the deck's pick on the selected host"),
+    ("hosts ← →", "pick one of that host's servers"),
+    ("hosts x l", "stop it / tail its log"),
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
-    ("1-4  tab", "deck · hosts · machine · sources"),
+    ("1-5  tab", "deck · hosts · topology · machine · sources"),
     ("t", "next theme (saved)"),
     ("T", "theme picker: live preview, ↵ saves"),
     ("r", "refresh now (re-probe engines)"),
@@ -807,6 +874,74 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     );
     let block = panel(title("?", "Keys", None, t), t, true).padding(Padding::uniform(1));
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+// ───────────────────────── run-on picker ─────────────────────────
+
+fn draw_run_on(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let Some(p) = &app.run_on else { return };
+    let rows_h: u16 =
+        p.rows.iter().map(|r| 2 + u16::from(!r.summary.is_empty()) + r.notes.len().min(2) as u16).sum::<u16>().max(1);
+    let w = 92.min(area.width);
+    let h = (rows_h + 6).min(area.height.saturating_sub(2)).max(7);
+    let [v] = Layout::vertical([Constraint::Length(h)]).flex(Flex::Center).areas(area);
+    let [r] = Layout::horizontal([Constraint::Length(w)]).flex(Flex::Center).areas(v);
+    f.render_widget(Clear, r);
+    let block = panel(title("⇢", format!("Run {} on…", p.name), None, t), t, true).padding(Padding::horizontal(1));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let [list, foot] = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
+    let mut lines: Vec<Line> = vec![];
+    if p.rows.is_empty() {
+        lines.push(Line::from(Span::styled("◐ planning on every host…", Style::new().fg(t.muted))));
+    }
+    for (i, row) in p.rows.iter().enumerate() {
+        let on = i == p.cursor;
+        let base = if on { Style::new().bg(t.selected_bg) } else { Style::new() };
+        let (badge, bc) = match (row.ok, row.mode.as_str()) {
+            (false, _) => ("✗ can't", t.err),
+            (true, "local") => ("● local", t.ok),
+            (true, "nfs") => ("⇄ nfs ro", t.info),
+            (true, _) => ("○ no weights", t.warn),
+        };
+        let pad = (w as usize).saturating_sub(4);
+        lines.push(Line::from(vec![
+            Span::styled(if on { "▸ " } else { "  " }, base.fg(t.accent).bold()),
+            Span::styled(format!("{:<28}", fit_to(&row.label, 27)), base.fg(if row.ok { t.fg } else { t.dim }).bold()),
+            Span::styled(format!("{badge:<13}"), base.fg(bc).bold()),
+        ]));
+        if !row.summary.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(fit_to(&row.summary, pad.saturating_sub(4)), Style::new().fg(t.muted)),
+            ]));
+        }
+        for n in row.notes.iter().take(2) {
+            let c = if row.ok { t.warn } else { t.err };
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(fit_to(&format!("! {n}"), pad.saturating_sub(4)), Style::new().fg(c)),
+            ]));
+        }
+        lines.push(Line::raw(""));
+    }
+    f.render_widget(Paragraph::new(lines), list);
+    let help = Line::from(vec![
+        Span::styled("↑↓", Style::new().fg(t.accent).bold()),
+        Span::styled(" host  ", Style::new().fg(t.dim)),
+        Span::styled("↵", Style::new().fg(t.accent).bold()),
+        Span::styled(" start there  ", Style::new().fg(t.dim)),
+        Span::styled("s", Style::new().fg(t.accent).bold()),
+        Span::styled(" switch there  ", Style::new().fg(t.dim)),
+        Span::styled("esc", Style::new().fg(t.accent).bold()),
+        Span::styled(" cancel", Style::new().fg(t.dim)),
+    ]);
+    let note = Line::from(Span::styled(
+        "weights never move: other hosts read the home's copy read-only over CX7 NFS",
+        Style::new().fg(t.dim),
+    ));
+    f.render_widget(Paragraph::new(vec![note, help]), foot);
 }
 
 // ───────────────────────── theme picker ─────────────────────────

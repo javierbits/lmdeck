@@ -14,17 +14,19 @@ use crate::tui::theme::{themes, Theme};
 pub enum Tab {
     Deck,
     Hosts,
+    Topology,
     Machine,
     Sources,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Deck, Tab::Hosts, Tab::Machine, Tab::Sources];
+    pub const ALL: [Tab; 5] = [Tab::Deck, Tab::Hosts, Tab::Topology, Tab::Machine, Tab::Sources];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Deck => "Deck",
             Tab::Hosts => "Hosts",
+            Tab::Topology => "Topology",
             Tab::Machine => "Machine",
             Tab::Sources => "Sources",
         }
@@ -42,6 +44,33 @@ pub enum Mode {
     Help,
     /// The theme picker (`T`): moving previews, ↵ keeps, esc reverts.
     Themes,
+    /// The run-on picker (`o`): where to run the selected recipe.
+    RunOn,
+}
+
+/// One row of the run-on picker: a host and what running there would mean.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunOnRow {
+    /// `local` or a hosts.toml name.
+    pub host: String,
+    /// Display name.
+    pub label: String,
+    /// `local`, `nfs` or `none` (placement mode), or `error`.
+    pub mode: String,
+    /// Short summary: weights, link, load estimate, memory.
+    pub summary: String,
+    /// The plan's warnings, or the reason it can't run there.
+    pub notes: Vec<String>,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunOn {
+    pub reference: String,
+    pub name: String,
+    /// Empty while the plans are computed.
+    pub rows: Vec<RunOnRow>,
+    pub cursor: usize,
 }
 
 /// Something the runtime has to do on the app's behalf.
@@ -57,6 +86,24 @@ pub enum Action {
     Update(String),
     /// Re-snapshot now, re-probing engines too.
     Refresh,
+    /// Plan the selected recipe on every host (fills the run-on picker).
+    PlanRunOn(String),
+    /// Start a recipe on a host (`local` or a hosts.toml name); `only` stops the others there.
+    StartOn {
+        reference: String,
+        host: String,
+        only: bool,
+    },
+    /// Stop a server by name on a host.
+    StopOn {
+        host: String,
+        name: String,
+    },
+    /// Show a server's log from a host.
+    LogsOn {
+        host: String,
+        name: String,
+    },
     /// Persist this theme (a slug) as the config's `theme`.
     SaveTheme(String),
 }
@@ -97,6 +144,13 @@ pub struct App {
     pub theme_cursor: usize,
     /// The theme to go back to when the picker is cancelled.
     pub theme_before: usize,
+    /// The fabric picture for the Topology tab (built off-thread).
+    pub topology: Option<crate::topology::Topology>,
+    pub run_on: Option<RunOn>,
+    /// Highlighted model of the selected host (Hosts tab).
+    pub model_cursor: usize,
+    /// The log pane shows this (host, server) instead of the selected recipe's.
+    pub remote_log: Option<(String, String)>,
 }
 
 impl Default for App {
@@ -122,6 +176,10 @@ impl Default for App {
             host_cursor: 0,
             theme_cursor: 0,
             theme_before: 0,
+            topology: None,
+            run_on: None,
+            model_cursor: 0,
+            remote_log: None,
         }
     }
 }
@@ -197,6 +255,32 @@ impl App {
         self.hosts.get(self.host_cursor)
     }
 
+    /// `local` or the hosts.toml name of the selected host.
+    pub fn selected_host_key(&self) -> Option<String> {
+        self.selected_host().map(|h| if h.local { crate::hosts::LOCAL.to_string() } else { h.name.clone() })
+    }
+
+    /// Servers running on the selected host (from its telemetry).
+    pub fn host_models(&self) -> Vec<String> {
+        self.selected_host()
+            .and_then(|h| h.telemetry.as_ref())
+            .map(|t| t.models.iter().map(|m| m.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn selected_model(&self) -> Option<String> {
+        let m = self.host_models();
+        m.get(self.model_cursor.min(m.len().saturating_sub(1))).cloned()
+    }
+
+    /// Installs the run-on picker's plans, cursor on the first host that works.
+    pub fn set_plans(&mut self, reference: &str, rows: Vec<RunOnRow>) {
+        if let Some(p) = self.run_on.as_mut().filter(|p| p.reference == reference) {
+            p.cursor = rows.iter().position(|r| r.ok).unwrap_or(0);
+            p.rows = rows;
+        }
+    }
+
     /// Whether anything on screen is mock data (`LMDECK_DEMO`).
     pub fn demo(&self) -> bool {
         self.hosts.iter().any(|h| h.telemetry.as_ref().is_some_and(|t| t.demo))
@@ -205,7 +289,7 @@ impl App {
     pub fn set_hosts(&mut self, hosts: Vec<HostView>) {
         let keep = self.selected_host().map(|h| h.name.clone());
         self.hosts = hosts;
-        if let Some(i) = keep.and_then(|n| self.hosts.iter().position(|h| h.name == n)) {
+        if let Some(i) = keep.as_ref().and_then(|n| self.hosts.iter().position(|h| h.name == *n)) {
             self.host_cursor = i;
         }
         self.host_cursor = self.host_cursor.min(self.hosts.len().saturating_sub(1));
@@ -229,6 +313,7 @@ impl App {
         if self.tab == Tab::Hosts {
             let n = self.hosts.len().max(1) as isize;
             self.host_cursor = (self.host_cursor as isize + delta).clamp(0, n - 1) as usize;
+            self.model_cursor = 0;
             return;
         }
         let n = self.visible().len();
@@ -275,6 +360,7 @@ impl App {
             }
             Mode::Search => self.search_key(k, ctrl),
             Mode::Themes => self.theme_key(k),
+            Mode::RunOn => self.run_on_key(k),
             Mode::Normal => self.normal_key(k),
         }
     }
@@ -312,6 +398,90 @@ impl App {
         Action::None
     }
 
+    fn run_on_key(&mut self, k: KeyEvent) -> Action {
+        let Some(p) = self.run_on.as_mut() else {
+            self.mode = Mode::Normal;
+            return Action::None;
+        };
+        let n = p.rows.len().max(1);
+        match k.code {
+            KeyCode::Down | KeyCode::Char('j') => p.cursor = (p.cursor + 1).min(n - 1),
+            KeyCode::Up | KeyCode::Char('k') => p.cursor = p.cursor.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('s') => {
+                let only = k.code == KeyCode::Char('s');
+                let Some(row) = p.rows.get(p.cursor).cloned() else { return Action::None };
+                if !row.ok {
+                    let why = row.notes.first().cloned().unwrap_or_else(|| "can't run there".into());
+                    self.notify(format!("{}: {why}", row.label), Level::Fail);
+                    return Action::None;
+                }
+                let (reference, name) = (p.reference.clone(), p.name.clone());
+                self.run_on = None;
+                self.mode = Mode::Normal;
+                if !self.busy.contains(&name) {
+                    self.busy.push(name);
+                }
+                return Action::StartOn { reference, host: row.host, only };
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
+                self.run_on = None;
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Hosts-tab keys: run the deck's selected recipe on the selected host,
+    /// stop or tail one of that host's servers.
+    fn hosts_key(&mut self, k: KeyEvent) -> Option<Action> {
+        let host = self.selected_host_key()?;
+        let recipe = self.selected().map(|r| (r.reference.clone(), r.name.clone()));
+        let action = match k.code {
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('s') => {
+                let Some((reference, name)) = recipe else {
+                    self.notify("pick a recipe on the Deck tab first", Level::Warn);
+                    return Some(Action::None);
+                };
+                if !self.busy.contains(&name) {
+                    self.busy.push(name);
+                }
+                Action::StartOn { reference, host, only: k.code == KeyCode::Char('s') }
+            }
+            KeyCode::Char('x') => match self.selected_model() {
+                Some(name) => Action::StopOn { host, name },
+                None => {
+                    self.notify("nothing running on this host", Level::Warn);
+                    Action::None
+                }
+            },
+            KeyCode::Char('l') => match self.selected_model() {
+                Some(name) => {
+                    self.remote_log = Some((host.clone(), name.clone()));
+                    self.logs.clear();
+                    self.logs_max = true;
+                    self.log_scroll = 0;
+                    self.tab = Tab::Deck;
+                    Action::LogsOn { host, name }
+                }
+                None => {
+                    self.notify("nothing running on this host", Level::Warn);
+                    Action::None
+                }
+            },
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('[') => {
+                self.model_cursor = self.model_cursor.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Right | KeyCode::Char(']') => {
+                self.model_cursor = (self.model_cursor + 1).min(self.host_models().len().saturating_sub(1));
+                Action::None
+            }
+            _ => return None,
+        };
+        Some(action)
+    }
+
     fn search_key(&mut self, k: KeyEvent, ctrl: bool) -> Action {
         match k.code {
             KeyCode::Esc => {
@@ -340,6 +510,11 @@ impl App {
     }
 
     fn normal_key(&mut self, k: KeyEvent) -> Action {
+        if self.tab == Tab::Hosts && !self.logs_max {
+            if let Some(a) = self.hosts_key(k) {
+                return a;
+            }
+        }
         match k.code {
             KeyCode::Char('q') => {
                 self.quit = true;
@@ -348,6 +523,7 @@ impl App {
             KeyCode::Esc => {
                 if self.logs_max {
                     self.logs_max = false;
+                    self.remote_log = None;
                 } else if !self.query.is_empty() {
                     self.query.clear();
                 } else {
@@ -386,7 +562,23 @@ impl App {
             KeyCode::Char('l') => {
                 self.logs_max = !self.logs_max;
                 self.log_scroll = 0;
+                self.remote_log = None;
                 self.tab = Tab::Deck;
+            }
+            KeyCode::Char('o') => {
+                if self.tab != Tab::Deck {
+                    return Action::None;
+                }
+                let Some(r) = self.selected() else { return Action::None };
+                if !r.nodes.is_empty() {
+                    let msg = format!("{} spans {} nodes; its recipe says where each runs", r.name, r.nodes.len());
+                    self.notify(msg, Level::Warn);
+                    return Action::None;
+                }
+                let (reference, name) = (r.reference.clone(), r.name.clone());
+                self.run_on = Some(RunOn { reference: reference.clone(), name, rows: vec![], cursor: 0 });
+                self.mode = Mode::RunOn;
+                return Action::PlanRunOn(reference);
             }
             KeyCode::Char('/') => {
                 self.tab = Tab::Deck;
@@ -410,7 +602,7 @@ impl App {
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => self.tab = Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],
             KeyCode::BackTab => self.tab = Tab::ALL[(self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
-            KeyCode::Char(c @ '1'..='4') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
+            KeyCode::Char(c @ '1'..='5') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
             _ => {}
         }
         self.clamp();

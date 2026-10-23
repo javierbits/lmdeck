@@ -321,7 +321,7 @@ fn draw_gauges(f: &mut Frame, app: &App, h: &HostView, area: Rect) {
         let r = l[0] / x.cpu_cores.max(1) as f64;
         gauges.push(("cpu load".into(), r, format!("{:.2} {:.2} {:.2} · {} cores", l[0], l[1], l[2], x.cpu_cores)));
     }
-    let models_h = (x.models.len() as u16 + 1).max(2);
+    let models_h = (x.models.len() as u16 + 3).max(3);
     let fit = (inner.height.saturating_sub(models_h) / 2) as usize;
     gauges.truncate(fit);
     let mut cons: Vec<Constraint> = gauges.iter().map(|_| Constraint::Length(2)).collect();
@@ -334,8 +334,26 @@ fn draw_gauges(f: &mut Frame, app: &App, h: &HostView, area: Rect) {
     if x.models.is_empty() {
         lines.push(Line::from(Span::styled("nothing running", Style::new().fg(t.dim).italic())));
     }
-    for m in &x.models {
-        lines.push(model_line(m, t, dim));
+    let pick = app.model_cursor.min(x.models.len().saturating_sub(1));
+    for (i, m) in x.models.iter().enumerate() {
+        let mut l = model_line(m, t, dim);
+        if i == pick && x.models.len() > 1 {
+            l = l.style(Style::new().bg(t.selected_bg));
+        }
+        lines.push(l);
+    }
+    if !x.models.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "x stop · l logs · ←→ pick (works on remote hosts through their lmdeck serve)",
+            Style::new().fg(t.dim),
+        )));
+    }
+    if let Some(r) = app.selected() {
+        lines.push(Line::from(vec![
+            Span::styled("↵ ", Style::new().fg(t.accent).bold()),
+            Span::styled(format!("run {} here", r.name), Style::new().fg(t.muted)),
+            Span::styled(" · s switch", Style::new().fg(t.dim)),
+        ]));
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), rows[gauges.len()]);
 }

@@ -194,11 +194,14 @@ fn search_mode_edits_query() {
 #[test]
 fn tabs_help_theme_and_quit() {
     let mut a = app();
-    a.on_key(key('3'));
+    a.on_key(key('4'));
     assert_eq!(a.tab, Tab::Machine);
     assert_eq!(a.on_key(code(KeyCode::Enter)), Action::None, "actions only on the deck tab");
     a.on_key(code(KeyCode::BackTab));
+    assert_eq!(a.tab, Tab::Topology);
+    a.on_key(code(KeyCode::BackTab));
     assert_eq!(a.tab, Tab::Hosts);
+    a.on_key(code(KeyCode::Tab));
     a.on_key(code(KeyCode::Tab));
     a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Sources);
@@ -245,11 +248,11 @@ fn renders_every_tab_and_overlay() {
     {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
-    a.on_key(key('3'));
+    a.on_key(key('4'));
     let text = buffer_text(&render(&a, 140, 36));
     assert!(text.contains("system memory") && text.contains("32.0G used of 128.0G"), "{text}");
     assert!(text.contains("GB10") && text.contains("llama.cpp"), "{text}");
-    a.on_key(key('4'));
+    a.on_key(key('5'));
     let text = buffer_text(&render(&a, 140, 36));
     assert!(text.contains("builtin") && text.contains("every recipe file parsed"), "{text}");
     a.on_key(key('?'));
@@ -259,11 +262,14 @@ fn renders_every_tab_and_overlay() {
     for (w, h) in [(20, 5), (60, 10), (1, 1)] {
         let mut b = app();
         render(&b, w, h);
-        for k in ['2', '3'] {
+        for k in ['2', '3', '4'] {
             b.on_key(key(k));
             render(&b, w, h);
         }
         b.hosts = demo_hosts();
+        b.topology = Some(triangle());
+        render(&b, w, h);
+        b.on_key(key('3'));
         render(&b, w, h);
     }
     let html = buffer_html(&render(&a, 80, 20), "x");
@@ -529,4 +535,227 @@ fn update_badge_survives_a_narrow_list() {
     // Wide enough: the list grows (up to 62%) to show the whole badge.
     let wide = buffer_text(&render(&a, 180, 42));
     assert!(wide.contains("a-very-long-wrapped-recipe-name ⬆ update"), "{wide}");
+}
+
+/// Three Sparks cabled in a triangle (constructed, like tests/fixtures/fabric).
+pub(super) fn triangle() -> crate::topology::Topology {
+    use crate::fabric::{End, Link, LinkKind};
+    use crate::topology::{TopoHost, TopoLink, Topology};
+    let host = |key: &str, name: &str, local: bool| TopoHost {
+        key: key.into(),
+        name: name.into(),
+        local,
+        online: true,
+        gpu: Some("NVIDIA GB10".into()),
+        mem_total_gb: Some(120.0),
+        running: if local { vec!["qwen3-4b-gguf".into()] } else { vec![] },
+        weights: vec!["Qwen/Qwen3-4B".into()],
+        mgmt_kind: if local { "local".into() } else { "lan".into() },
+        mgmt_addr: if local { None } else { Some(format!("192.168.1.{}", name.len())) },
+        ..Default::default()
+    };
+    let end = |h: &str, ip: &str| End {
+        host: h.into(),
+        ifname: Some("enp1s0f1np1".into()),
+        ip: ip.into(),
+        ..Default::default()
+    };
+    let link = |a: (&str, &str), b: (&str, &str), active: Vec<String>, ok: Option<bool>| TopoLink {
+        link: Link {
+            a: end(a.0, a.1),
+            b: end(b.0, b.1),
+            kind: LinkKind::Cx7,
+            subnet: Some("10.0.0.0/30".into()),
+            speed_mbps: Some(200_000),
+            manual: false,
+            verified: ok,
+            rtt_ms: ok.map(|_| 0.12),
+        },
+        active,
+    };
+    Topology {
+        at: 1,
+        demo: false,
+        controller: "local".into(),
+        hosts: vec![host("local", "spark1", true), host("spark2", "spark2", false), host("spark3", "spark3", false)],
+        links: vec![
+            link(("local", "10.0.0.1"), ("spark2", "10.0.0.2"), vec!["nfs weights: qwen".into()], Some(true)),
+            link(("spark2", "10.0.1.1"), ("spark3", "10.0.1.2"), vec![], Some(false)),
+            link(("local", "10.0.2.1"), ("spark3", "10.0.2.2"), vec![], None),
+        ],
+        notes: vec![],
+    }
+}
+
+#[test]
+fn topology_tab_draws_boxes_cables_and_the_link_table() {
+    let mut a = app();
+    a.set_hosts(demo_hosts());
+    a.on_key(key('3'));
+    assert_eq!(a.tab, Tab::Topology);
+    let text = buffer_text(&render(&a, 140, 40));
+    assert!(text.contains("detecting fabric"), "{text}");
+    a.topology = Some(triangle());
+    let text = buffer_text(&render(&a, 140, 40));
+    for want in ["controller · spark1", "spark2", "spark3", "cx7 200G", "● busy", "✗ down", "spark1⇄spark3", "╭", "━"]
+    {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    for want in ["10.0.0.1", "UNREACHABLE", "unverified", "nfs weights: qwen", "ok 0.12 ms"] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    // Too narrow for boxes: the table alone, no panic.
+    let text = buffer_text(&render(&a, 60, 30));
+    assert!(text.contains("Topology") && !text.contains("╭─────"), "{text}");
+}
+
+fn rows() -> Vec<crate::tui::RunOnRow> {
+    use crate::tui::RunOnRow;
+    vec![
+        RunOnRow {
+            host: "local".into(),
+            label: "spark1 (this machine)".into(),
+            mode: "error".into(),
+            summary: String::new(),
+            notes: vec!["needs ~200 GB, spark1 has 120 GB".into()],
+            ok: false,
+        },
+        RunOnRow {
+            host: "spark2".into(),
+            label: "spark2".into(),
+            mode: "nfs".into(),
+            summary: "weights on spark1 → NFS ro · cx7 · load ≈12 s · 60/120 GB".into(),
+            notes: vec![],
+            ok: true,
+        },
+    ]
+}
+
+#[test]
+fn run_on_picker_plans_then_starts_on_the_chosen_host() {
+    let mut a = app();
+    let r = a.selected().unwrap().clone();
+    let Action::PlanRunOn(reference) = a.on_key(key('o')) else { panic!("o plans") };
+    assert_eq!(reference, r.reference);
+    assert_eq!(a.mode, Mode::RunOn);
+    assert!(buffer_text(&render(&a, 140, 36)).contains("planning on every host"));
+    a.set_plans("someone-else", rows());
+    assert!(a.run_on.as_ref().unwrap().rows.is_empty(), "plans for another recipe are ignored");
+    a.set_plans(&reference, rows());
+    assert_eq!(a.run_on.as_ref().unwrap().cursor, 1, "cursor starts on the first host that works");
+    let text = buffer_text(&render(&a, 140, 36));
+    for want in ["Run ", "spark2", "nfs ro", "load ≈12 s", "can't", "needs ~200 GB", "weights never move"] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    a.on_key(code(KeyCode::Up));
+    assert_eq!(a.on_key(code(KeyCode::Enter)), Action::None, "a host that can't run it is refused");
+    assert_eq!(a.mode, Mode::RunOn);
+    a.on_key(code(KeyCode::Down));
+    let act = a.on_key(code(KeyCode::Enter));
+    assert_eq!(act, Action::StartOn { reference: r.reference.clone(), host: "spark2".into(), only: false });
+    assert_eq!(a.mode, Mode::Normal);
+    assert!(a.run_on.is_none() && a.busy.contains(&r.name));
+    // s = switch there; esc cancels.
+    a.on_key(key('o'));
+    a.set_plans(&r.reference, rows());
+    assert_eq!(
+        a.on_key(key('s')),
+        Action::StartOn { reference: r.reference.clone(), host: "spark2".into(), only: true }
+    );
+    a.on_key(key('o'));
+    a.on_key(code(KeyCode::Esc));
+    assert_eq!(a.mode, Mode::Normal);
+}
+
+#[test]
+fn run_on_refuses_multi_node_recipes() {
+    let mut a = app();
+    let mut s = demo();
+    s.recipes[0].nodes = vec![crate::cluster::NodeView {
+        name: "head".into(),
+        role: "head".into(),
+        host: "local".into(),
+        served_as: "x.head".into(),
+        status: "stopped".into(),
+    }];
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| !r.nodes.is_empty()).unwrap();
+    assert_eq!(a.on_key(key('o')), Action::None);
+    assert_eq!(a.mode, Mode::Normal);
+}
+
+#[test]
+fn hosts_tab_controls_reach_the_selected_host() {
+    let mut a = app();
+    a.set_hosts(demo_hosts());
+    let r = a.selected().unwrap().clone();
+    a.on_key(key('2'));
+    a.on_key(code(KeyCode::Down));
+    assert_eq!(a.selected_host_key().as_deref(), Some("spark2"));
+    assert_eq!(
+        a.on_key(code(KeyCode::Enter)),
+        Action::StartOn { reference: r.reference.clone(), host: "spark2".into(), only: false }
+    );
+    assert_eq!(
+        a.on_key(key('s')),
+        Action::StartOn { reference: r.reference.clone(), host: "spark2".into(), only: true }
+    );
+    assert_eq!(a.on_key(key('x')), Action::StopOn { host: "spark2".into(), name: "qwen3-4b-gguf".into() });
+    let text = buffer_text(&render(&a, 150, 44));
+    assert!(text.contains("x stop · l logs") && text.contains(&format!("run {} here", r.name)), "{text}");
+    assert_eq!(a.on_key(key('l')), Action::LogsOn { host: "spark2".into(), name: "qwen3-4b-gguf".into() });
+    assert_eq!(a.remote_log, Some(("spark2".into(), "qwen3-4b-gguf".into())));
+    assert_eq!(a.tab, Tab::Deck);
+    assert!(a.logs_max);
+    a.on_key(code(KeyCode::Esc));
+    assert!(a.remote_log.is_none() && !a.logs_max);
+    // This machine is `local` to the actions.
+    a.on_key(key('2'));
+    a.on_key(code(KeyCode::Up));
+    assert_eq!(a.on_key(key('x')), Action::StopOn { host: "local".into(), name: "qwen3-4b-gguf".into() });
+}
+
+#[test]
+fn details_and_list_show_weights_home_nodes_and_placement() {
+    let mut a = app();
+    let mut s = demo();
+    let r = &mut s.recipes[0];
+    r.weights_on = vec!["spark1".into(), "spark2".into()];
+    r.weights_home = Some("spark1".into());
+    r.placed_on = Some("spark2".into());
+    r.nodes = vec![
+        crate::cluster::NodeView {
+            name: "head".into(),
+            role: "head".into(),
+            host: "spark1".into(),
+            served_as: "x.head".into(),
+            status: "loaded".into(),
+        },
+        crate::cluster::NodeView {
+            name: "w1".into(),
+            role: "worker".into(),
+            host: "spark2".into(),
+            served_as: "x.w1".into(),
+            status: "offline".into(),
+        },
+    ];
+    r.cluster_phase = Some("failed".into());
+    r.cluster_error = Some("w1 never came up".into());
+    let name = r.name.clone();
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    let text = buffer_text(&render(&a, 170, 50));
+    for want in [
+        "⛁ spark1, spark2",
+        "home spark1",
+        "on spark2 (weights read over NFS",
+        "2 nodes, started in order · failed",
+        "worker",
+        "● offline",
+        "✗ w1 never came up",
+        "×2",
+        "→spark2",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
 }

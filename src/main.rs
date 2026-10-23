@@ -198,6 +198,15 @@ struct TuiArgs {
     /// For --render-*: show the theme picker.
     #[arg(long, hide = true)]
     picker: bool,
+    /// For --render-*: select this recipe.
+    #[arg(long, hide = true)]
+    select: Option<String>,
+    /// For --render-*: select this host on the hosts tab.
+    #[arg(long, hide = true)]
+    host: Option<String>,
+    /// For --render-*: open the run-on picker for the selected recipe.
+    #[arg(long, hide = true)]
+    run_on: bool,
 }
 
 #[derive(Args)]
@@ -544,12 +553,21 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
 
 fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
     let nerd = a.nerd || std::env::var("LMDECK_NERD_FONT").is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
-    let opts = lmdeck::tui::Options { theme: a.theme, nerd, all: a.all, picker: a.picker };
+    let opts = lmdeck::tui::Options {
+        theme: a.theme,
+        nerd,
+        all: a.all,
+        picker: a.picker,
+        select: a.select,
+        host: a.host,
+        run_on: a.run_on,
+    };
     let deck = Deck::new(ctx.paths, ctx.cfg);
     if a.render_html.is_some() || a.render_text {
         let tab = match a.tab.as_str() {
             "deck" => lmdeck::tui::Tab::Deck,
             "hosts" => lmdeck::tui::Tab::Hosts,
+            "topology" | "topo" => lmdeck::tui::Tab::Topology,
             "machine" | "doctor" => lmdeck::tui::Tab::Machine,
             "sources" => lmdeck::tui::Tab::Sources,
             other => bail!("unknown tab '{other}'"),

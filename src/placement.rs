@@ -611,6 +611,19 @@ pub fn execute(deck: &Deck, r: &Recipe, plan: &Plan, only: bool, force: bool) ->
     Ok(out)
 }
 
+/// Start a recipe (by reference) on `host`: plan (weights home, link, fit) and run.
+/// Shared by the TUI run-on picker, the Hosts tab and the web dashboard.
+pub fn start_on(deck: &Deck, target: &str, host: &str, only: bool, force: bool, allow_slow: bool) -> Result<String> {
+    let cat = deck.catalog();
+    let r = crate::deck::resolve(&cat, target)?.recipe.clone();
+    if !r.nodes.is_empty() {
+        bail!("{} is a multi-node recipe; its [[nodes]] say where each part runs", r.name);
+    }
+    let p = plan(&deck.paths, &deck.cfg, &r, host, allow_slow)?;
+    let lines = execute(deck, &r, &p, only, force)?;
+    Ok(lines.last().cloned().unwrap_or_else(|| format!("started {} on {host}", r.name)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

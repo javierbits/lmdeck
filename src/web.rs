@@ -421,13 +421,7 @@ fn resolve_recipe(st: &State, target: &str) -> Result<crate::recipe::Recipe> {
 
 /// `start --on`: plan and run on another host, weights from their home.
 fn place(st: &State, target: &str, host: &str, only: bool, o: &ActionBody) -> Result<String> {
-    let r = resolve_recipe(st, target)?;
-    if !r.nodes.is_empty() {
-        return Err(anyhow!("{} is a multi-node recipe; its [[nodes]] say where each part runs", r.name));
-    }
-    let plan = crate::placement::plan(&st.deck.paths, &st.deck.cfg, &r, host, o.allow_slow_link)?;
-    let lines = crate::placement::execute(&st.deck, &r, &plan, only, o.force)?;
-    Ok(lines.join("; "))
+    crate::placement::start_on(&st.deck, target, host, only, o.force, o.allow_slow_link)
 }
 
 fn client_for(st: &State, host: &str) -> Result<crate::remote::Client> {
