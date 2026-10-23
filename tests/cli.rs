@@ -240,13 +240,15 @@ fn start_list_stop_custom_server() {
     let e = Env::new();
     let port = free_port();
     let recipe = format!(
-        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 30\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
+        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 180\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
         e.path("models").display()
     );
     let file = e.path("web.toml");
     fs::write(&file, recipe).unwrap();
     e.run(&["recipe", "add", file.to_str().unwrap()]);
 
+    // A generous timeout: on GitHub's macOS runners (Homebrew Python 3.15) a fresh
+    // `python3 -m http.server` has taken ~40 s to answer its first request.
     let out = e.run(&["use", "web"]);
     let log = fs::read_to_string(e.path("home/state/logs/web.log")).unwrap_or_default();
     if !out.contains(&format!("web is up at http://localhost:{port}/v1")) {
