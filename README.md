@@ -60,7 +60,15 @@ pills, rounded panels, and a status bar with key hints.
 - **Deck**: your recipes with status pills (running, loading, stopped, pulling),
   download state (✓ on disk, ↓ pulling, · not yet) and fit (✓ fits, ! tight,
   ✗ no fit). Next to the list are a details pane with the checks and the exact
-  launch command, and the live log of the selected recipe.
+  launch command, and the live log of the selected recipe. A running recipe
+  also shows its process RSS and share of RAM, VRAM on discrete GPUs, tok/s
+  when the engine exposes metrics, and GPU / power / temperature sparklines.
+- **Hosts**: live telemetry for this machine and every host in `hosts.toml`
+  (see [Hosts and telemetry](#hosts-and-telemetry)): memory, temperature,
+  power, GPU and CPU use and tok/s as bars with ▲/▼ change over the last
+  minute, heat-coloured history columns, gauges and a few minutes of history
+  for the selected host, and a detail strip with where each number came from.
+  Offline hosts are greyed out with the error and when they were last seen.
 - **Machine**: platform, CPU and memory gauges, the memory held by running
   recipes, per-GPU memory, and which engines and tools are installed.
 - **Sources**: the deck, the built-ins and every recipe source, with recipe
@@ -81,7 +89,7 @@ Quitting leaves servers running.
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
-| `1 2 3`, `tab` | deck · machine · sources |
+| `1 2 3 4`, `tab` | deck · hosts · machine · sources (on Hosts, `↑ ↓` picks a host) |
 | `t` | next theme |
 | `r` | refresh now (re-probes engines) |
 | `?` | help |
@@ -92,8 +100,11 @@ Themes: `omp` (default, the oh-my-pi palette), `catppuccin` (mocha) and
 `LMDECK_THEME=tokyo-night`. If your terminal font is a Nerd Font, `--nerd` (or
 `LMDECK_NERD_FONT=1`) draws rounded powerline caps on the pills.
 
+![hosts tab (LMDECK_DEMO=1 data)](docs/screenshots/tui-hosts.png)
+
 | | |
 |---|---|
+| ![deck tab with live telemetry (LMDECK_DEMO=1 data)](docs/screenshots/tui-deck-telemetry.png) | |
 | ![machine tab](docs/screenshots/tui-machine.png) | ![catppuccin theme](docs/screenshots/tui-catppuccin.png) |
 
 ## Web dashboard
@@ -107,7 +118,9 @@ lmdeck serve --host 0.0.0.0 --token "$(openssl rand -hex 16)"   # see the warnin
 `lmdeck serve` runs the same controls in a browser: a card for each recipe
 with status, fit, size, a memory bar, checks and the launch command; Start /
 Stop / Switch / Pull buttons; search and filters (fits, running, on disk);
-machine, engine and source panels; and a live log drawer. The page and its
+machine, engine and source panels; a live log drawer; and a Hosts row with
+one card per host (memory, temperature, power, tok/s, sparklines, the
+running models) that updates every 2.5 s. The page and its
 JSON API are compiled into the binary, so nothing is fetched from a CDN.
 
 ![web dashboard](docs/screenshots/web-dashboard.png)
@@ -133,6 +146,8 @@ API (JSON unless noted):
 | `GET` | `/api/status` | running and deck recipes: status, port, endpoint |
 | `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors |
 | `GET` | `/api/sources` | the deck, built-ins and sources with recipe counts |
+| `GET` | `/api/telemetry?history=1&since=MS` | this machine's live telemetry (memory, GPUs, temperatures, power, load, running models with RSS and tok/s); with `history=1` also the samples newer than `since` (ms since the epoch) |
+| `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry` and `history` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
 | `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
 | `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks. |
@@ -160,6 +175,70 @@ curl -N localhost:7979/api/logs/qwen3-4b-gguf/stream
 The screenshots come from a CPU-only Linux VM. The running recipe is a small
 `custom` stub server, and its log lines are synthetic.
 
+## Hosts and telemetry
+
+Every `lmdeck serve` samples its own machine every 2 s and keeps about six
+minutes of history in memory. Add the other machines to watch and the local
+TUI and dashboard show them next to this one:
+
+```sh
+# on each DGX Spark / Mac: listen on the Tailscale (or LAN) address with a token
+lmdeck serve --host 100.101.102.103 --token "$(openssl rand -hex 16)"
+
+# on the machine you look from
+lmdeck host add spark1 http://spark1:7979 --token <that token>
+lmdeck host add spark2 http://spark2:7979 --token <…>
+lmdeck host add mac    http://mac-studio:7979 --token <…>
+lmdeck host list          # polls each one: ● online 4 ms / ○ offline · timed out
+lmdeck host remove mac
+```
+
+Design:
+
+- **Pull, read-only.** The local instance polls each host's
+  `GET /api/telemetry?history=1&since=…` in parallel, every 2 s, with a
+  1.5 s timeout. It only reads; remote start/stop isn't proxied. The
+  first poll fetches the remote history, after that only the new samples.
+- **`hosts.toml`** lives in the config dir (`~/.config/lmdeck/hosts.toml`):
+  `[[host]] name / url / token`. lmdeck writes it with mode `0600` because
+  it holds tokens. It's re-read every round, so edits apply without a
+  restart. Keep it out of git.
+- **Tokens** go out as `Authorization: Bearer <token>`, per host. A wrong
+  token shows as `unauthorized: wrong or missing token`. There's no TLS
+  beyond what the URL gives you, so use Tailscale, a VPN, or an HTTPS
+  reverse proxy, never a public port.
+- **Offline hosts** stay listed, greyed out, with the error (`connection
+  refused`, `timed out`, an HTTP status) and their last numbers and when they
+  were last seen.
+
+What gets measured, and where it comes from:
+
+| what | Linux / DGX Spark (GB10) | NVIDIA discrete GPUs | macOS (no sudo) |
+|---|---|---|---|
+| memory | `/proc/meminfo` (`MemTotal − MemAvailable`). On GB10 this is the unified CPU+GPU pool. | same, plus VRAM from `nvidia-smi` | `vm_stat` + `sysctl hw.memsize`, `kern.memorystatus_level` as pressure |
+| GPU temp, power, util, SM clock | `nvidia-smi --query-gpu`. GB10 reports `[N/A]` for memory and the power limit; those become blanks, not zeros. | `nvidia-smi` | not available without sudo; `LMDECK_POWERMETRICS=1` tries `sudo -n powermetrics` (off by default) |
+| CPU temp | hwmon: `spbm` (the [spark_hwmon](https://github.com/antheas/spark_hwmon) driver) if loaded, else `k10temp` / `coretemp` / ACPI thermal zones | same | – |
+| system power | `spbm` `sys_total` / `dc_input` if loaded; otherwise the GPU's draw. NVIDIA doesn't expose CPU power on GB10. | GPU draw | powermetrics (opt-in) |
+| CPU use, load | `/proc/stat`, `/proc/loadavg` | same | `sysctl vm.loadavg` |
+| per model | PID from the run record, RSS of its process tree (`ps`), its share of RAM, VRAM from `nvidia-smi --query-compute-apps` | same | RSS and share |
+| tok/s | the engine's Prometheus `/metrics`: vLLM `vllm:generation_tokens_total`, SGLang `sglang:generation_tokens_total`, llama.cpp `llamacpp:tokens_predicted_total` (lmdeck adds `--metrics` to llama-server). A rate between two samples; otherwise "n/a". | same | same (MLX / LM Studio have no metrics, so n/a) |
+
+Anything a machine doesn't report is shown as `–`, never guessed. Docker
+recipes show tok/s (the metrics port is published) but no RSS, because the
+container isn't in lmdeck's process tree.
+
+### Demo mode
+
+`LMDECK_DEMO=1` swaps every reading for **synthetic** numbers: a busy local
+"spark1", spark2 (busy), spark3 (idle) and an offline Mac. It exists for
+screenshots and UI work. The TUI header, the Hosts strip, `lmdeck host list`,
+the dashboard and every JSON document (`"demo": true`) say **DEMO DATA**
+while it's on. The Hosts and deck-telemetry screenshots above, and the
+dashboard one below, were taken in demo mode on a CPU-only VM. The fit
+column and Machine panel there still describe that VM.
+
+![web dashboard hosts row (LMDECK_DEMO=1 data)](docs/screenshots/web-hosts.png)
+
 ## Commands
 
 | command | what it does |
@@ -177,6 +256,7 @@ The screenshots come from a CPU-only Linux VM. The running recipe is a small
 | `lmdeck doctor [--json]` | Shows the platform (GB10, Apple Silicon, NVIDIA, CPU), memory, GPUs and compute capability, which engines are installed, paths, sources, and a per-recipe fit table. |
 | `lmdeck init [--models-dir DIR]` | Writes `~/.config/lmdeck/config.toml`. |
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. |
+| `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
@@ -356,6 +436,7 @@ launch them. Use lmswitch for those.
 | config | `~/.config/lmdeck/config.toml` (`$XDG_CONFIG_HOME`) |
 | your deck | `~/.config/lmdeck/recipes/*.toml` |
 | source mirrors | `~/.cache/lmdeck/sources/` (`$XDG_CACHE_HOME`) |
+| hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
 | model weights | `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) plus the Hugging Face cache |
 
