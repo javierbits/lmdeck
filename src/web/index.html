@@ -112,6 +112,8 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 .btn.primary:hover{background:color-mix(in srgb,var(--accent) 85%,var(--fg))}
 .btn.danger{background:color-mix(in srgb,var(--err) 11%,transparent);color:var(--err);border-color:color-mix(in srgb,var(--err) 33%,transparent)}
 .btn.icon{padding:7px 9px;margin-left:auto}
+.btn.upd{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 9%,transparent)}
+.btn.upd.pin{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 35%,transparent);background:color-mix(in srgb,var(--cyan) 7%,transparent)}
 .spin{width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -321,23 +323,30 @@ function card(r){
   const cmd = r.command ? `<div class="cmd"><b>$</b> ${esc(r.command)}</div>` : r.plan_error ? `<div class="cmd" style="color:var(--err)">${esc(r.plan_error)}</div>` : "";
   const ref = esc(r.reference);
   const u = r.update, sh = x => x ? x.slice(0, 7) : "?";
+  // Wrapped recipes whose scripts fetch their own weights: show the repo, not weights.
+  const wrapOnly = u && !r.model;
+  const repoShort = u ? u.repo.replace(/\.git$/, "").split(/[/:]/).filter(Boolean).slice(-2).join("/") : "";
+  const refShort = u ? (u.ref ? (/^[0-9a-f]{40}$/.test(u.ref) ? u.ref.slice(0, 7) : u.ref) : "default branch") : "";
   const upAvail = u && (u.state === "behind" || u.state === "pinned_newer");
   const upTip = u ? `${sh(u.local)} → ${sh(u.remote)}${u.behind ? ` (${u.behind} commit${u.behind === 1 ? "" : "s"})` : ""}${u.follows ? " on " + u.follows : ""}` : "";
   const upTag = !u ? "" : u.state === "behind" ? `<span class="tag upd" title="upstream has new commits: ${esc(upTip)}">⬆ update</span>`
     : u.state === "pinned_newer" ? `<span class="tag upd pin" title="pinned; upstream is newer: ${esc(upTip)}">⬆ newer (pinned)</span>`
+    : u.state === "current" ? `<span class="tag disk" title="checkout is at the upstream head${u.follows ? " of " + esc(u.follows) : ""}">✓ up to date</span>`
     : u.state === "unknown" && u.error ? `<span class="tag remote" title="${esc(u.error)}">upstream ?</span>` : "";
   const pullBtn = upAvail
-    ? `<button class="btn" data-act="pull" data-ref="${ref}" ${u.state === "pinned_newer" ? 'data-latest="1" title="move the pinned ref to the upstream head and update the checkout"' : 'title="update the checkout"'} ${busy||r.pulling?"disabled":""}>⬆ Update</button>`
+    ? `<button class="btn upd${u.state === "pinned_newer" ? " pin" : ""}" data-act="pull" data-ref="${ref}" ${u.state === "pinned_newer" ? 'data-latest="1" title="move the pinned ref to the upstream head and update the checkout"' : 'title="update the checkout"'} ${busy||r.pulling?"disabled":""}>⬆ Update</button>`
     : `<button class="btn" data-act="pull" data-ref="${ref}" ${busy||r.pulling||(!r.model&&!u)?"disabled":""}>↓ Pull</button>`;
   const toggle = up(r) ? `<button class="btn danger" data-act="stop" data-ref="${ref}" ${busy?"disabled":""}>■ Stop</button>`
                        : `<button class="btn primary" data-act="start" data-ref="${ref}" ${busy?"disabled":""}>▶ Start</button>`;
   return `<article class="${cls}">
     <div class="r1">${pill}<span class="fit ${fit[0]}">${fit[1]}</span><span class="grow"></span><span class="port">:${r.port}</span></div>
     <h3>${esc(r.name)}</h3>
-    <div class="sub">${esc(r.display_name !== r.name ? r.display_name : (r.model || ""))} <span class="dim">· ${esc(r.origin)}</span></div>
+    <div class="sub">${esc(r.display_name !== r.name ? r.display_name : (r.model || (wrapOnly ? repoShort : "")))} <span class="dim">· ${esc(r.origin)}</span></div>
     ${r.description ? `<p class="desc">${esc(r.description)}</p>` : ""}
-    <div class="tags"><span class="tag eng">${esc(r.engine)}</span><span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
-      ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}
+    <div class="tags"><span class="tag eng">${esc(r.engine)}</span>${wrapOnly
+      ? `<span class="tag" title="${esc(u.repo)}">git @ ${esc(refShort)}</span>${u.state === "not_cloned" ? `<span class="tag remote">not cloned</span>` : ""}`
+      : `<span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
+      ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}`}
       ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}${upTag}</div>
     ${need}${liveLine(r)}
     <details class="checks" data-ref="${ref}" ${st.open.has(r.reference)?"open":""}><summary>${(r.checks||[]).length} checks · launch command</summary><div class="chk">${checks}</div>${cmd}</details>

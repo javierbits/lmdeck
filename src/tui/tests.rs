@@ -506,3 +506,21 @@ fn wrapped_recipes_show_an_update_badge_and_u_takes_it() {
     let text = buffer_text(&render(&a, 160, 42));
     assert!(text.contains("pinned; upstream (main) is newer"), "{text}");
 }
+
+/// When the list is too narrow for `name ⬆ update`, the name gets an
+/// ellipsis and the badge shrinks to `⬆`; the badge is never cut.
+#[test]
+fn update_badge_survives_a_narrow_list() {
+    use crate::updates::State as U;
+    let mut s = demo();
+    s.recipes[0].name = "a-very-long-wrapped-recipe-name".into();
+    s.recipes[0].update = Some(upd(U::Behind));
+    let mut a = App::default();
+    a.set_snapshot(s);
+    let narrow = buffer_text(&render(&a, 100, 30));
+    assert!(narrow.contains("… ⬆ "), "{narrow}");
+    assert!(!narrow.contains("⬆ upd ") && !narrow.contains("⬆ updat"), "{narrow}");
+    // Wide enough: the list grows (up to 62%) to show the whole badge.
+    let wide = buffer_text(&render(&a, 180, 42));
+    assert!(wide.contains("a-very-long-wrapped-recipe-name ⬆ update"), "{wide}");
+}

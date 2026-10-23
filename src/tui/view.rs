@@ -16,6 +16,7 @@ use crate::tui::app::{App, Mode, Tab};
 use crate::tui::theme::Theme;
 use crate::updates::{short, State as UpdState};
 use crate::util::{human_bytes, human_duration, human_gb, now_secs};
+use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let t = app.theme();
@@ -251,7 +252,17 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 // ───────────────────────── deck tab ─────────────────────────
 
 fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
-    let [left, right] = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    // 55% for the list, widened (up to 62%) only as far as a `⬆` badge needs
+    // to be shown whole next to its recipe name.
+    let base = area.width * 55 / 100;
+    let want = app
+        .visible()
+        .iter()
+        .filter_map(|r| update_badge(r, app.theme()).map(|b| r.name.width() + 1 + b.width()))
+        .max()
+        .map_or(0, |w| w as u16 + LIST_FIXED_COLS + if app.nerd { 13 } else { 11 });
+    let lw = want.clamp(base, (area.width * 62 / 100).max(base));
+    let [left, right] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(0)]).areas(area);
     draw_list(f, app, s, left);
     if app.logs_max {
         draw_logs(f, app, right, true);
@@ -262,12 +273,18 @@ fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     }
 }
 
+/// Deck list columns other than status and recipe: borders and padding (4),
+/// the highlight symbol (1), engine/quant/size/dl/fit (38) and six gaps.
+const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 2 + 8 + 6;
+
 fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let t = app.theme();
     let vis = app.visible();
     let total = s.recipes.iter().filter(|r| app.show_all || r.listed).count();
     let extra = if vis.len() == total { format!("{total}") } else { format!("{} of {total}", vis.len()) };
     let block = panel(title("▤", if app.show_all { "All recipes" } else { "Deck" }, Some(extra), t), t, !app.logs_max);
+    let pill_w: u16 = if app.nerd { 13 } else { 11 };
+    let name_w = (area.width.saturating_sub(LIST_FIXED_COLS + pill_w) as usize).max(14);
     let rows: Vec<Row> = vis
         .iter()
         .enumerate()
@@ -286,14 +303,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Level::Warn => Span::styled("! tight", Style::new().fg(t.warn)),
                 Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
             };
-            let mut name = Line::from(vec![
-                Span::styled(r.name.clone(), Style::new().fg(t.fg).bold()),
-                Span::styled(if r.listed { String::new() } else { format!(" {}", r.origin) }, Style::new().fg(t.dim)),
-            ]);
-            if let Some(badge) = update_badge(r, t) {
-                name.spans.push(Span::raw(" "));
-                name.spans.push(badge);
-            }
+            let name = name_cell(r, t, name_w);
             Row::new(vec![
                 Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
                 Cell::from(name),
@@ -335,6 +345,49 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
         let inner = area.inner(ratatui::layout::Margin::new(2, 3));
         f.render_widget(Paragraph::new(Span::styled(msg, Style::new().fg(t.muted).italic())), inner);
     }
+}
+
+/// The recipe name, its origin when it isn't in the deck, and the update badge,
+/// fitted to `w` columns: the badge shrinks to `⬆` and then the name gets an
+/// ellipsis, so the badge is never the part that is cut off.
+fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
+    let origin = if r.listed { String::new() } else { format!(" {}", r.origin) };
+    let badge = update_badge(r, t);
+    let full = badge.as_ref().map_or(0, |b| 1 + b.width());
+    let badge = match badge {
+        Some(b) if r.name.width() + origin.width() + full > w => Some(Span::styled("⬆", b.style)),
+        b => b,
+    };
+    let room = w.saturating_sub(badge.as_ref().map_or(0, |b| 1 + b.width()));
+    let mut spans = vec![Span::styled(fit_to(&r.name, room), Style::new().fg(t.fg).bold())];
+    if !origin.is_empty() && r.name.width() + origin.width() <= room {
+        spans.push(Span::styled(origin, Style::new().fg(t.dim)));
+    }
+    if let Some(b) = badge {
+        spans.push(Span::raw(" "));
+        spans.push(b);
+    }
+    Line::from(spans)
+}
+
+/// `s` cut to `w` columns with a trailing `…` when it doesn't fit.
+fn fit_to(s: &str, w: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if s.width() <= w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw + 1 > w {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    out.push('…');
+    out
 }
 
 /// `⬆` after a wrapped recipe whose `[source]` repo has newer commits:
@@ -411,8 +464,14 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{:<10}", "endpoint"), Style::new().fg(t.muted)),
         Span::styled(r.endpoint.clone(), Style::new().fg(t.info).underlined()),
     ]));
+    if let (None, Some(u)) = (&r.model, &r.update) {
+        let at = u.git_ref.as_deref().map(|g| format!(" @ {}", if g.len() == 40 { short(g) } else { g.to_string() }));
+        lines.push(kv("source", format!("{}{}", u.repo, at.unwrap_or_default()), t));
+    }
     let weights = if r.pulling {
         "downloading…".to_string()
+    } else if r.model.is_none() && r.update.is_some() {
+        "fetched by the wrapped repo's scripts".to_string()
     } else if r.downloaded {
         format!("on disk, {}{}", size_text(r), if r.cached { " (HF cache)" } else { "" })
     } else {
