@@ -234,9 +234,12 @@ select.runon:hover{border-color:var(--violet)}
 
 .topobox .legend{display:flex;gap:16px;flex-wrap:wrap;font:600 11.5px var(--mono);color:var(--muted);padding:4px 6px}
 .topobox .legend i{display:inline-block;width:22px;height:0;border-top:3px solid;vertical-align:middle;margin-right:6px}
-.links{width:100%;border-collapse:collapse;font:12px var(--mono);margin-top:6px}
-.links td,.links th{padding:4px 8px;text-align:left;border-top:1px solid var(--line)} .links th{color:var(--dim);font-weight:600}
-.links .ok{color:var(--ok)} .links .bad{color:var(--err)} .links .busy{color:var(--ok);font-weight:700}
+.links{width:100%;border-collapse:collapse;table-layout:fixed;font:12px var(--mono);margin-top:6px}
+.links td,.links th{padding:4px 8px;text-align:left;border-top:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0}
+.links th{color:var(--dim);font-weight:600}
+.links .ok{color:var(--ok)} .links .bad{color:var(--err)}
+.links .busy{color:var(--ok);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.linkswrap{overflow-x:auto;max-width:100%}
 @keyframes flow{to{stroke-dashoffset:-24}}
 .edge.busy{stroke-dasharray:10 6;animation:flow 1s linear infinite}
 </style>
@@ -274,7 +277,7 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
     <div class="legend"><span><i style="border-color:var(--accent)"></i>cx7 cable</span><span><i style="border-color:var(--ok)"></i>busy (nfs weights / cluster)</span>
       <span><i style="border-color:var(--sky);border-top-style:dashed"></i>lan</span><span><i style="border-color:var(--dim);border-top-style:dotted"></i>management (controller → serve)</span>
       <span><i style="border-color:var(--err)"></i>unreachable</span></div>
-    <table class="links" id="links"></table></div>
+    <div class="linkswrap"><table class="links" id="links"></table></div></div>
 </section>
 
 <section class="toolbar">
@@ -690,173 +693,355 @@ function iconDots(kind, cx, cy, scale, color, pulse){
   return g + `</g>`;
 }
 function topoLayout(t, W, H){
-  // Seeded deterministic layout: switches as hubs, hosts around them / ring for cables.
-  const pad = 20, HW = 250, HH = 148, SW = 150, SH = 64;
-  const pos = {}; // id -> {x,y,w,h,kind}
-  const hosts = t.hosts || [], switches = t.switches || [];
+  // Compact preferred-shot cards. Place CX7-linked hosts first (ellipse/triangle),
+  // then CX7-switch rings, then islands. LAN/TS switches don't own host placement.
+  const pad = 28, HW = 236, HH = 118, SW = 128, SH = 52, GAP = 28;
+  const pos = {};
+  const hosts = t.hosts || [], switches = t.switches || [], segments = t.segments || [], links = t.links || [];
   const hash = s => { let h = 2166136261; for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+
+  const placeHost = (key, x, y) => { pos[key] = {x, y, w: HW, h: HH, kind:"host"}; };
+  const placeSw = (id, x, y) => { pos[id] = {x, y, w: SW, h: SH, kind:"switch"}; };
+
   if (hosts.length === 1 && !switches.length){
-    pos[hosts[0].key] = {x: W/2, y: H/2, w: HW, h: HH, kind:"host"};
+    placeHost(hosts[0].key, W/2, H/2);
     return pos;
   }
-  // Place switches across the middle.
-  switches.forEach((sw, i) => {
-    const x = switches.length === 1 ? W/2 : pad + SW/2 + (W - pad*2 - SW) * (i / Math.max(1, switches.length - 1));
-    pos[sw.id] = {x, y: H/2, w: SW, h: SH, kind:"switch"};
-  });
+
   const placed = new Set();
-  (t.segments || []).forEach(seg => {
-    if (seg.class !== "switch" || !seg.switch) return;
-    const sp = pos[seg.switch.id]; if (!sp) return;
-    const mem = seg.members || [];
-    const n = mem.length || 1;
-    const R = Math.max(160, 70 + n * 18);
-    mem.forEach((m, i) => {
-      if (placed.has(m.host)) return; placed.add(m.host);
-      const a = -Math.PI/2 + (2*Math.PI * i) / n;
-      pos[m.host] = {x: sp.x + Math.cos(a)*R, y: sp.y + Math.sin(a)*R, w: HW, h: HH, kind:"host"};
+  // CX7 host↔host cable adjacency (ignores switch endpoints).
+  const cx7Adj = {};
+  links.forEach(l => {
+    if (l.kind !== "cx7") return;
+    const a = l.a.host, b = l.b.host;
+    if (a.startsWith("switch:") || b.startsWith("switch:")) return;
+    (cx7Adj[a] = cx7Adj[a] || new Set()).add(b);
+    (cx7Adj[b] = cx7Adj[b] || new Set()).add(a);
+  });
+  segments.forEach(seg => {
+    if (seg.class !== "cable" || (seg.kind || "").toLowerCase() !== "cx7") return;
+    const mem = (seg.members || []).map(m => m.host).filter(h => !h.startsWith("switch:"));
+    for (let i=0;i<mem.length;i++) for (let j=i+1;j<mem.length;j++){
+      (cx7Adj[mem[i]] = cx7Adj[mem[i]] || new Set()).add(mem[j]);
+      (cx7Adj[mem[j]] = cx7Adj[mem[j]] || new Set()).add(mem[i]);
+    }
+  });
+
+  // Connected components of CX7 hosts → ellipse (controller at top).
+  const comps = [];
+  const seen = new Set();
+  Object.keys(cx7Adj).forEach(start => {
+    if (seen.has(start)) return;
+    const q = [start], comp = [];
+    seen.add(start);
+    while (q.length){
+      const u = q.shift(); comp.push(u);
+      (cx7Adj[u] || []).forEach(v => { if (!seen.has(v)){ seen.add(v); q.push(v); } });
+    }
+    comps.push(comp);
+  });
+  comps.forEach((comp, ci) => {
+    const n = comp.length;
+    const ctl = comp.includes(t.controller) ? t.controller : comp[0];
+    const order = [ctl, ...comp.filter(k => k !== ctl)];
+    const cx = W / 2 + (ci - (comps.length - 1) / 2) * 40;
+    const cy = n <= 2 ? H * 0.42 : H * 0.38;
+    // Radius sized so card boxes clear each other on the ring.
+    const need = (HW + GAP) / (2 * Math.sin(Math.PI / Math.max(n, 2)));
+    const rx = n <= 2 ? Math.min(W * 0.32, 300) : Math.min(W * 0.38, Math.max(280, need));
+    const ry = n <= 2 ? 0 : Math.min(H * 0.28, Math.max(130, need * 0.55));
+    order.forEach((k, i) => {
+      const a = n <= 2 ? Math.PI * (i === 0 ? 1 : 0) : -Math.PI / 2 + (2 * Math.PI * i) / n;
+      placeHost(k, cx + rx * Math.cos(a), cy + ry * Math.sin(a));
+      placed.add(k);
     });
   });
+
+  // CX7 switches: ring of unplaced members, then switch at centroid.
+  const cx7SwSegs = segments.filter(s => s.class === "switch" && s.switch && (s.kind || "").toLowerCase() === "cx7");
+  cx7SwSegs.forEach((seg, si) => {
+    const sw = seg.switch;
+    const mem = (seg.members || []).map(m => m.host);
+    const unplaced = mem.filter(h => !placed.has(h));
+    const n = Math.max(mem.length, 1);
+    const need = (HW + GAP) / (2 * Math.sin(Math.PI / Math.max(n, 2)));
+    const R = Math.max(260, need + 20);
+    // Seed switch near center (or offset if multiple).
+    let sx = W / 2 + (si - (cx7SwSegs.length - 1) / 2) * (R * 0.3);
+    let sy = H / 2;
+    if (unplaced.length){
+      unplaced.forEach((h, i) => {
+        const a = -Math.PI / 2 + (2 * Math.PI * i) / unplaced.length + ((hash(h) % 5) - 2) * 0.01;
+        placeHost(h, sx + Math.cos(a) * R, sy + Math.sin(a) * R);
+        placed.add(h);
+      });
+    }
+    // Centroid of all members for switch glyph.
+    const pts = mem.map(h => pos[h]).filter(Boolean);
+    if (pts.length){
+      sx = pts.reduce((a,p) => a + p.x, 0) / pts.length;
+      sy = pts.reduce((a,p) => a + p.y, 0) / pts.length;
+    }
+    placeSw(sw.id, sx, sy);
+  });
+
+  // Remaining hosts (e.g. offline mac): bottom row islands.
   const rest = hosts.filter(h => !placed.has(h.key));
-  if (rest.length === 2 && !switches.length){
-    pos[rest[0].key] = {x: W*0.28, y: H/2, w: HW, h: HH, kind:"host"};
-    pos[rest[1].key] = {x: W*0.72, y: H/2, w: HW, h: HH, kind:"host"};
-  } else if (rest.length){
-    const n = rest.length, R = Math.min(W, H) * 0.32;
+  if (rest.length === 2 && !comps.length && !cx7SwSegs.length){
+    placeHost(rest[0].key, W * 0.28, H * 0.45);
+    placeHost(rest[1].key, W * 0.72, H * 0.45);
+  } else if (rest.length === 1 && hosts.length === 2 && placed.size === 1){
+    const other = [...placed][0];
+    const op = pos[other];
+    placeHost(rest[0].key, op.x < W/2 ? W * 0.72 : W * 0.28, op.y);
+  } else {
     rest.forEach((h, i) => {
-      const a = -Math.PI/2 + (2*Math.PI * i) / n + ((hash(h.key)%7)-3)*0.02;
-      pos[h.key] = {x: W/2 + Math.cos(a)*R, y: H/2 + Math.sin(a)*R, w: HW, h: HH, kind:"host"};
+      const x = W / 2 + (i - (rest.length - 1) / 2) * (HW + GAP);
+      placeHost(h.key, x, H - HH / 2 - pad);
+      placed.add(h.key);
     });
   }
-  // Push overlaps apart.
+
+  // LAN/TS switches: place at member centroid but do not move hosts (glyph optional).
+  segments.forEach(seg => {
+    if (seg.class !== "switch" || !seg.switch) return;
+    if ((seg.kind || "").toLowerCase() === "cx7") return; // already placed
+    const sw = seg.switch;
+    if (pos[sw.id]) return;
+    const pts = (seg.members || []).map(m => pos[m.host]).filter(Boolean);
+    if (!pts.length) return;
+    const sx = pts.reduce((a,p) => a + p.x, 0) / pts.length;
+    const sy = pts.reduce((a,p) => a + p.y, 0) / pts.length;
+    // Park lan/ts switch slightly below centroid so it doesn't sit on CX7 labels.
+    placeSw(sw.id, sx, Math.min(H - SH/2 - pad, sy + HH * 0.35));
+  });
+
+  // Strong AABB repulsion so cards (and switch pills) never overlap.
   const ids = Object.keys(pos);
-  for (let iter=0; iter<30; iter++){
+  for (let iter = 0; iter < 60; iter++){
     let moved = false;
-    for (let i=0;i<ids.length;i++) for (let j=i+1;j<ids.length;j++){
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++){
       const A = pos[ids[i]], B = pos[ids[j]];
       const dx = B.x - A.x, dy = B.y - A.y;
-      const minx = (A.w + B.w)/2 + 12, miny = (A.h + B.h)/2 + 12;
+      const minx = (A.w + B.w) / 2 + GAP, miny = (A.h + B.h) / 2 + GAP;
       const ox = minx - Math.abs(dx), oy = miny - Math.abs(dy);
       if (ox > 0 && oy > 0){
-        if (ox < oy){ const s = Math.sign(dx)||1; A.x -= s*ox/2; B.x += s*ox/2; }
-        else { const s = Math.sign(dy)||1; A.y -= s*oy/2; B.y += s*oy/2; }
+        if (ox < oy){ const s = Math.sign(dx) || 1; A.x -= s * ox / 2; B.x += s * ox / 2; }
+        else { const s = Math.sign(dy) || 1; A.y -= s * oy / 2; B.y += s * oy / 2; }
         moved = true;
       }
     }
     ids.forEach(id => {
       const p = pos[id];
-      p.x = Math.min(W - p.w/2 - pad, Math.max(p.w/2 + pad, p.x));
-      p.y = Math.min(H - p.h/2 - pad, Math.max(p.h/2 + pad, p.y));
+      p.x = Math.min(W - p.w / 2 - pad, Math.max(p.w / 2 + pad, p.x));
+      p.y = Math.min(H - p.h / 2 - pad, Math.max(p.h / 2 + pad, p.y));
     });
     if (!moved) break;
   }
   return pos;
 }
 function topoSvg(t){
-  const hosts = t.hosts || [], switches = t.switches || [], links = t.links || [];
-  const n = hosts.length + switches.length;
-  const W = Math.max(960, 280 + n * 70);
-  const H = Math.max(hosts.length <= 1 ? 280 : 420, 200 + Math.ceil(Math.sqrt(n)) * 140);
+  const hosts = t.hosts || [], switches = t.switches || [], links = t.links || [], segments = t.segments || [];
+  const nHost = hosts.length, nSw = switches.filter(s => (s.kind || "").toLowerCase() === "cx7").length;
+  const n = nHost + nSw;
+  const W = Math.max(1100, 320 + n * 90);
+  const H = Math.max(nHost <= 1 ? 260 : nHost <= 3 ? 480 : 520, 220 + Math.ceil(Math.sqrt(Math.max(n, 1))) * 160);
   const pos = topoLayout(t, W, H);
-  // Bundle parallel rails: same endpoints AND same kind (dual CX7 ports).
-  const buckets = {};
+
+  // Prefer host↔host CX7 cables; CX7 switches → spokes; LAN/TS → dashed host↔host only when no CX7 covers the pair.
+  const drawLinks = [];
+  const seenPair = new Set();
+  const pairKey = (a, b) => [a, b].sort().join("|");
+  const cx7Pairs = new Set();
   links.forEach(l => {
+    if (l.kind !== "cx7") return;
+    if (l.a.host.startsWith("switch:") || l.b.host.startsWith("switch:")) return;
+    cx7Pairs.add(pairKey(l.a.host, l.b.host));
+  });
+  segments.forEach(seg => {
+    if (seg.class !== "cable" || (seg.kind || "").toLowerCase() !== "cx7") return;
+    const mem = (seg.members || []).map(m => m.host).filter(h => !h.startsWith("switch:"));
+    if (mem.length === 2) cx7Pairs.add(pairKey(mem[0], mem[1]));
+  });
+  const addPair = (l) => {
+    const a = l.a.host, b = l.b.host;
+    const key = pairKey(a, b) + "|" + (l.kind || "");
+    if (seenPair.has(key)) return;
+    seenPair.add(key);
+    drawLinks.push(l);
+  };
+  links.forEach(l => {
+    const a = l.a.host, b = l.b.host;
+    const aSw = a.startsWith("switch:"), bSw = b.startsWith("switch:");
+    if (!aSw && !bSw){
+      // Keep the graph readable: CX7 wins the canvas; lan/ts stay in the table.
+      if (l.kind !== "cx7" && cx7Pairs.has(pairKey(a, b))) return;
+      addPair(l); return;
+    }
+    const swId = aSw ? a : b;
+    const sw = switches.find(s => s.id === swId);
+    if (sw && (sw.kind || "").toLowerCase() === "cx7") addPair(l);
+  });
+  // LAN/TS switch → dashed host↔host (no hub glyph), skipping pairs already on CX7.
+  segments.forEach(seg => {
+    if (seg.class !== "switch" || !seg.switch) return;
+    const kind = (seg.kind || "lan").toLowerCase();
+    if (kind === "cx7") return;
+    const mem = (seg.members || []).map(m => m.host);
+    for (let i = 0; i < mem.length; i++) for (let j = i + 1; j < mem.length; j++){
+      if (cx7Pairs.has(pairKey(mem[i], mem[j]))) continue;
+      addPair({
+        kind, a: {host: mem[i], ip: ""}, b: {host: mem[j], ip: ""},
+        speed_mbps: seg.speed_mbps || null, verified: null, active: [], rtt_ms: null,
+      });
+    }
+  });
+
+  // Bundle parallel rails of same endpoints+kind.
+  const buckets = {};
+  drawLinks.forEach(l => {
     const pair = [l.a.host, l.b.host].sort().join("|") + "|" + (l.kind || "");
     (buckets[pair] = buckets[pair] || []).push(l);
   });
+
+  const cardBoxes = hosts.map(h => pos[h.key]).filter(Boolean);
+  const labelHitsCard = (mx, my, tw, th) => {
+    const x0 = mx - tw / 2, y0 = my - th / 2, x1 = mx + tw / 2, y1 = my + th / 2;
+    return cardBoxes.some(p => {
+      const ax0 = p.x - p.w / 2, ay0 = p.y - p.h / 2, ax1 = p.x + p.w / 2, ay1 = p.y + p.h / 2;
+      return x0 < ax1 && x1 > ax0 && y0 < ay1 && y1 > ay0;
+    });
+  };
+
   let edges = "", labels = "";
   Object.values(buckets).forEach(group => {
-    const rank = {cx7:0, lan:1, tailscale:2};
-    group.sort((a,b) => (rank[a.kind]??3) - (rank[b.kind]??3));
-    const primary = group.find(l => (l.active||[]).length) || group[0];
+    const rank = {cx7: 0, lan: 1, tailscale: 2};
+    group.sort((a, b) => (rank[a.kind] ?? 3) - (rank[b.kind] ?? 3));
+    const primary = group.find(l => (l.active || []).length) || group[0];
     const A = pos[primary.a.host], B = pos[primary.b.host]; if (!A || !B) return;
     const rails = group.length;
     group.forEach((l, i) => {
-      const busy = (l.active||[]).length > 0, bad = l.verified === false;
+      const busy = (l.active || []).length > 0, bad = l.verified === false;
       const color = bad ? "var(--err)" : busy ? "var(--ok)" : l.kind === "cx7" ? "var(--accent)" : l.kind === "lan" ? "var(--sky)" : "var(--dim)";
       const w = l.kind === "cx7" ? (busy ? 5 : 3.5) : 1.8;
       const dash = l.kind === "cx7" ? "" : l.kind === "lan" ? 'stroke-dasharray="7 5"' : 'stroke-dasharray="2 4"';
-      // Offset parallel rails perpendicular to the edge.
       const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1;
       const off = (i - (rails - 1) / 2) * 6;
       const ox = -dy / L * off, oy = dx / L * off;
-      edges += `<line class="edge${busy ? " busy" : ""}" x1="${A.x+ox}" y1="${A.y+oy}" x2="${B.x+ox}" y2="${B.y+oy}" style="stroke:${color}" stroke-width="${w}" stroke-linecap="round" ${busy ? "" : dash}/>`;
+      edges += `<line class="edge${busy ? " busy" : ""}" x1="${A.x + ox}" y1="${A.y + oy}" x2="${B.x + ox}" y2="${B.y + oy}" style="stroke:${color}" stroke-width="${w}" stroke-linecap="round" ${busy ? "" : dash}/>`;
     });
     const l = primary;
-    const busy = (l.active||[]).length > 0, bad = l.verified === false;
+    const busy = (l.active || []).length > 0, bad = l.verified === false;
     const color = bad ? "var(--err)" : busy ? "var(--ok)" : l.kind === "cx7" ? "var(--accent)" : l.kind === "lan" ? "var(--sky)" : "var(--dim)";
     const sp = l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "";
-    const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
-    const via = (l.a.host.startsWith("switch:") || l.b.host.startsWith("switch:")) ? "" : "";
-    const txt = `${l.kind}${sp ? " " + sp : ""}${rails > 1 ? " ×" + rails : ""}${bad ? " ✗" : l.rtt_ms != null ? " · " + l.rtt_ms.toFixed(2) + "ms" : ""}`;
-    labels += `<g><rect x="${mx - txt.length * 3.6 - 7}" y="${my - 10}" width="${txt.length * 7.2 + 14}" height="20" rx="10" style="fill:var(--bg);stroke:${color}" stroke-width="1"/>
-      <text x="${mx}" y="${my + 4}" text-anchor="middle" style="fill:${color}" font-size="11.5" font-weight="700" font-family="var(--mono)">${esc(txt)}</text></g>`;
-    if (busy) labels += `<text x="${mx}" y="${my + 25}" text-anchor="middle" style="fill:var(--ok)" font-size="10.5" font-family="var(--mono)">● ${esc(l.active.join(", "))}</text>`;
+    const more = rails > 1 ? ` +${rails - 1}` : "";
+    const txt = `${l.kind}${sp ? " " + sp : ""}${more}${bad ? " ✗" : l.rtt_ms != null ? " · " + l.rtt_ms.toFixed(2) + "ms" : ""}`;
+    // Offset label perpendicular so it clears cards; hide if still crowded.
+    const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1;
+    let mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+    const tw = txt.length * 7.2 + 14, th = 20;
+    const nx = -dy / L, ny = dx / L;
+    for (const d of [0, 18, -18, 32, -32, 48, -48]){
+      const lx = mx + nx * d, ly = my + ny * d;
+      if (!labelHitsCard(lx, ly, tw, th)){ mx = lx; my = ly; break; }
+    }
+    if (!labelHitsCard(mx, my, tw, th)){
+      labels += `<g><rect x="${mx - tw / 2}" y="${my - 10}" width="${tw}" height="20" rx="10" style="fill:var(--bg);stroke:${color}" stroke-width="1"/>
+        <text x="${mx}" y="${my + 4}" text-anchor="middle" style="fill:${color}" font-size="11.5" font-weight="700" font-family="var(--mono)">${esc(txt)}</text></g>`;
+      if (busy) labels += `<text x="${mx}" y="${my + 24}" text-anchor="middle" style="fill:var(--ok)" font-size="10.5" font-family="var(--mono)">● ${esc((l.active || []).join(", "))}</text>`;
+    }
   });
-  // Management dashes from controller to others (skip when only 1 host).
+
+  // Management dashes from controller.
   if (hosts.length > 1){
     const C = pos[t.controller];
     if (C) hosts.forEach(h => {
       if (h.key === t.controller) return; const P = pos[h.key]; if (!P) return;
       const mx = (C.x + P.x) / 2, my = (C.y + P.y) / 2, dx = P.x - C.x, dy = P.y - C.y, L = Math.hypot(dx, dy) || 1;
-      const qx = mx - dy / L * 40, qy = my + dx / L * 40;
+      const qx = mx - dy / L * 50, qy = my + dx / L * 50;
       edges += `<path d="M${C.x},${C.y} Q${qx},${qy} ${P.x},${P.y}" fill="none" style="stroke:${h.online ? "var(--dim)" : "var(--err)"}" stroke-width="1.1" stroke-dasharray="2 5" opacity=".55"/>`;
     });
   }
+
   let nodes = "";
   const clipTxt = (s, n) => (!s ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+  // Only draw CX7 switch hubs (LAN/TS are host-host dashed above).
   switches.forEach(sw => {
+    if ((sw.kind || "").toLowerCase() !== "cx7") return;
     const p = pos[sw.id]; if (!p) return;
-    const x0 = p.x - p.w/2, y0 = p.y - p.h/2;
+    const x0 = p.x - p.w / 2, y0 = p.y - p.h / 2;
     nodes += `<g class="sw">
       <rect x="${x0}" y="${y0}" width="${p.w}" height="${p.h}" rx="10" style="fill:var(--card2);stroke:var(--dim)" stroke-width="1.2"/>
-      ${iconDots("switch", p.x - 40, p.y, 1.35, "var(--dim)", false)}
-      <text x="${p.x + 8}" y="${p.y - 4}" style="fill:var(--fg)" font-size="12" font-weight="700" font-family="var(--mono)">${esc(clipTxt(sw.name, 16))}</text>
-      <text x="${p.x + 8}" y="${p.y + 14}" style="fill:var(--muted)" font-size="10.5" font-family="var(--mono)">${sw.ports} ports · ${esc(sw.kind)}</text>
+      ${iconDots("switch", x0 + 22, p.y, 1.15, "var(--dim)", false)}
+      <text x="${x0 + 42}" y="${p.y - 4}" style="fill:var(--fg)" font-size="12" font-weight="700" font-family="var(--mono)">${esc(clipTxt(sw.name, 14))}</text>
+      <text x="${x0 + 42}" y="${p.y + 14}" style="fill:var(--muted)" font-size="10.5" font-family="var(--mono)">${sw.ports} ports · ${esc(sw.kind)}</text>
     </g>`;
   });
+
   hosts.forEach(h => {
     const p = pos[h.key]; if (!p) return;
-    const x0 = p.x - p.w/2, y0 = p.y - p.h/2;
+    const x0 = p.x - p.w / 2, y0 = p.y - p.h / 2;
     const stroke = h.key === t.controller ? "var(--accent)" : h.online ? "var(--blue)" : "var(--err)";
     const gpus = h.gpus || [];
-    const gpuLine = !gpus.length ? (h.online ? "no GPU" : "-")
-      : gpus.length === 1 ? gpus[0].name
-      : gpus.length + "× " + gpus[0].name;
-    const gpuDetail = gpus.slice(0, 3).map(g => {
-      const bits = [g.name.replace(/^NVIDIA /, "")];
-      if (g.mem_total_gb != null) bits.push(Math.round(g.mem_total_gb) + "GB");
-      if (g.temp_c != null) bits.push(Math.round(g.temp_c) + "°");
-      if (g.util_pct != null) bits.push(Math.round(g.util_pct) + "%");
-      return bits.join(" ");
-    }).join(" · ");
-    const mem = h.mem_total_gb ? (h.mem_used_gb != null ? `${Math.round(h.mem_used_gb)}/` : "") + Math.round(h.mem_total_gb) + " GB" : "";
-    const title = h.alias && h.alias !== h.name ? `${h.name} · ${h.alias}` : h.name;
+    const mem = h.mem_total_gb != null ? (h.mem_used_gb != null ? `${Math.round(h.mem_used_gb)}/` : "") + Math.round(h.mem_total_gb) + " GB" : "";
+    const temp = h.temp_c != null ? Math.round(h.temp_c) + "°C" : "";
+    let gpuLine;
+    if (!gpus.length) gpuLine = [h.online ? "no GPU" : "", mem, temp].filter(Boolean).join(" · ");
+    else if (gpus.length === 1){
+      const g = gpus[0];
+      const gmem = g.mem_total_gb != null ? (g.mem_used_gb != null ? `${Math.round(g.mem_used_gb)}/` : "") + Math.round(g.mem_total_gb) + " GB" : mem;
+      const gtemp = g.temp_c != null ? Math.round(g.temp_c) + "°C" : temp;
+      gpuLine = [g.name, gmem, gtemp].filter(Boolean).join(" · ");
+    } else {
+      gpuLine = [`${gpus.length}× ${gpus[0].name.replace(/^NVIDIA /, "")}`, mem, temp].filter(Boolean).join(" · ");
+    }
+    const cx7 = (h.fabric && h.fabric.nics || []).filter(c => c.kind === "cx7" && (c.ipv4 || []).length).map(c => c.ipv4[0].ip);
+    const status = !h.online ? (h.fabric_error || h.error || "offline")
+      : h.key === t.controller ? "controller (this machine)"
+      : `serve via ${h.mgmt_kind}${h.mgmt_addr ? " " + h.mgmt_addr : ""}`;
+    // Only show fabric/CX7 when online — offline already covered by status.
+    const fabricLine = !h.online ? ""
+      : h.fabric ? (cx7.length ? "cx7 " + cx7.join(" ") : "no CX7 ports")
+      : (h.fabric_error || "fabric unknown");
+    const run = (h.running || []).length ? "▸ " + h.running.join(", ") : (h.online ? "idle" : "");
+    const weights = (h.weights || []).length
+      ? ((h.weights.length === 1) ? "⛁ " + h.weights[0] : "⛁ " + h.weights.length + " models on disk")
+      : "no weights indexed";
+    // Compact title: hostname, plus alias when both fit; else the shorter label.
+    let title = h.name;
+    if (h.alias && h.alias !== h.name) {
+      const both = `${h.name} · ${h.alias}`;
+      title = both.length <= 15 ? both : (h.alias.length <= h.name.length ? h.alias : h.name);
+    }
     const kind = h.device_kind || "unknown";
-    const tint = h.online ? (gpus.some(g => (g.util_pct||0) > 20) ? "var(--warn)" : "var(--accent)") : "var(--dim)";
-    const busy = gpus.some(g => (g.util_pct||0) > 20) || (h.running||[]).length;
+    const tint = !h.online ? "var(--err)" : (gpus.some(g => (g.util_pct || 0) > 20) || (h.running || []).length) ? "var(--warn)" : "var(--accent)";
+    const busyIcon = h.online && ((h.running || []).length || gpus.some(g => (g.util_pct || 0) > 20));
+    // Header: dot · name · icon · CONTROLLER — leave room so the 12×8 icon never collides with CONTROLLER.
+    const nameMax = h.key === t.controller ? 12 : 16;
+    const nameStr = clipTxt(title, nameMax);
+    const nameW = nameStr.length * 8.2;
+    const iconX = x0 + 28 + nameW + 14;
     const lines = [
       [clipTxt(gpuLine, 34), "var(--muted)"],
-      [clipTxt(gpuDetail || mem, 36), "var(--dim)"],
-      [h.model || "", "var(--sky)"],
-      [h.key === t.controller ? "controller" : `via ${h.mgmt_kind}${h.mgmt_addr ? " " + h.mgmt_addr : ""}`, h.online ? "var(--dim)" : "var(--err)"],
-      [(h.running||[]).length ? "▸ " + h.running.join(", ") : "idle", (h.running||[]).length ? "var(--ok)" : "var(--dim)"],
+      [clipTxt(status, 34), h.online ? "var(--dim)" : "var(--err)"],
+      [clipTxt(fabricLine, 34), h.fabric && !cx7.length ? "var(--warn)" : "var(--fg)"],
+      [clipTxt(run, 34), (h.running || []).length ? "var(--ok)" : "var(--dim)"],
+      [clipTxt(weights, 34), "var(--sky)"],
     ].filter(x => x[0]);
-    nodes += `<g${h.online ? "" : ' opacity=".55"'}>
+    nodes += `<g${h.online ? "" : ' opacity=".65"'}>
       <rect x="${x0}" y="${y0}" width="${p.w}" height="${p.h}" rx="12" style="fill:var(--card2);stroke:${stroke}" stroke-width="${h.key === t.controller ? 2.4 : 1.4}"/>
-      <circle cx="${x0 + 14}" cy="${y0 + 16}" r="4.5" style="fill:${h.online ? "var(--ok)" : "var(--err)"}"/>
-      ${iconDots(kind, x0 + 48, y0 + 42, 1.55, tint, busy && h.online)}
-      <text x="${x0 + 78}" y="${y0 + 22}" style="fill:var(--fg)" font-size="13.5" font-weight="700" font-family="var(--mono)">${esc(clipTxt(title, 22))}</text>
-      ${h.key === t.controller ? `<text x="${x0 + p.w - 10}" y="${y0 + 20}" text-anchor="end" style="fill:var(--accent)" font-size="10" font-weight="700" font-family="var(--mono)">◆ CTRL</text>` : ""}
-      ${lines.map(([s,c], i) => `<text x="${x0 + 78}" y="${y0 + 42 + i * 15}" style="fill:${c}" font-size="11" font-family="var(--mono)">${esc(s)}</text>`).join("")}
-      ${(gpus.length > 1 ? gpus : []).slice(0,4).map((g,i) =>
-        iconDots("gpu", x0 + 22 + i*18, y0 + p.h - 22, 0.85, "var(--sky)", false)
-      ).join("")}
+      <circle cx="${x0 + 14}" cy="${y0 + 18}" r="4.5" style="fill:${h.online ? "var(--ok)" : "var(--err)"}"/>
+      <text x="${x0 + 26}" y="${y0 + 23}" style="fill:var(--fg)" font-size="14" font-weight="700" font-family="var(--mono)">${esc(nameStr)}</text>
+      ${iconDots(kind, Math.min(iconX, x0 + p.w - (h.key === t.controller ? 108 : 22)), y0 + 17, 1.05, tint, busyIcon)}
+      ${h.key === t.controller ? `<text x="${x0 + p.w - 10}" y="${y0 + 22}" text-anchor="end" style="fill:var(--accent)" font-size="10.5" font-weight="700" font-family="var(--mono)">◆ CONTROLLER</text>` : ""}
+      ${lines.map(([s, c], i) => `<text x="${x0 + 14}" y="${y0 + 42 + i * 14.5}" style="fill:${c}" font-size="11" font-family="var(--mono)">${esc(s)}</text>`).join("")}
     </g>`;
   });
+
   let hint = "";
   if (hosts.length < 2){
-    hint = `<text x="${W/2}" y="${H - 24}" text-anchor="middle" style="fill:var(--muted)" font-size="12" font-family="var(--mono)">Single host — add peers with lmdeck host add &lt;name&gt; &lt;url&gt;</text>`;
+    hint = `<text x="${W/2}" y="${H - 22}" text-anchor="middle" style="fill:var(--muted)" font-size="12" font-family="var(--mono)">Single host — add peers with lmdeck host add &lt;name&gt; &lt;url&gt;</text>`;
   }
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="hosts and links">${edges}${labels}${nodes}${hint}</svg>`;
 }
@@ -870,12 +1055,18 @@ function renderTopo(){
   $("#toposum").textContent = `${t.hosts.length} hosts · ${sw} sw · ${t.links.length} links · ${cx7} cx7`;
   $("#topo").innerHTML = topoSvg(t);
   const disp = k => (t.hosts.find(h => h.key === k) || {}).name || k;
-  $("#links").innerHTML = `<tr><th>link</th><th>from</th><th>to</th><th>iface</th><th>subnet</th><th>speed</th><th>check</th><th></th></tr>` + (t.links.length ? t.links.map(l =>
-    `<tr><td>${esc(l.kind)}</td><td>${esc(disp(l.a.host))} ${esc(l.a.ip)}</td><td>${esc(disp(l.b.host))} ${esc(l.b.ip)}</td><td>${esc(l.a.ifname || "-")}</td><td>${esc(l.subnet || "-")}</td>
-     <td>${l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "-"}</td><td class="${l.verified === true ? "ok" : l.verified === false ? "bad" : ""}">${l.verified === true ? "ok" + (l.rtt_ms != null ? " " + l.rtt_ms.toFixed(2) + " ms" : "") : l.verified === false ? "UNREACHABLE" : "unverified"}${l.manual ? " (hosts.toml)" : ""}</td>
-     <td class="busy">${(l.active || []).length ? "● " + esc(l.active.join(", ")) : ""}</td></tr>`).join("")
-    : `<tr><td colspan="8" class="dim">no links matched: no shared subnets between hosts' fabrics (add [[link]] to hosts.toml)</td></tr>`)
-    + (t.notes || []).map(n => `<tr><td colspan="8" style="color:var(--warn)">note: ${esc(n)}</td></tr>`).join("");
+  const checkCell = l => {
+    const st = l.verified === true ? "ok" + (l.rtt_ms != null ? " " + l.rtt_ms.toFixed(2) + " ms" : "")
+      : l.verified === false ? "UNREACHABLE" : "unverified";
+    const busy = (l.active || []).length ? " · ● " + l.active.join(", ") : "";
+    const man = l.manual ? " (hosts.toml)" : "";
+    return `<td class="${l.verified === true ? "ok" : l.verified === false ? "bad" : ""}" title="${esc(st + busy + man)}">${esc(st)}${busy ? `<span class="busy">${esc(busy)}</span>` : ""}${esc(man)}</td>`;
+  };
+  $("#links").innerHTML = `<tr><th style="width:7%">link</th><th style="width:18%">from</th><th style="width:18%">to</th><th style="width:14%">iface</th><th style="width:14%">subnet</th><th style="width:6%">speed</th><th style="width:23%">check</th></tr>` + (t.links.length ? t.links.map(l =>
+    `<tr><td title="${esc(l.kind)}">${esc(l.kind)}</td><td title="${esc(disp(l.a.host) + " " + (l.a.ip||""))}">${esc(disp(l.a.host))} ${esc(l.a.ip||"")}</td><td title="${esc(disp(l.b.host) + " " + (l.b.ip||""))}">${esc(disp(l.b.host))} ${esc(l.b.ip||"")}</td><td title="${esc(l.a.ifname || "-")}">${esc(l.a.ifname || "-")}</td><td title="${esc(l.subnet || "-")}">${esc(l.subnet || "-")}</td>
+     <td>${l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "-"}</td>${checkCell(l)}</tr>`).join("")
+    : `<tr><td colspan="7" class="dim">no links matched: no shared subnets between hosts' fabrics (add [[link]] to hosts.toml)</td></tr>`)
+    + (t.notes || []).map(n => `<tr><td colspan="7" style="color:var(--warn)">note: ${esc(n)}</td></tr>`).join("");
 }
 async function refreshTopo(){ try { st.topo = await api("topology"); renderTopo(); } catch (e) {} }
 async function refreshHosts(){ try { st.hosts = await api("hosts"); renderHosts(); render(); } catch (e) {} }

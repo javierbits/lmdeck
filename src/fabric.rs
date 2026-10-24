@@ -340,24 +340,62 @@ pub fn device_kind(product: Option<&str>, gpus: &[Gpu], hostname: &str) -> Strin
     {
         return "spark".into();
     }
-    if p.starts_with("mac")
+    let apple_gpu =
+        gpus.iter().any(|g| g.vendor.eq_ignore_ascii_case("apple") || g.name.to_ascii_lowercase().contains("apple"));
+    let apple_product = p.contains("apple")
+        || p.starts_with("mac")
         || p.contains("macbook")
         || p.contains("mac studio")
         || p.contains("macmini")
         || p.contains("mac pro")
-    {
-        if p.contains("studio") || host.contains("studio") {
-            return "macstudio".into();
-        }
-        return "mac".into();
-    }
-    if gpus.iter().any(|g| g.vendor == "apple") {
-        return if host.contains("studio") { "macstudio".into() } else { "mac".into() };
+        || p.contains("imac");
+    // Hostnames: exact "mac", "mac-…", "mac.…", or common Apple machine names.
+    // Avoid bare `host.contains("mac")` — that matches "machine", "macos-ci", etc.
+    let apple_host = host == "mac"
+        || host.starts_with("mac-")
+        || host.starts_with("mac.")
+        || host.contains("macbook")
+        || host.contains("macstudio")
+        || host.contains("mac-studio")
+        || host.contains("macmini")
+        || host.contains("mac-mini")
+        || host.contains("macpro")
+        || host.contains("imac");
+    if apple_product || apple_gpu || apple_host {
+        let studio = p.contains("studio") || host.contains("studio");
+        return if studio { "macstudio".into() } else { "mac".into() };
     }
     if !gpus.is_empty() || !p.is_empty() {
         return "pc".into();
     }
     "unknown".into()
+}
+
+#[cfg(test)]
+mod device_kind_tests {
+    use super::*;
+
+    #[test]
+    fn apple_platform_is_mac() {
+        assert_eq!(device_kind(Some("Apple M3 Ultra"), &[], "mac-studio"), "macstudio");
+        assert_eq!(device_kind(Some("Apple M2"), &[], "mac"), "mac");
+        assert_eq!(device_kind(None, &[], "mac-studio"), "macstudio");
+        assert_eq!(device_kind(None, &[], "mac"), "mac");
+        let apple = Gpu {
+            name: "Apple M3 Ultra".into(),
+            vendor: "apple".into(),
+            memory_gb: None,
+            compute_capability: None,
+            driver: None,
+        };
+        assert_eq!(device_kind(None, &[apple], "workstation"), "mac");
+    }
+
+    #[test]
+    fn machine_hostname_is_not_mac() {
+        assert_eq!(device_kind(None, &[], "machine"), "unknown");
+        assert_eq!(device_kind(Some("Dell OptiPlex"), &[], "machine-1"), "pc");
+    }
 }
 
 fn blank_nic(name: &str) -> Nic {

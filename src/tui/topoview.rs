@@ -362,7 +362,9 @@ pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
         let sp = positions.iter().find(|p| p.id == sw.id).cloned();
         let Some(sp) = sp else { continue };
         let n = members.len().max(1) as f64;
-        let radius = ((HOST_W.max(HOST_H) as f64) * 1.2 + 4.0).max(10.0);
+        // Clearance so HOST_W boxes on a ring do not overlap.
+        let need = (HOST_W as f64 + 4.0) / (2.0 * (std::f64::consts::PI / n).sin());
+        let radius = need.max((HOST_W.max(HOST_H) as f64) * 1.5 + 2.0);
         for (i, key) in members.iter().enumerate() {
             if !placed.insert((*key).to_string()) {
                 continue;
@@ -423,7 +425,7 @@ pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
         p.x = p.x.clamp(pad, (aw - p.w as i32 - pad).max(pad));
         p.y = p.y.clamp(pad, (ah - p.h as i32 - pad).max(pad));
     }
-    for _ in 0..24 {
+    for _ in 0..40 {
         let mut moved = false;
         for i in 0..positions.len() {
             for j in i + 1..positions.len() {

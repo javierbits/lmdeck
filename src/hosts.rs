@@ -342,6 +342,19 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
         "single" => {}
         "duo" => {
             out.push(host("spark2", "http://spark2:7979", 0.45, true, 4));
+            // Offline Mac so the 2-host demo still shows the mac icon (preferred web card).
+            let seen = at.saturating_sub(185_000);
+            let mac_hist = demo::history(60, seen, demo::mac);
+            out.push(HostView {
+                name: "mac".into(),
+                url: Some("http://mac:7979".into()),
+                online: false,
+                error: Some("timed out".into()),
+                last_seen: Some(seen),
+                telemetry: Some(demo::mac(seen as f64 / 1000.0, seen)),
+                history: mac_hist.samples.into(),
+                ..Default::default()
+            });
         }
         "switch8" => {
             for i in 2..=8 {

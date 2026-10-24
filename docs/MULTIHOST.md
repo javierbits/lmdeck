@@ -238,7 +238,8 @@ real CX7 cables) unless marked DEMO DATA.
 | ![](screenshots/web-multinode-card.png) | Web card for the 2-node stub: `×2 nodes`, start order and per-node status. |
 | ![](screenshots/web-topology-rig.png) | Web topology of the rig (hand-written loopback links, busy link to spark2 carries the 2-node stub). |
 | ![](screenshots/web-topology-1host.png) | Web topology, **DEMO DATA** (`single`): one host + hint to add peers. |
-| ![](screenshots/web-topology-2host.png) | Web topology, **DEMO DATA** (`duo`): two Sparks, hostname · alias. |
+| ![](screenshots/web-topology-2host.png) | Web topology, **DEMO DATA** (`duo`): two Sparks on CX7 + offline Mac (icon). |
 | ![](screenshots/web-topology-demo.png) | Web topology, **DEMO DATA** (`tri`): triangle + LAN switch + offline Mac. |
 | ![](screenshots/web-topology-switch8.png) | Web topology, **DEMO DATA** (`switch8`): eight Sparks on one CX7 switch. |
 | ![](screenshots/web-topology-gpu-closeup.png) | Node close-up: **2× RTX 4090** cards (demo), temps / util / power. |
+| ![](screenshots/web-topology-mac-closeup.png) | Mac node close-up: 12×8 dot-matrix icon, offline (demo) tint. |
