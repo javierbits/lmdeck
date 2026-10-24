@@ -71,6 +71,8 @@
   ]
  },
  "files": {
+  "/sys/class/dmi/id/product_name": "DGX Spark",
+  "/sys/class/dmi/id/sys_vendor": "NVIDIA",
   "/sys/class/infiniband/roceP2p1s0f0/ports/1/gid_attrs/types/0": "IB/RoCE v1",
   "/sys/class/infiniband/roceP2p1s0f0/ports/1/gid_attrs/types/1": "RoCE v2",
   "/sys/class/infiniband/roceP2p1s0f0/ports/1/gids/0": "fe80:0000:0000:0000:4ebb:47ff:fe12:0200",
@@ -125,7 +127,7 @@
   "/sys/class/net/tailscale0/mtu": "1280",
   "/sys/class/net/tailscale0/operstate": "unknown"
  },
- "hostname": "spark2",
+ "hostname": "spark-b.lab",
  "links": {
   "/sys/class/net/enP2p1s0f0np0/device/driver": "../../../../bus/pci/drivers/mlx5_core",
   "/sys/class/net/enP2p1s0f1np1/device/driver": "../../../../bus/pci/drivers/mlx5_core",

@@ -1,0 +1,25 @@
+{
+ "commands": {
+  "ip -j addr": "[{\"ifindex\": 1, \"ifname\": \"lo\", \"mtu\": 65536, \"operstate\": \"UNKNOWN\", \"link_type\": \"loopback\", \"address\": \"00:00:00:00:00:00\", \"addr_info\": [{\"family\": \"inet\", \"local\": \"127.0.0.1\", \"prefixlen\": 8}]}, {\"ifindex\": 2, \"ifname\": \"eno1\", \"mtu\": 1500, \"operstate\": \"UP\", \"link_type\": \"ether\", \"address\": \"a8:a1:59:00:00:01\", \"addr_info\": [{\"family\": \"inet\", \"local\": \"192.168.1.60\", \"prefixlen\": 24}, {\"family\": \"inet6\", \"local\": \"fe80::aaa1:59ff:fe00:1\", \"prefixlen\": 64}]}]",
+  "nvidia-smi --query-gpu=name,memory.total,compute_cap,driver_version --format=csv,noheader,nounits": "NVIDIA GeForce RTX 4090, 24564, 8.9, 560.35.03\nNVIDIA GeForce RTX 4090, 24564, 8.9, 560.35.03\n"
+ },
+ "dirs": {
+  "/sys/class/net": [
+   "lo",
+   "eno1"
+  ]
+ },
+ "files": {
+  "/sys/class/dmi/id/product_name": "Precision 7960",
+  "/sys/class/dmi/id/sys_vendor": "Dell Inc.",
+  "/sys/class/net/eno1/address": "a8:a1:59:00:00:01",
+  "/sys/class/net/eno1/mtu": "1500",
+  "/sys/class/net/eno1/operstate": "up",
+  "/sys/class/net/eno1/speed": "1000",
+  "/sys/class/net/lo/operstate": "unknown"
+ },
+ "hostname": "workstation",
+ "links": {
+  "/sys/class/net/eno1/device/driver": "../../../../bus/pci/drivers/e1000e"
+ }
+}

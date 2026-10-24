@@ -194,10 +194,10 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         keys.push(h.host.clone());
     }
     let multi_host = r.nodes.iter().any(|n| key(&n.host) != head_key);
-    let links = if multi_host || home.as_ref().is_some_and(|h| keys.iter().any(|k| *k != h.host)) {
-        crate::topology::links_for(&deck.paths, &deck.cfg, &keys)
+    let graph = if multi_host || home.as_ref().is_some_and(|h| keys.iter().any(|k| *k != h.host)) {
+        crate::topology::graph_for(&deck.paths, &deck.cfg, &keys)
     } else {
-        vec![]
+        crate::fabric::Graph::default()
     };
     let mut warnings = vec![];
     let total = r.nodes.len();
@@ -212,8 +212,8 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         let mut link_used = None;
         match peer {
             Some(p) if p != head_key => {
-                let best = crate::fabric::best_link(&links, &head_key, &p);
-                let (l, warn) = crate::placement::require_link(best, &head_key, &p, opts.allow_slow_link)?;
+                let best = crate::fabric::path_as_link(&graph, &head_key, &p);
+                let (l, warn) = crate::placement::require_link(best.as_ref(), &head_key, &p, opts.allow_slow_link)?;
                 warnings.extend(warn);
                 let (h_end, p_end) = l.sides(&head_key).ok_or_else(|| anyhow!("link sides"))?;
                 let me = if host == head_key { h_end } else { p_end };
@@ -254,8 +254,9 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
                     vars.insert("weights_mount".into(), format!("{}:{}", inv.export_path, inv.mount_at));
                     "home (local disk)".to_string()
                 } else {
-                    let best = crate::fabric::best_link(&links, &h.host, &host);
-                    let (l, warn) = crate::placement::require_link(best, &h.host, &host, opts.allow_slow_link)?;
+                    let best = crate::fabric::path_as_link(&graph, &h.host, &host);
+                    let (l, warn) =
+                        crate::placement::require_link(best.as_ref(), &h.host, &host, opts.allow_slow_link)?;
                     warnings.extend(warn);
                     let (he, ne) = l.sides(&h.host).ok_or_else(|| anyhow!("link sides"))?;
                     let volume = crate::placement::volume_name(if h.host == LOCAL { &node } else { &h.host });

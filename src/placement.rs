@@ -477,8 +477,8 @@ pub fn plan(paths: &Paths, cfg: &Config, r: &Recipe, run_host: &str, allow_slow:
         );
     }
     let inv = idx.inventory(&home.host).context("weights home inventory")?.clone();
-    let links = crate::topology::links_for(paths, cfg, &[home.host.clone(), run_key.clone()]);
-    let best = crate::fabric::best_link(&links, &home.host, &run_key).cloned();
+    let graph = crate::topology::graph_for(paths, cfg, &[home.host.clone(), run_key.clone()]);
+    let best = crate::fabric::path_as_link(&graph, &home.host, &run_key);
     let (link, warn) = require_link(best.as_ref(), &home.host, &run_key, allow_slow)?;
     let link = link.clone();
     p.warnings.extend(warn);
