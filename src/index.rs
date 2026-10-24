@@ -465,11 +465,14 @@ pub fn load(paths: &Paths, cfg: &IndexConfig, force: bool) -> Loaded {
 
 /// Refreshes the cache in a background thread if it's stale (TUI / serve).
 pub fn spawn_refresh(paths: Paths, cfg: IndexConfig) {
-    if !stale(&paths, &cfg) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if !stale(&paths, &cfg) || RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
         let _ = load(&paths, &cfg, false);
+        RUNNING.store(false, Ordering::SeqCst);
     });
 }
 

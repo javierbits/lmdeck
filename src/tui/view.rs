@@ -41,6 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Tab::Topology => crate::tui::topoview::draw_topology(f, app, body),
             Tab::Machine => draw_machine(f, app, s, body),
             Tab::Sources => draw_sources(f, app, s, body),
+            Tab::Browse => crate::tui::browseview::draw_browse(f, app, body),
         },
     }
     draw_status(f, app, status);
@@ -58,7 +59,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 // ───────────────────────── building blocks ─────────────────────────
 
 /// A coloured pill: ` text ` on `bg`, with rounded caps when Nerd Font glyphs are on.
-fn pill<'a>(text: impl Into<String>, bg: Color, t: &Theme, nerd: bool) -> Vec<Span<'a>> {
+pub(super) fn pill<'a>(text: impl Into<String>, bg: Color, t: &Theme, nerd: bool) -> Vec<Span<'a>> {
     let text = text.into();
     if nerd {
         vec![
@@ -108,7 +109,7 @@ pub(super) fn title<'a>(icon: &str, text: impl Into<String>, extra: Option<Strin
     Line::from(spans)
 }
 
-fn level_color(l: Level, t: &Theme) -> Color {
+pub(super) fn level_color(l: Level, t: &Theme) -> Color {
     match l {
         Level::Ok => t.ok,
         Level::Warn => t.warn,
@@ -137,7 +138,7 @@ fn size_text(r: &RecipeView) -> String {
     }
 }
 
-fn kv<'a>(k: &str, v: impl Into<String>, t: &Theme) -> Line<'a> {
+pub(super) fn kv<'a>(k: &str, v: impl Into<String>, t: &Theme) -> Line<'a> {
     Line::from(vec![Span::styled(format!("{k:<10}"), Style::new().fg(t.muted)), Span::styled(v.into(), t.fg)])
 }
 
@@ -211,18 +212,22 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if app.tab == Tab::Hosts {
         let up = app.hosts.iter().filter(|h| h.online).count();
         segs.push((format!("⌁ {up}/{} up", app.hosts.len()), t.seg[3]));
+    } else if app.tab == Tab::Browse {
+        segs.push((format!("index {}", app.browse_visible().len()), t.seg[0]));
+        segs.push((format!("sort {}", app.browse_sort.as_str()), t.seg[3]));
     } else if let Some(s) = &app.snap {
         let shown = app.visible().len();
         segs.push((format!("{} {shown}", if app.show_all { "all" } else { "deck" }), t.seg[0]));
         segs.push((format!("▶ {} running", s.running()), t.seg[3]));
     }
-    if app.only_fit {
+    if (app.tab == Tab::Browse && app.browse_fit) || (app.tab != Tab::Browse && app.only_fit) {
         segs.push(("fits".into(), t.seg[1]));
     }
     let mut spans = segments(&segs, t.bar_bg, t, app.nerd);
-    if app.mode == Mode::Search || !app.query.is_empty() {
+    let query = if app.tab == Tab::Browse { &app.browse_query } else { &app.query };
+    if app.mode == Mode::Search || !query.is_empty() {
         spans.push(Span::styled(" /", Style::new().fg(t.info).bold()));
-        spans.push(Span::styled(app.query.clone(), Style::new().fg(t.fg)));
+        spans.push(Span::styled(query.clone(), Style::new().fg(t.fg)));
         if app.mode == Mode::Search {
             spans.push(Span::styled("▏", Style::new().fg(t.accent)));
         }
@@ -242,6 +247,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::RunOn => &[("↑↓", "host"), ("↵", "start there"), ("s", "switch there"), ("esc", "cancel")],
         _ if app.tab == Tab::Hosts => {
             &[("↑↓", "host"), ("←→", "model"), ("↵", "run deck pick here"), ("x", "stop"), ("l", "logs"), ("?", "help")]
+        }
+        _ if app.tab == Tab::Browse => {
+            &[("/", "search"), ("↵", "install"), ("S", "sort"), ("f", "fits"), ("r", "refresh index"), ("?", "help")]
         }
         _ if app.tab == Tab::Topology => &[("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
         _ => &[("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs"), ("?", "help")],
@@ -404,7 +412,7 @@ fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
 }
 
 /// `s` cut to `w` columns with a trailing `…` when it doesn't fit.
-fn fit_to(s: &str, w: usize) -> String {
+pub(super) fn fit_to(s: &str, w: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if s.width() <= w {
         return s.to_string();
@@ -847,7 +855,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
-    ("1-5  tab", "deck · hosts · topology · machine · sources"),
+    ("1-6  tab", "deck · hosts · topology · machine · sources · browse"),
+    ("browse ↵ i", "add the entry to your deck (lmdeck add)"),
+    ("browse S r", "sort name/sparks/speed · fetch the index"),
+    ("browse /", "search; tag:exl3 or #sparks=2 filter by tag"),
     ("t", "next theme (saved)"),
     ("T", "theme picker: live preview, ↵ saves"),
     ("r", "refresh now (re-probe engines)"),

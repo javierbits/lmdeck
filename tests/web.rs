@@ -66,11 +66,20 @@ fn lmdeck_cmd(root: &std::path::Path) -> Command {
         .env("NO_COLOR", "1")
         .env_remove("LMDECK_TOKEN")
         .env_remove("LMDECK_DEMO")
-        .env_remove("HF_TOKEN");
+        .env_remove("HF_TOKEN")
+        // Never reach the real recipe index (or a gh token) from a test.
+        .env("LMDECK_NO_GH", "1")
+        .env("LMDECK_INDEX_URL", "http://127.0.0.1:9/index.toml")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN");
     c
 }
 
 fn serve(extra: &[&str], setup: impl FnOnce(&std::path::Path)) -> Served {
+    serve_with(extra, &[], setup)
+}
+
+fn serve_with(extra: &[&str], envs: &[(&str, String)], setup: impl FnOnce(&std::path::Path)) -> Served {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("models")).unwrap();
     fs::create_dir_all(root.path().join("hf")).unwrap();
@@ -79,6 +88,7 @@ fn serve(extra: &[&str], setup: impl FnOnce(&std::path::Path)) -> Served {
     let child = lmdeck_cmd(root.path())
         .args(["serve", "--port", &port.to_string()])
         .args(extra)
+        .envs(envs.iter().map(|(k, v)| (*k, v.as_str())))
         .env("LMDECK_DEBUG", "1")
         .stdout(Stdio::null())
         .stderr(fs::File::create(root.path().join("serve.err")).unwrap())
@@ -482,4 +492,49 @@ fn wrapped_recipe_updates_show_and_pull_clears() {
     assert!(j["message"].as_str().unwrap().contains("ref "), "{j}");
     wait_for(&s, "pinned", "current");
     assert!(s.path("home/cache/checkouts/pinned/two.txt").exists());
+}
+
+#[test]
+fn browse_api_lists_the_index_and_installs_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", dir.path().join("index.toml").display());
+    let ixpath = dir.path().join("index.toml");
+    let s = serve_with(&[], &[("LMDECK_INDEX_URL", url)], |root| {
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("start.sh"), "#!/usr/bin/env bash\nPORT=\"${PORT:-8125}\"\n").unwrap();
+        fs::write(work.join("stop.sh"), "#!/usr/bin/env bash\n").unwrap();
+        git(&work, &["init", "-q"]);
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-qm", "one"]);
+        let index = format!(
+            "schema = 1\n[[entry]]\nname = \"tiny-wrap\"\nrepo = \"{}\"\ndescription = \"a wrapped start.sh\"\n\
+             tags = {{ engine = \"llama.cpp\", quant = \"Q4_K_M\", sparks = 1 }}\n\
+             speed = {{ tok_s = 12.5, note = \"from its README\" }}\n",
+            work.display()
+        );
+        fs::write(&ixpath, index).unwrap();
+    });
+    let j = s.post("/api/index/refresh").unwrap();
+    assert_eq!(j["schema"], 1, "{j}");
+    let e = &j["entries"][0];
+    assert_eq!(e["name"], "tiny-wrap", "{j}");
+    assert_eq!(e["installed"], "no", "{j}");
+    assert_eq!(e["speed"]["tok_s"], 12.5);
+    assert!(j["tags"].as_array().unwrap().iter().any(|t| t["key"] == "quant" && t["value"] == "Q4_K_M"), "{j}");
+
+    let a = s.post("/api/add/tiny-wrap").unwrap();
+    assert_eq!(a["ok"], true, "{a}");
+    let j = s.get("/api/index").unwrap();
+    assert_eq!(j["entries"][0]["installed"], "deck", "{j}");
+    assert!(s.get("/api/recipes").unwrap().as_array().unwrap().iter().any(|r| r["name"] == "tiny-wrap"));
+
+    let err = ureq::post(&format!("{}/api/add/tiny-wrapp", s.base)).set("X-Lmdeck", "1").call().unwrap_err();
+    let ureq::Error::Status(code, resp) = err else { panic!("expected a status") };
+    assert_eq!(code, 409);
+    let body = resp.into_string().unwrap();
+    assert!(body.contains("not in the recipe index") && body.contains("tiny-wrap"), "{body}");
+    // The page has the Browse scope.
+    let html = ureq::get(&format!("{}/", s.base)).call().unwrap().into_string().unwrap();
+    assert!(html.contains(r#"data-v="browse""#) && html.contains("api(\"add/\""));
 }

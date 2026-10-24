@@ -19,6 +19,8 @@
 //! - `POST /api/start/{recipe}` body `{"on":"<host>","allow_slow_link":false}` runs it on another host
 //! - `POST /api/run` `{"recipe":"<toml>","only":false,"force":false}`  needs `[serve] accept_recipes`
 //! - `POST /api/weights/{export,volume,preflight}`  the NFS steps (see `placement`)
+//! - `GET  /api/index`                 the recipe index (cache; refreshed in the background) joined with this deck
+//! - `POST /api/index/refresh` · `POST /api/add/{name}`  fetch the index now · `lmdeck add <name>`
 //! - `GET  /api/hosts/{host}/{recipes,status,logs/{recipe}}`, `POST /api/hosts/{host}/{start,stop,switch}/{recipe}`
 //!   proxied to that host with the token from hosts.toml
 //!
@@ -433,6 +435,11 @@ fn client_for(st: &State, host: &str) -> Result<crate::remote::Client> {
 fn get_more(st: &State, req: Request, api: &str, query: &str) -> Option<Request> {
     let q = |k: &str| query_param(query, k);
     match api {
+        "index" => {
+            let l = crate::index::cached(&st.deck.paths, &st.deck.cfg.index);
+            crate::index::spawn_refresh(st.deck.paths.clone(), st.deck.cfg.index.clone());
+            json_reply(req, 200, &index_json(st, &l))
+        }
         "weights" => {
             let cfg = st.deck.cfg.clone();
             json_reply(req, 200, &st.cached("weights", Duration::from_secs(60), || json!(crate::weights::local(&cfg))))
@@ -526,7 +533,35 @@ fn refused(req: Request, code: u16, msg: &str) -> Option<Request> {
 
 /// State-changing routes for remote control and weights. Returns the
 /// request when the route isn't one of these.
+/// The index for the Browse view: rows joined with the snapshot, tags, freshness.
+fn index_json(st: &State, l: &crate::index::Loaded) -> Value {
+    let snap = st.snapshot();
+    let hosts = crate::hosts::HostsFile::load(&st.deck.paths).map(|f| f.hosts.len()).unwrap_or(0);
+    let machines = crate::browse::machines(hosts);
+    let rows = crate::browse::rows(&l.index, Some(&snap), machines);
+    let tags: Vec<Value> = crate::browse::tag_values(&l.index)
+        .into_iter()
+        .map(|(k, v, n)| json!({"key": k, "value": v, "count": n}))
+        .collect();
+    json!({"url": l.url, "fetched_ms": l.fetched_ms, "age": l.age_text(), "from_cache": l.from_cache,
+           "hint": l.hint, "schema": l.index.schema, "machines": machines, "tags": tags, "entries": rows})
+}
+
 fn post_more(st: &State, req: Request, api: &str, body: &str) -> Option<Request> {
+    if api == "index/refresh" {
+        let l = crate::index::load(&st.deck.paths, &st.deck.cfg.index, true);
+        json_reply(req, 200, &index_json(st, &l));
+        return None;
+    }
+    if let Some(name) = api.strip_prefix("add/") {
+        let r = crate::browse::install(name);
+        st.invalidate();
+        match r {
+            Ok(m) => json_reply(req, 200, &json!({"ok": true, "message": m})),
+            Err(e) => error(req, 409, &format!("{e:#}")),
+        }
+        return None;
+    }
     let parse = |b: &str| -> Result<Value, String> {
         if b.trim().is_empty() {
             Ok(json!({}))

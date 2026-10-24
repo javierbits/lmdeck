@@ -599,6 +599,7 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
             "topology" | "topo" => lmdeck::tui::Tab::Topology,
             "machine" | "doctor" => lmdeck::tui::Tab::Machine,
             "sources" => lmdeck::tui::Tab::Sources,
+            "browse" | "index" => lmdeck::tui::Tab::Browse,
             other => bail!("unknown tab '{other}'"),
         };
         let buf = lmdeck::tui::render_snapshot(&deck, &opts, a.width, a.height, tab)?;
