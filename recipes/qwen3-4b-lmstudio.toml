@@ -1,3 +1,4 @@
+schema = 1
 display_name = "Qwen3 4B (LM Studio)"
 description = "Loads the Qwen3 4B GGUF into LM Studio through the `lms` CLI."
 tags = ["qwen3", "small", "lmstudio"]

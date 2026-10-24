@@ -19,6 +19,7 @@ pub mod placement;
 pub mod recipe;
 pub mod remote;
 pub mod runner;
+pub mod schema;
 pub mod sources;
 pub mod telemetry;
 pub mod theme;

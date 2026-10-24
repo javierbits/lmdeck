@@ -1,5 +1,6 @@
 # EXL3 keeps each bpw on its own branch; `lmdeck pull` fetches the
 # 4.0bpw branch into <models_dir>/turboderp/Qwen3-30B-A3B-exl3-4.0bpw.
+schema = 1
 display_name = "Qwen3 30B-A3B (EXL3 4.0bpw)"
 description = "Qwen3 30B-A3B MoE on TabbyAPI / exllamav3. ~16 GB of weights; comfortable on a DGX Spark."
 tags = ["qwen3", "moe", "dgx-spark", "exl3"]

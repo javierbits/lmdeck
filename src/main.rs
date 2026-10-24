@@ -373,6 +373,9 @@ impl Ctx {
     fn load() -> Result<Ctx> {
         let paths = Paths::from_env();
         let cfg = Config::load(&paths)?;
+        if let Some(w) = &cfg.skipped {
+            eprintln!("{} {w}; using the defaults", yellow("warning:"));
+        }
         Ok(Ctx { paths, cfg })
     }
 
@@ -2000,6 +2003,7 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
             (f, rep)
         })
         .collect();
+    let unsupported = unsupported_schemas(ctx, &cat);
     let paths = json!({
         "config": ctx.paths.config_file(), "recipes": ctx.paths.recipes_dir(), "cache": ctx.paths.cache_dir,
         "state": ctx.paths.state_dir, "models_dir": ctx.models_dir(), "hf_cache": hf_cache_dir(),
@@ -2010,11 +2014,12 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
             .map(|(f, rep)| json!({"ref": format!("{}/{}", f.origin, f.recipe.name), "fit": rep.level(), "checks": rep.checks}))
             .collect();
         let errors: Vec<_> = cat.errors.iter().map(|(f, e)| json!({"file": f, "error": e})).collect();
+        let schemas: Vec<_> = unsupported.iter().map(|(f, e)| json!({"file": f, "error": e})).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &json!({"version": env!("CARGO_PKG_VERSION"), "hardware": hw, "inventory": inv,
-                "paths": paths, "recipes": recipes, "recipe_errors": errors})
+                &json!({"version": env!("CARGO_PKG_VERSION"), "schema": lmdeck::schema::CURRENT, "hardware": hw, "inventory": inv,
+                "paths": paths, "recipes": recipes, "recipe_errors": errors, "unsupported_schemas": schemas})
             )?
         );
         return Ok(());
@@ -2088,13 +2093,36 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
         ]);
     }
     print!("{}", t.render());
-    if !cat.errors.is_empty() {
+    let failed: Vec<_> = cat.errors.iter().filter(|(_, e)| !e.contains(lmdeck::schema::MARKER)).collect();
+    if !failed.is_empty() {
         println!("\n{}", bold("recipe files that failed to load"));
-        for (f, e) in &cat.errors {
+        for (f, e) in failed {
             println!("  {} {f}: {}", yellow("!"), dim(e));
         }
     }
+    println!("\n{} {}", bold("schemas"), dim(&format!("(this lmdeck reads schema {})", lmdeck::schema::CURRENT)));
+    if unsupported.is_empty() {
+        println!("  {} config, recipes and index all readable", green("✓"));
+    }
+    for (f, e) in &unsupported {
+        println!("  {} {f}: {}", yellow("!"), e);
+    }
     Ok(())
+}
+
+/// Files skipped because a newer lmdeck wrote them: the config, recipes, the index cache.
+fn unsupported_schemas(ctx: &Ctx, cat: &Catalog) -> Vec<(String, String)> {
+    let mut out = vec![];
+    if let Some(w) = &ctx.cfg.skipped {
+        out.push((ctx.paths.config_file().display().to_string(), w.clone()));
+    }
+    for (f, e) in &cat.errors {
+        if e.contains(lmdeck::schema::MARKER) {
+            let msg = e.find(lmdeck::schema::MARKER).map(|i| e[i..].to_string()).unwrap_or_else(|| e.clone());
+            out.push((f.clone(), msg));
+        }
+    }
+    out
 }
 
 fn init(mut ctx: Ctx, models_dir: Option<String>, force: bool) -> Result<()> {

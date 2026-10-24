@@ -1,4 +1,5 @@
 # TensorFold's own quick-start model, "checked on Metal and a GB10" (github.com/ashhart/TensorFold, v1.1.2).
+schema = 1
 display_name = "Qwen3.5 2B (MLX 4-bit, TensorFold)"
 description = "TensorFold's quick-start checkpoint at its pinned revision; serves on Apple Silicon (Metal) or an NVIDIA GPU (CUDA)."
 tags = ["qwen3.5", "small", "tensorfold", "mlx", "mac", "dgx-spark"]

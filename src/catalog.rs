@@ -237,4 +237,31 @@ mod tests {
         assert!(e.ready_timeout.unwrap() >= 3600);
         assert!(r.source.unwrap().repo.contains("MiaAI-Lab/Ornith-1.5-122B-TensorFold"));
     }
+
+    #[test]
+    fn recipe_schemas_missing_current_newer() {
+        // Every built-in and example says `schema = 1` itself.
+        for (file, text) in BUILTIN_RECIPES {
+            assert!(text.lines().any(|l| l.trim() == "schema = 1"), "{file} has no schema line");
+        }
+        for ex in ["ornith-122b-awq-lmdeploy.toml", "vllm-ray-2spark.toml"] {
+            let t = fs::read_to_string(format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            assert!(t.lines().any(|l| l.trim() == "schema = 1"), "{ex}");
+        }
+        let body = "[engine]\nname = \"llama.cpp\"\n[model]\nrepo = \"a/b\"\nfiles = [\"m.gguf\"]\n";
+        assert_eq!(Recipe::parse(body, "old").unwrap().schema, 1, "missing means 1");
+        assert_eq!(Recipe::parse(&format!("schema = 1\n{body}"), "cur").unwrap().schema, 1);
+        let r = Recipe::parse(body, "old").unwrap();
+        assert!(r.to_toml().unwrap().starts_with("schema = 1\n"), "written files carry it");
+        let (_d, paths) = tmp();
+        fs::create_dir_all(paths.recipes_dir()).unwrap();
+        fs::write(paths.recipes_dir().join("old.toml"), body).unwrap();
+        fs::write(paths.recipes_dir().join("future.toml"), format!("schema = 2\nmin_lmdeck = \"0.3.0\"\n{body}"))
+            .unwrap();
+        let (found, errors) = deck(&paths);
+        assert_eq!(found.iter().map(|f| f.recipe.name.as_str()).collect::<Vec<_>>(), ["old"]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].1.contains(crate::schema::MARKER), "{errors:?}");
+        assert!(errors[0].1.contains("needs lmdeck >= 0.3.0 / schema 2"), "{errors:?}");
+    }
 }

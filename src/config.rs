@@ -10,6 +10,12 @@ use crate::paths::{expand, Paths};
 /// User configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
+    /// File format version (`schema = 1`; see [`crate::schema`]).
+    #[serde(default = "crate::schema::current")]
+    pub schema: u32,
+    /// Set when config.toml was skipped (a newer schema): defaults are in use.
+    #[serde(skip)]
+    pub skipped: Option<String>,
     /// Where model weights live. Recipe `model.path` values are relative to it.
     #[serde(default = "default_models_dir")]
     pub models_dir: String,
@@ -179,6 +185,8 @@ fn default_host() -> String {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            schema: crate::schema::CURRENT,
+            skipped: None,
             models_dir: default_models_dir(),
             host: default_host(),
             theme: None,
@@ -202,12 +210,20 @@ impl Config {
             return Ok(Config::default());
         }
         let text = fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
-        Self::parse(&text).with_context(|| format!("parsing {}", file.display()))
+        match Self::parse(&text) {
+            Err(e) if crate::schema::is_unsupported(&e) => {
+                // A config from a newer lmdeck: don't guess at it, run on defaults.
+                Ok(Config { skipped: Some(format!("{}: {e:#}", file.display())), ..Config::default() })
+            }
+            r => r.with_context(|| format!("parsing {}", file.display())),
+        }
     }
 
-    /// Parses config TOML.
+    /// Parses config TOML (a newer `schema` is an [`crate::schema::Unsupported`] error).
     pub fn parse(text: &str) -> Result<Self> {
-        Ok(toml::from_str(text)?)
+        let v: toml::Value = toml::from_str(text)?;
+        let v = crate::schema::check("config", v)?;
+        Ok(v.try_into()?)
     }
 
     /// Writes the config (creating the config dir).
@@ -315,6 +331,21 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(Config::parse("models_dir = [").is_err());
+    }
+
+    #[test]
+    fn schema_missing_current_and_newer() {
+        assert_eq!(Config::parse("models_dir = \"/m\"\n").unwrap().schema, 1);
+        assert!(toml::to_string(&Config::default()).unwrap().starts_with("schema = 1\n"));
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths { config_dir: d.path().into(), cache_dir: d.path().join("c"), state_dir: d.path().join("s") };
+        fs::write(paths.config_file(), "schema = 3\nmin_lmdeck = \"2.0.0\"\nmodels_dir = \"/x\"\n").unwrap();
+        let c = Config::load(&paths).unwrap();
+        assert_eq!(c.models_dir, "~/models", "a newer config is skipped, defaults used");
+        assert!(c.skipped.as_deref().unwrap().contains("needs lmdeck >= 2.0.0 / schema 3"), "{:?}", c.skipped);
+        // …and never overwritten.
+        assert!(Config::save_theme(&paths, Some("nord")).is_err());
+        assert!(fs::read_to_string(paths.config_file()).unwrap().starts_with("schema = 3"));
     }
 
     #[test]

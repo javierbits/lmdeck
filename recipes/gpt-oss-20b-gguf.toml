@@ -1,3 +1,4 @@
+schema = 1
 display_name = "gpt-oss 20B (GGUF Q4_K_M)"
 description = "OpenAI gpt-oss-20b on llama.cpp. Fits a 16 GB GPU, a 24 GB+ Mac, or a DGX Spark."
 tags = ["gpt-oss", "reasoning", "tools"]

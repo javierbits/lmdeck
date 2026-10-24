@@ -623,3 +623,25 @@ fn tui_run_on_picker_and_topology_frames() {
         assert!(frame.contains(want), "missing {want:?} in\n{frame}");
     }
 }
+
+#[test]
+fn doctor_reports_newer_schemas_and_skips_them() {
+    let e = Env::new();
+    let deck = e.path("home/config/recipes");
+    write(&deck, "mine.toml", &format!("schema = 1\n{QWEN_TOML}"));
+    write(&deck, "future.toml", &format!("schema = 9\nmin_lmdeck = \"4.0.0\"\n{QWEN_TOML}"));
+    let list = e.run(&["list"]);
+    assert!(list.contains("mine") && !list.contains("future"), "{list}");
+    let doc = e.run(&["doctor"]);
+    assert!(doc.contains("schemas"), "{doc}");
+    assert!(doc.contains("future.toml") && doc.contains("needs lmdeck >= 4.0.0 / schema 9"), "{doc}");
+    let j: serde_json::Value = serde_json::from_str(&e.run(&["doctor", "--json"])).unwrap();
+    assert_eq!(j["schema"], 1);
+    assert_eq!(j["unsupported_schemas"].as_array().unwrap().len(), 1);
+    // A newer config: defaults, a warning, and doctor names it.
+    write(&e.path("home/config"), "config.toml", "schema = 2\nmodels_dir = \"/nowhere\"\n");
+    let out = e.cmd().args(["doctor"]).assert().success().get_output().clone();
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(stderr.contains("needs lmdeck newer than") && stderr.contains("using the defaults"), "{stderr}");
+    assert!(stdout.contains("config.toml"), "{stdout}");
+}

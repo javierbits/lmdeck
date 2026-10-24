@@ -1,4 +1,5 @@
 # Small, fast, runs anywhere llama.cpp does (Mac, Spark, plain x86 box).
+schema = 1
 display_name = "Qwen3 4B (GGUF Q4_K_M)"
 description = "Qwen3 4B on llama.cpp. Tiny smoke-test model: ~2.5 GB, runs on CPU, Metal or CUDA."
 tags = ["qwen3", "small", "chat"]

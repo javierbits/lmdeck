@@ -218,6 +218,7 @@ pub fn recipe_toml(name: &str, display: &str, pin: &SourcePin, d: &Detected) -> 
     t.push_str(&format!("# Wrapper for {}, written by `lmdeck add`.\n", pin.repo));
     t.push_str("# lmdeck runs the repo's own start.sh / stop.sh from its checkout; it applies no patches\n");
     t.push_str("# and builds nothing itself.\n");
+    t.push_str(&format!("schema = {}\n", crate::schema::CURRENT));
     t.push_str(&format!("name = {}\n", q(name)));
     t.push_str(&format!("display_name = {}\n", q(display)));
     t.push_str(&format!("description = {}\n", q(&format!("Runs {display}'s start.sh / stop.sh."))));
@@ -351,6 +352,7 @@ DASH=${DASH-7}
         let pin = SourcePin { repo: "https://github.com/x/srv", git_ref: "abc123", branch: Some("main") };
         let text = recipe_toml("srv", "srv", &pin, &det);
         assert!(!text.contains("TODO"), "{text}");
+        assert!(text.lines().any(|l| l == "schema = 1"), "{text}");
         let r = Recipe::parse(&text, "srv").unwrap();
         assert!(r.engine.detached);
         assert_eq!(r.port(), 8888);

@@ -345,6 +345,9 @@ impl HardwareReq {
 /// A complete recipe.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
+    /// File format version (`schema = 1`; missing means 1, see [`crate::schema`]).
+    #[serde(default = "crate::schema::current")]
+    pub schema: u32,
     /// Identifier (defaults to the file stem). `[A-Za-z0-9._-]` only.
     #[serde(default)]
     pub name: String,
@@ -475,6 +478,10 @@ impl Recipe {
         let table = value.as_table().ok_or(NotARecipe)?;
         if !table.get("engine").is_some_and(|v| v.is_table()) {
             return Err(NotARecipe.into());
+        }
+        let mut value = crate::schema::check("recipe", value)?;
+        if let Some(t) = value.as_table_mut() {
+            t.remove("min_lmdeck");
         }
         let mut recipe: Recipe = value.try_into()?;
         if recipe.name.trim().is_empty() {

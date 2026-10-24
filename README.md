@@ -386,7 +386,17 @@ Recipes are TOML. A recipe's name defaults to its file name. YAML is not
 supported: a `.yaml`/`.yml` file in the deck, or passed to `recipe add`, is an
 error that says so, and sources skip YAML files.
 
+**`schema = 1`.** Recipes, the config and the recipe index carry a top-level
+`schema` integer; a missing one means 1. `lmdeck add`, `recipe add` and the
+built-ins write it. A file with a newer schema than this lmdeck reads is
+skipped with a warning such as `needs lmdeck >= 0.3.0 / schema 2` (the
+version comes from the file's optional `min_lmdeck = "…"`), never guessed
+at; `lmdeck doctor` lists every such file. A newer `config.toml` is not read
+or overwritten: lmdeck runs on defaults and says so. Older schemas go through
+a migration step (`src/schema.rs`) before they're read.
+
 ```toml
+schema       = 1
 display_name = "Qwen3 30B-A3B (EXL3 4.0bpw)"
 description  = "Qwen3 30B-A3B MoE on TabbyAPI / exllamav3."
 tags         = ["qwen3", "moe", "dgx-spark"]

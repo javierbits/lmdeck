@@ -2,6 +2,7 @@
 # 62 GiB EXL3 checkpoint plus the DFlash2 draft, `docker run -d`s the server and exits once it answers.
 # lmdeck applies no patches and builds nothing itself. Settings go in through env (PORT, HOST, CONTAINER_NAME
 # below; CONTEXT, PARALLEL, DRAFTS, KV_DTYPE, ... can be added to [engine.env] or the checkout's .env).
+schema = 1
 display_name = "Ornith 1.5 122B (EXL3 4bpw, TensorFold, Mia's scripts)"
 description = "Ornith-1.5-122B EXL3 + DFlash2 drafts on one DGX Spark, run by MiaAI-Lab's own start.sh / stop.sh."
 tags = ["ornith", "qwen3.5-moe", "exl3", "tensorfold", "dflash", "dgx-spark", "wrapped"]

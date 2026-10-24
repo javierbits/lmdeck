@@ -8,6 +8,7 @@
 # itself, and mounts the Hugging Face cache into the container, so `args` only holds
 # the tuning flags. Untested on a Spark.
 
+schema = 1
 name = "ornith-1.5-122b-awq-lmdeploy-spark"
 display_name = "Ornith-1.5-122B AWQ 4-bit (LMDeploy, 1x Spark)"
 tags = ["spark", "awq", "moe", "lmdeploy", "example"]
