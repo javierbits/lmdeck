@@ -61,7 +61,8 @@ enum Cmd {
     },
     /// Wrap a repo that ships start.sh / stop.sh as a recipe in the deck.
     Add {
-        /// GitHub owner/repo, a GitHub or git URL, or a local directory.
+        /// A name from the recipe index (`lmdeck browse`), GitHub owner/repo,
+        /// a GitHub or git URL, or a local directory.
         repo: String,
         /// Recipe name (default: the repo name).
         #[arg(long)]
@@ -83,6 +84,28 @@ enum Cmd {
         /// upstream branch head (rewrites `ref` in the deck recipe).
         #[arg(long)]
         latest: bool,
+    },
+    /// Browse the recipe index: search, filter by tag, see what fits and install.
+    Browse {
+        /// Fuzzy search over names, descriptions, repos and tags.
+        query: Option<String>,
+        /// Only entries with this tag (`exl3`, `engine=vllm`, `sparks=2`); repeatable.
+        #[arg(long = "tag", short = 't')]
+        tags: Vec<String>,
+        /// name, sparks or speed (fastest first).
+        #[arg(long, default_value = "name")]
+        sort: String,
+        /// Fetch the index now even if the cache is fresh.
+        #[arg(long)]
+        refresh: bool,
+        /// Use the cached index only (no network).
+        #[arg(long, conflicts_with = "refresh")]
+        offline: bool,
+        /// Only entries that fit this machine (and your hosts).
+        #[arg(long)]
+        fits: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Check wrapped recipes' repos for new commits (always asks the remotes).
     #[command(visible_alias = "updates")]
@@ -430,6 +453,9 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Stop { target, all, on }) => stop(&ctx, target.as_deref(), all, on.as_deref()),
         Some(Cmd::Add { repo, name, git_ref, force }) => add_wrapper(&ctx, &repo, name, git_ref, force),
         Some(Cmd::Pull { target, dry_run, latest }) => pull(&ctx, &target, dry_run, latest),
+        Some(Cmd::Browse { query, tags, sort, refresh, offline, fits, json }) => {
+            browse(&ctx, query.as_deref().unwrap_or(""), &tags, &sort, refresh, offline, fits, json)
+        }
         Some(Cmd::Outdated { targets, fetch, json }) => outdated(&ctx, &targets, fetch, json),
         Some(Cmd::Logs { target, lines, on, node }) => logs(&ctx, &target, lines, on.as_deref(), node.as_deref()),
         Some(Cmd::Weights { refresh, json }) => weights_cmd(&ctx, refresh, json),
@@ -1572,7 +1598,134 @@ fn fetch_url(url: &str) -> Result<String> {
 }
 
 /// `lmdeck add <repo>`: clone it, read its scripts, write a wrapper recipe.
+/// A bare name (no `/`, `:` and not a directory) is looked up in the index.
+fn is_index_name(arg: &str) -> bool {
+    let a = arg.trim();
+    !a.is_empty() && !a.contains(['/', ':', '\\']) && !a.starts_with('~') && !lmdeck::paths::expand(a).is_dir()
+}
+
+fn add_from_index(ctx: &Ctx, arg: &str, name: Option<String>, git_ref: Option<String>, force: bool) -> Result<()> {
+    let loaded = lmdeck::index::load(&ctx.paths, &ctx.cfg.index, false);
+    if let Some(h) = &loaded.hint {
+        eprintln!("{} {h}", yellow("!"));
+    }
+    let Some(e) = loaded.index.find(arg) else {
+        let mut near: Vec<(i64, &str)> = loaded
+            .index
+            .entries
+            .iter()
+            .filter_map(|e| lmdeck::tui::app::fuzzy_score(arg, &e.name).map(|s| (s, e.name.as_str())))
+            .collect();
+        near.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        let near: Vec<&str> = near.into_iter().take(3).map(|x| x.1).collect();
+        let more = if near.is_empty() {
+            format!("{} entries in the index; see `lmdeck browse`", loaded.index.entries.len())
+        } else {
+            format!("did you mean: {}?", near.join(", "))
+        };
+        bail!("'{arg}' is not in the recipe index ({more}); for a repo pass owner/repo or a URL");
+    };
+    let e = e.clone();
+    println!("{} {} {}", cyan("◆"), bold(&e.name), dim(&format!("from the index ({})", loaded.url)));
+    if e.recipe.is_some() && git_ref.is_none() {
+        let mut r = lmdeck::index::fetch_recipe(&ctx.cfg.index, &e)?.expect("entry has a recipe link");
+        if let Some(n) = name {
+            if !valid_name(&n) {
+                bail!("invalid name '{n}'");
+            }
+            r.name = n;
+        }
+        let path = lmdeck::catalog::add_to_deck(&ctx.paths, &r, force)?;
+        println!("{} added {} to the deck {}", green("✓"), bold(&r.name), dim(&format!("({})", path.display())));
+        println!("  try: lmdeck use {} --dry-run", r.name);
+        return Ok(());
+    }
+    add_wrapper(ctx, &e.repo, Some(name.unwrap_or(e.name.clone())), git_ref.or(e.git_ref.clone()), force)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browse(
+    ctx: &Ctx,
+    query: &str,
+    tags: &[String],
+    sort: &str,
+    refresh: bool,
+    offline: bool,
+    fits: bool,
+    json_out: bool,
+) -> Result<()> {
+    use lmdeck::browse::{self as b, Sort};
+    let sort = Sort::parse(sort).ok_or_else(|| anyhow!("--sort must be name, sparks or speed"))?;
+    let loaded = if offline {
+        lmdeck::index::cached(&ctx.paths, &ctx.cfg.index)
+    } else {
+        lmdeck::index::load(&ctx.paths, &ctx.cfg.index, refresh)
+    };
+    let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
+    let snap = deck.snapshot(false);
+    let nhosts = HostsFile::load(&ctx.paths).map(|f| f.hosts.len()).unwrap_or(0);
+    let rows = b::rows(&loaded.index, Some(&snap), b::machines(nhosts));
+    let shown: Vec<&b::Row> = b::filter(&rows, query, tags, sort)
+        .into_iter()
+        .filter(|r| !fits || r.fit != lmdeck::compat::Level::Fail)
+        .collect();
+    if json_out {
+        let v = serde_json::json!({
+            "url": loaded.url, "fetched_ms": loaded.fetched_ms, "from_cache": loaded.from_cache,
+            "hint": loaded.hint, "schema": loaded.index.schema, "sort": sort.as_str(),
+            "total": rows.len(), "entries": shown,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    if let Some(h) = &loaded.hint {
+        eprintln!("{} {h}", yellow("!"));
+    }
+    println!(
+        "{} {} of {} {}",
+        bold("recipe index"),
+        shown.len(),
+        rows.len(),
+        dim(&format!("· {} · fetched {} · sort {}", loaded.url, loaded.age_text(), sort.as_str()))
+    );
+    for r in &shown {
+        let e = &r.entry;
+        let fit = match r.fit {
+            lmdeck::compat::Level::Ok => green("✓ fits"),
+            lmdeck::compat::Level::Warn => yellow("! tight"),
+            lmdeck::compat::Level::Fail => red("✗ no fit"),
+        };
+        let state = match r.installed {
+            "deck" => green("● in deck"),
+            "builtin" => cyan("◆ built-in"),
+            _ => dim("○ not installed"),
+        };
+        let speed = e.speed.as_ref().map(|s| format!("{:.1} tok/s", s.tok_s)).unwrap_or_else(|| "–".into());
+        println!();
+        println!("{}  {state}  {fit}  {}", bold(&e.name), dim(&format!("{} Spark(s) · {speed}", e.sparks())));
+        if !e.description.is_empty() {
+            println!("  {}", e.description);
+        }
+        let tags: Vec<String> = e.tags.pairs().into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+        println!("  {}", dim(&tags.join("  ")));
+        if let Some(u) = &r.update {
+            println!("  {}", yellow(u));
+        }
+        if r.fit != lmdeck::compat::Level::Ok {
+            println!("  {}", dim(&r.fit_reason));
+        }
+        println!("  {}  {}", dim(&r.readme), cyan(&r.install));
+    }
+    if shown.is_empty() && !rows.is_empty() {
+        println!("  nothing matches; try fewer tags or another query");
+    }
+    Ok(())
+}
+
 fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<String>, force: bool) -> Result<()> {
+    if is_index_name(repo) {
+        return add_from_index(ctx, repo, name, git_ref, force);
+    }
     let (url, url_ref, default_name) = wrap::parse_repo_arg(repo)?;
     let name = name.unwrap_or(default_name);
     if !valid_name(&name) {
@@ -2121,6 +2274,12 @@ fn unsupported_schemas(ctx: &Ctx, cat: &Catalog) -> Vec<(String, String)> {
             let msg = e.find(lmdeck::schema::MARKER).map(|i| e[i..].to_string()).unwrap_or_else(|| e.clone());
             out.push((f.clone(), msg));
         }
+    }
+    // The recipe index: a refused fetch, or a cache written by a newer lmdeck.
+    let idx = lmdeck::index::cached(&ctx.paths, &ctx.cfg.index);
+    if let Some(h) = idx.hint.as_ref().filter(|h| h.contains(lmdeck::schema::MARKER)) {
+        let msg = h.find(lmdeck::schema::MARKER).map(|i| h[i..].to_string()).unwrap_or_else(|| h.clone());
+        out.push((format!("recipe index ({})", idx.url), msg));
     }
     out
 }

@@ -39,6 +39,8 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         pulling: false,
         update: None,
         weights_on: if downloaded { vec!["local".into()] } else { vec![] },
+        source_repo: None,
+        source_ref: None,
         weights_home: downloaded.then(|| "local".into()),
         nodes: vec![],
         placed_on: None,

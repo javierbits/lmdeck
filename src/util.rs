@@ -125,6 +125,17 @@ pub fn human_duration(secs: u64) -> String {
     }
 }
 
+/// "just now", "5 min ago", "3 h ago", "2 d ago".
+pub fn ago_ms(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} min ago", s / 60),
+        3600..=172_799 => format!("{} h ago", s / 3600),
+        _ => format!("{} d ago", s / 86_400),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

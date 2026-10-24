@@ -176,6 +176,11 @@ pub struct RecipeView {
     /// Hosts whose disk holds the weights (`[node] name` for this machine),
     /// from the controller's weights index.
     pub weights_on: Vec<String>,
+    /// Wrapped recipes: the `[source]` repo and ref (Browse matches index entries on them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
     /// The one host the weights are served from (`[model] home`, else the
     /// first holder, this machine first).
     pub weights_home: Option<String>,
@@ -383,6 +388,8 @@ impl Deck {
                 pulling: self.pulling(&r.name),
                 update: updates.remove(&r.name),
                 weights_on: locs.iter().map(|l| show(&l.host)).collect(),
+                source_repo: r.source.as_ref().map(|s| s.repo.clone()),
+                source_ref: r.source.as_ref().and_then(|s| s.git_ref.clone()),
                 weights_home: widx.home(r, &node).map(|l| show(&l.host)),
                 nodes,
                 placed_on,

@@ -1,0 +1,36 @@
+# The lmdeck recipe index: repos you can browse (`lmdeck browse`, the Browse
+# tab) and install by name (`lmdeck add <name>`).
+#
+# Only real, published repos go here. Every number is the repo's own (its
+# README), with `note` saying where it comes from; lmdeck never measured them.
+#
+# [[entry]]
+# name        = "…"                        # what `lmdeck add` takes; [A-Za-z0-9._-]
+# repo        = "https://github.com/o/r"   # its README is the details link
+# ref         = "…"                        # optional pin (tag / branch / commit)
+# description = "…"
+# size_gb     = 0.0                        # optional, weights on disk
+# recipe      = "recipes/x.toml"           # optional native recipe (relative to this file, or a URL);
+#                                          # without one, `add` wraps the repo's start.sh / stop.sh
+# tags        = { engine = "…", model = "…", family = "…", quant = "…", sparks = 1 }
+# speed       = { tok_s = 0.0, note = "where the number comes from" }
+
+schema = 1
+
+[[entry]]
+name = "ornith-1.5-122b-tensorfold"
+repo = "https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold"
+ref = "0c8fd6a0d1e2ece7557978a7d8c3d96d137eb075"
+description = "Ornith-1.5-122B (Qwen3.5-MoE) EXL3 4 bpw with DFlash2 drafts on one DGX Spark, run by Mia's AI Lab's own start.sh / stop.sh."
+size_gb = 66.6   # 62 GiB of safetensors (README)
+recipe = "recipes/ornith-1.5-122b-tensorfold.toml"
+tags = { engine = "tensorfold", model = "Ornith-1.5-122B", family = "qwen3.5-moe", quant = "exl3", sparks = 1 }
+speed = { tok_s = 52.6, note = "repo README: one DGX Spark, 1 stream, prose, DFlash2 drafts (sparkDash)" }
+
+[[entry]]
+name = "glm-5.3-flash-exl3-2x-spark-tensorfold"
+repo = "https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold"
+description = "GLM-5.3-Flash EXL3 4 bpw on two DGX Sparks linked by ConnectX-7 (one TensorFold rank each), 1M-token context, vision; Mia's AI Lab's start.sh / stop.sh."
+size_gb = 176.0  # "~176 GB" checkpoint (README)
+tags = { engine = "tensorfold", model = "GLM-5.3-Flash", family = "glm", quant = "exl3", sparks = 2 }
+speed = { tok_s = 60.4, note = "repo README: two DGX Sparks, 1 request, prose (sparkDash)" }

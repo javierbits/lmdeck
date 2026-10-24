@@ -2,6 +2,7 @@
 //! TabbyAPI (exllamav3), LM Studio, MLX and TensorFold, plus wrapped
 //! `start.sh` / `stop.sh` repos.
 
+pub mod browse;
 pub mod catalog;
 pub mod checkout;
 pub mod cluster;
@@ -12,6 +13,7 @@ pub mod engine;
 pub mod fabric;
 pub mod hardware;
 pub mod hosts;
+pub mod index;
 pub mod models;
 pub mod ops;
 pub mod paths;

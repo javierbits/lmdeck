@@ -43,6 +43,38 @@ pub struct Config {
     /// `[weights]`: sharing this machine's weights with peers over NFS.
     #[serde(default, skip_serializing_if = "WeightsConfig::is_default")]
     pub weights: WeightsConfig,
+    /// `[index]`: the recipe index Browse and `lmdeck add <name>` read.
+    #[serde(default, skip_serializing_if = "IndexConfig::is_default")]
+    pub index: IndexConfig,
+}
+
+/// `[index]` in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IndexConfig {
+    /// Where index.toml lives (default: the lmdeck repo's `main`). A GitHub
+    /// file URL, `github:owner/repo/path@ref`, any https URL, or a local path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// How long the cached copy is used before it is fetched again.
+    #[serde(default = "default_ttl_hours")]
+    pub ttl_hours: f64,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    /// For a non-GitHub url: an environment variable holding a Bearer token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        IndexConfig { url: None, ttl_hours: default_ttl_hours(), timeout_secs: default_timeout_secs(), token_env: None }
+    }
+}
+
+impl IndexConfig {
+    pub fn is_default(&self) -> bool {
+        *self == IndexConfig::default()
+    }
 }
 
 /// `[node]` in config.toml (all optional; detection fills the rest).
@@ -198,6 +230,7 @@ impl Default for Config {
             node: NodeConfig::default(),
             serve: ServeConfig::default(),
             weights: WeightsConfig::default(),
+            index: IndexConfig::default(),
         }
     }
 }
