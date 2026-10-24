@@ -619,7 +619,7 @@ fn tui_run_on_picker_and_topology_frames() {
         assert!(frame.contains(want), "missing {want:?} in\n{frame}");
     }
     let frame = e.run(&["tui", "--render-text", "--tab", "topology", "--width", "130", "--height", "30"]);
-    for want in ["Topology", "controller", "spark9", "offline", "no links matched"] {
+    for want in ["Topology", "controller", "spark9", "offline", "(no links matched)"] {
         assert!(frame.contains(want), "missing {want:?} in\n{frame}");
     }
 }

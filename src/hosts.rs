@@ -300,11 +300,17 @@ impl Aggregator {
     }
 }
 
-/// Synthetic hosts for `LMDECK_DEMO=1`: three Sparks and an offline Mac.
+/// Synthetic hosts for `LMDECK_DEMO=1`. Shape follows `LMDECK_DEMO_TOPO`
+/// (`tri` default, `duo`, `switch8`, `single`, `mix`).
 pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostView> {
     let n = local_hist.samples.len().max(1);
     let host = |name: &str, url: &str, seed: f64, busy: bool, ms: u64| {
-        let f = |t: f64, at: u64| demo::spark(name, seed, t, at, busy);
+        let hn = format!("{name}.lab");
+        let f = move |t: f64, at: u64| {
+            let mut tel = demo::spark(&hn, seed, t, at, busy);
+            tel.hostname = hn.clone();
+            tel
+        };
         HostView {
             name: name.into(),
             url: Some(url.into()),
@@ -330,23 +336,48 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
         let back = demo::history(150, local.at, demo::local);
         local_view.history = back.samples.into();
     }
-    let seen = at.saturating_sub(185_000);
-    let mac_hist = demo::history(60, seen, demo::mac);
-    vec![
-        local_view,
-        host("spark2", "http://spark2:7979", 0.45, true, 4),
-        host("spark3", "http://spark3:7979", 0.8, false, 6),
-        HostView {
-            name: "mac".into(),
-            url: Some("http://mac:7979".into()),
-            online: false,
-            error: Some("timed out".into()),
-            last_seen: Some(seen),
-            telemetry: Some(demo::mac(seen as f64 / 1000.0, seen)),
-            history: mac_hist.samples.into(),
-            ..Default::default()
-        },
-    ]
+    let shape = crate::topology::demo_topo_name();
+    let mut out = vec![local_view];
+    match shape.as_str() {
+        "single" => {}
+        "duo" => {
+            out.push(host("spark2", "http://spark2:7979", 0.45, true, 4));
+        }
+        "switch8" => {
+            for i in 2..=8 {
+                out.push(host(
+                    &format!("spark{i}"),
+                    &format!("http://spark{i}:7979"),
+                    0.1 * i as f64,
+                    i % 3 == 0,
+                    3 + i as u64,
+                ));
+            }
+        }
+        "mix" => {
+            out.push(host("spark2", "http://spark2:7979", 0.45, true, 4));
+            out.push(host("spark3", "http://spark3:7979", 0.8, false, 6));
+            out.push(host("spark4", "http://spark4:7979", 0.55, false, 5));
+        }
+        _ => {
+            // tri (default): two more Sparks + an offline Mac
+            out.push(host("spark2", "http://spark2:7979", 0.45, true, 4));
+            out.push(host("spark3", "http://spark3:7979", 0.8, false, 6));
+            let seen = at.saturating_sub(185_000);
+            let mac_hist = demo::history(60, seen, demo::mac);
+            out.push(HostView {
+                name: "mac".into(),
+                url: Some("http://mac:7979".into()),
+                online: false,
+                error: Some("timed out".into()),
+                last_seen: Some(seen),
+                telemetry: Some(demo::mac(seen as f64 / 1000.0, seen)),
+                history: mac_hist.samples.into(),
+                ..Default::default()
+            });
+        }
+    }
+    out
 }
 
 /// One synchronous round (two local samples so CPU% and tokens/s have a

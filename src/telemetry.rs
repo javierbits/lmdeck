@@ -867,6 +867,15 @@ pub mod demo {
             mem_pressure_pct: Some(22.0 + 4.0 * wave(t, 70.0, 0.3)),
             cpu_cores: 28,
             load: Some([3.1, 2.8, 2.5]),
+            gpus: vec![GpuTel {
+                index: 0,
+                name: "Apple M3 Ultra".into(),
+                temp_c: None,
+                power_w: Some(45.0 + 10.0 * wave(t, 40.0, 0.2)),
+                mem_used_gb: Some(mem_used * 0.4),
+                mem_total_gb: None, // unified
+                ..Default::default()
+            }],
             models: vec![ModelTel {
                 name: "qwen3-30b-a3b-mlx".into(),
                 engine: "mlx".into(),
@@ -884,7 +893,9 @@ pub mod demo {
 
     /// The local machine in demo mode.
     pub fn local(t: f64, at: u64) -> Telemetry {
-        spark("spark1", 0.1, t, at, true)
+        let mut tel = spark("spark-01.lab", 0.1, t, at, true);
+        tel.hostname = "spark-01.lab".into();
+        tel
     }
 
     /// Fills a history with the last `n` samples of a generator.

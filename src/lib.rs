@@ -13,6 +13,7 @@ pub mod engine;
 pub mod fabric;
 pub mod hardware;
 pub mod hosts;
+pub mod icons;
 pub mod index;
 pub mod models;
 pub mod ops;

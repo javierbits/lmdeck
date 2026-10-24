@@ -548,10 +548,21 @@ pub(super) fn triangle() -> crate::topology::Topology {
     use crate::topology::{TopoHost, TopoLink, Topology};
     let host = |key: &str, name: &str, local: bool| TopoHost {
         key: key.into(),
-        name: name.into(),
+        name: format!("{name}.lab"),
+        alias: Some(name.into()),
+        model: Some("DGX Spark".into()),
+        device_kind: "spark".into(),
         local,
         online: true,
-        gpu: Some("NVIDIA GB10".into()),
+        gpus: vec![crate::topology::TopoGpu {
+            index: 0,
+            name: "NVIDIA GB10".into(),
+            mem_total_gb: None,
+            temp_c: Some(52.0),
+            util_pct: Some(40.0),
+            power_w: Some(80.0),
+            ..Default::default()
+        }],
         mem_total_gb: Some(120.0),
         running: if local { vec!["qwen3-4b-gguf".into()] } else { vec![] },
         weights: vec!["Qwen/Qwen3-4B".into()],
@@ -583,12 +594,15 @@ pub(super) fn triangle() -> crate::topology::Topology {
         demo: false,
         controller: "local".into(),
         hosts: vec![host("local", "spark1", true), host("spark2", "spark2", false), host("spark3", "spark3", false)],
+        switches: vec![],
         links: vec![
             link(("local", "10.0.0.1"), ("spark2", "10.0.0.2"), vec!["nfs weights: qwen".into()], Some(true)),
             link(("spark2", "10.0.1.1"), ("spark3", "10.0.1.2"), vec![], Some(false)),
             link(("local", "10.0.2.1"), ("spark3", "10.0.2.2"), vec![], None),
         ],
+        segments: vec![],
         notes: vec![],
+        ..Default::default()
     }
 }
 
@@ -602,16 +616,14 @@ fn topology_tab_draws_boxes_cables_and_the_link_table() {
     assert!(text.contains("detecting fabric"), "{text}");
     a.topology = Some(triangle());
     let text = buffer_text(&render(&a, 140, 40));
-    for want in ["controller · spark1", "spark2", "spark3", "cx7 200G", "● busy", "✗ down", "spark1⇄spark3", "╭", "━"]
+    for want in
+        ["spark1.lab", "spark2.lab", "spark3.lab", "NVIDIA GB10", "DGX Spark", "nfs weights: qwen", "200G", "cx7", "━"]
     {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
-    for want in ["10.0.0.1", "UNREACHABLE", "unverified", "nfs weights: qwen", "ok 0.12 ms"] {
-        assert!(text.contains(want), "missing {want:?} in\n{text}");
-    }
-    // Too narrow for boxes: the table alone, no panic.
+    assert!(text.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)), "expected braille icon dots in\n{text}");
     let text = buffer_text(&render(&a, 60, 30));
-    assert!(text.contains("Topology") && !text.contains("╭─────"), "{text}");
+    assert!(text.contains("Topology"), "{text}");
 }
 
 fn rows() -> Vec<crate::tui::RunOnRow> {

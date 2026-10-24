@@ -1,31 +1,64 @@
 //! The controller's picture of the cluster: every host (with its telemetry,
-//! running models and weights), the links between them from
-//! [`crate::fabric::match_links`], and the management links from this
-//! machine to each `hosts.toml` URL. Served as `GET /api/topology`, drawn as
-//! an SVG on the web Hosts tab, a box diagram in the TUI, and printed by
-//! `lmdeck hosts topology [--json]`.
+//! GPUs, running models and weights), the L2 segments between them from
+//! [`crate::fabric::build_graph`] (cables and synthetic switches), and the
+//! management links from this machine to each `hosts.toml` URL. Served as
+//! `GET /api/topology`, drawn on the web Hosts tab and the TUI Topology tab,
+//! and printed by `lmdeck hosts topology [--json]`.
+//!
+//! The graph is fully dynamic: 1 host, 2 hosts on a cable, N hosts on a
+//! switch, mixed triangles + switches, dual rails. Nothing is hard-coded to a
+//! host count or shape.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::config::Config;
-use crate::fabric::{self, Fabric, Link, LinkKind};
+use crate::fabric::{self, Fabric, Graph, Link, LinkKind, Switch};
 use crate::hosts::{HostEntry, HostView, HostsFile, LOCAL};
 use crate::paths::Paths;
+use crate::telemetry::GpuTel;
 use crate::weights::Index;
+
+/// One GPU (or Apple chip) as shown on a topology node.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TopoGpu {
+    pub index: u32,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_total_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_used_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_c: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub util_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<f64>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TopoHost {
     /// `local` or the hosts.toml name (what links refer to).
     pub key: String,
-    /// What to show: this machine's `[node] name`, else the key.
+    /// Primary label: the machine's real hostname when known.
     pub name: String,
+    /// Alias from hosts.toml / `[node] name` when it differs from `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// Detectable model: "DGX Spark", "Mac14,13", …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Icon kind: `spark`, `mac`, `macstudio`, `pc`, `unknown`.
+    #[serde(default)]
+    pub device_kind: String,
     pub url: Option<String>,
     pub local: bool,
     pub online: bool,
     pub error: Option<String>,
-    pub gpu: Option<String>,
+    /// All GPUs / chips on the host (not just the first).
+    #[serde(default)]
+    pub gpus: Vec<TopoGpu>,
     pub mem_total_gb: Option<f64>,
     pub mem_used_gb: Option<f64>,
     pub temp_c: Option<f64>,
@@ -44,10 +77,17 @@ pub struct TopoHost {
 pub struct Topology {
     pub at: u64,
     pub demo: bool,
+    /// Which demo shape was used (`tri`, `duo`, `switch8`, `single`), when demo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demo_topo: Option<String>,
     /// The controller's key (`local`).
     pub controller: String,
     pub hosts: Vec<TopoHost>,
+    pub switches: Vec<Switch>,
     pub links: Vec<TopoLink>,
+    /// L2 segments (cables + switches) for clients that want the classification.
+    #[serde(default)]
+    pub segments: Vec<fabric::Segment>,
     pub notes: Vec<String>,
 }
 
@@ -70,7 +110,15 @@ impl Topology {
     }
 
     pub fn display(&self, key: &str) -> String {
-        self.host(key).map(|h| h.name.clone()).unwrap_or_else(|| key.to_string())
+        if let Some(h) = self.host(key) {
+            return h.name.clone();
+        }
+        self.switches.iter().find(|s| s.id == key).map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
+    }
+
+    /// Graph view for path lookups (placement / multi-node).
+    pub fn graph(&self) -> Graph {
+        Graph { segments: self.segments.clone(), switches: self.switches.clone(), links: self.raw_links() }
     }
 }
 
@@ -84,12 +132,75 @@ fn mgmt_of(url: &str) -> (String, Option<String>) {
     (kind.into(), Some(addr))
 }
 
+fn gpus_of(t: Option<&crate::telemetry::Telemetry>, fabric: Option<&Fabric>) -> Vec<TopoGpu> {
+    if let Some(t) = t {
+        if !t.gpus.is_empty() {
+            return t.gpus.iter().map(topo_gpu_from_tel).collect();
+        }
+    }
+    fabric
+        .map(|f| {
+            f.gpus
+                .iter()
+                .enumerate()
+                .map(|(i, g)| TopoGpu {
+                    index: i as u32,
+                    name: g.name.clone(),
+                    mem_total_gb: g.memory_gb,
+                    ..Default::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn topo_gpu_from_tel(g: &GpuTel) -> TopoGpu {
+    TopoGpu {
+        index: g.index,
+        name: g.name.clone(),
+        mem_total_gb: g.mem_total_gb,
+        mem_used_gb: g.mem_used_gb,
+        temp_c: g.temp_c,
+        util_pct: g.util_pct,
+        power_w: g.power_w,
+    }
+}
+
+/// `LMDECK_DEMO_TOPO`: `tri` (default), `duo`, `switch8`, `single`.
+pub fn demo_topo_name() -> String {
+    std::env::var("LMDECK_DEMO_TOPO")
+        .ok()
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| matches!(s.as_str(), "tri" | "duo" | "switch8" | "single" | "mix"))
+        .unwrap_or_else(|| "tri".into())
+}
+
 /// One host's fabric: this machine detects, others are asked; demo mode
-/// reads the built-in 3-Spark fixtures (this machine plays spark1).
+/// reads built-in fixtures (shape from [`demo_topo_name`]).
 pub fn fetch_fabric(k: &str, entry: Option<&HostEntry>, online: bool, demo: bool) -> Result<Fabric, String> {
     if demo {
-        let want = if k == LOCAL { "spark1" } else { k };
-        return fabric::fixtures::TRI
+        let shape = demo_topo_name();
+        if shape == "single" {
+            if k != LOCAL {
+                return Err("offline (demo)".into());
+            }
+            let mut f = fabric::fixtures::load(fabric::fixtures::TRI[0].1);
+            f.demo = true;
+            return Ok(f);
+        }
+        let items: &[(&str, &str)] = match shape.as_str() {
+            "duo" => &fabric::fixtures::DUO,
+            "switch8" => &fabric::fixtures::SWITCH8,
+            "mix" => &[
+                ("spark1", include_str!("../tests/fixtures/fabric/mix-spark1.json")),
+                ("spark2", fabric::fixtures::TRI[1].1),
+                ("spark3", fabric::fixtures::TRI[2].1),
+                ("spark4", include_str!("../tests/fixtures/fabric/mix-spark4.json")),
+            ],
+            _ => &fabric::fixtures::TRI,
+        };
+        let want = if k == LOCAL { items[0].0 } else { k };
+        return items
             .iter()
             .find(|(n, _)| *n == want)
             .map(|(_, t)| {
@@ -111,13 +222,12 @@ pub fn fetch_fabric(k: &str, entry: Option<&HostEntry>, online: bool, demo: bool
 
 /// Matches links between fabrics, then applies hosts.toml `[[link]]`
 /// overrides and `link_addr`.
-fn links_from(
+fn graph_from(
     file: &HostsFile,
     entries: &BTreeMap<String, HostEntry>,
     node: &str,
     with_fabric: &[(String, &Fabric)],
-) -> Vec<Link> {
-    // Overrides name hosts by hosts.toml name or by this machine's node name.
+) -> Graph {
     let overrides: Vec<crate::hosts::LinkOverride> = file
         .links
         .iter()
@@ -126,9 +236,12 @@ fn links_from(
             crate::hosts::LinkOverride { a: fix(&o.a), b: fix(&o.b), ..o.clone() }
         })
         .collect();
-    let mut links = fabric::match_links(with_fabric, &overrides);
-    for l in links.iter_mut() {
+    let mut g = fabric::build_graph(with_fabric, &overrides);
+    for l in g.links.iter_mut() {
         for end in [&mut l.a, &mut l.b] {
+            if end.host.starts_with("switch:") {
+                continue;
+            }
             if let Some(addr) = entries.get(&end.host).and_then(|e| e.link_addr.clone()) {
                 if l.kind.is_direct() {
                     end.ip = addr;
@@ -136,12 +249,17 @@ fn links_from(
             }
         }
     }
-    links
+    g
 }
 
 /// Links among just `keys` (for placement and multi-node planning), without
 /// telemetry or reachability checks.
 pub fn links_for(paths: &Paths, cfg: &Config, keys: &[String]) -> Vec<Link> {
+    graph_for(paths, cfg, keys).links
+}
+
+/// Full graph among `keys` (placement / multi-node use [`fabric::path_between`]).
+pub fn graph_for(paths: &Paths, cfg: &Config, keys: &[String]) -> Graph {
     let demo = crate::telemetry::demo_mode();
     let file = HostsFile::load(paths).unwrap_or_default();
     let entries: BTreeMap<String, HostEntry> = file.hosts.iter().map(|e| (e.name.clone(), e.clone())).collect();
@@ -159,7 +277,7 @@ pub fn links_for(paths: &Paths, cfg: &Config, keys: &[String]) -> Vec<Link> {
         jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
     });
     let refs: Vec<(String, &Fabric)> = fabrics.iter().map(|(k, f)| (k.clone(), f)).collect();
-    links_from(&file, &entries, &cfg.node_name(), &refs)
+    graph_from(&file, &entries, &cfg.node_name(), &refs)
 }
 
 /// What is using each link: NFS placements and multi-node runs that are up.
@@ -183,15 +301,50 @@ pub fn activity(paths: &Paths, hosts: &[TopoHost]) -> Vec<(String, String, Strin
     out
 }
 
+fn label_host(
+    v: &HostView,
+    node: &str,
+    fabric: Option<&Fabric>,
+    demo: bool,
+) -> (String, Option<String>, Option<String>, String) {
+    let hostname = fabric
+        .map(|f| f.hostname.clone())
+        .filter(|h| !h.is_empty())
+        .or_else(|| v.telemetry.as_ref().map(|t| t.hostname.clone()).filter(|h| !h.is_empty()));
+    let alias = if v.local {
+        let n = if demo { None } else { Some(node.to_string()) };
+        n.filter(|n| hostname.as_ref() != Some(n) && n != LOCAL)
+    } else {
+        Some(v.name.clone()).filter(|n| hostname.as_ref() != Some(n))
+    };
+    let name = hostname.clone().unwrap_or_else(|| if v.local { node.to_string() } else { v.name.clone() });
+    let model = fabric.and_then(|f| f.product.clone()).or_else(|| {
+        v.telemetry.as_ref().and_then(|t| {
+            if t.platform.contains("DGX Spark") {
+                Some("DGX Spark".into())
+            } else if t.platform.contains("Apple") {
+                Some(t.platform.clone())
+            } else {
+                None
+            }
+        })
+    });
+    let kind = fabric
+        .map(|f| f.device_kind.clone())
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| fabric::device_kind(model.as_deref(), &[], hostname.as_deref().unwrap_or(&v.name)));
+    (name, alias, model, kind)
+}
+
 /// Builds the topology. `views` come from the [`crate::hosts::Sampler`];
-/// `verify` pings each link from its `a` side (through that host's serve).
+/// `verify` pings each host↔host link from its `a` side.
 pub fn build(paths: &Paths, cfg: &Config, views: &[HostView], verify: bool) -> Topology {
     let demo = crate::telemetry::demo_mode();
+    let demo_topo = demo.then(demo_topo_name);
     let file = HostsFile::load(paths).unwrap_or_default();
     let entries: BTreeMap<String, HostEntry> = file.hosts.iter().map(|e| (e.name.clone(), e.clone())).collect();
     let node = cfg.node_name();
     let index = Index::fresh(paths, cfg, crate::weights::INDEX_TTL);
-    // Fabric per host, in parallel.
     let keys: Vec<String> = views.iter().map(|v| v.name.clone()).collect();
     let fabrics: Vec<Result<Fabric, String>> = std::thread::scope(|s| {
         let jobs: Vec<_> = keys
@@ -211,41 +364,41 @@ pub fn build(paths: &Paths, cfg: &Config, views: &[HostView], verify: bool) -> T
             if v.local { ("local".to_string(), None) } else { mgmt_of(v.url.as_deref().unwrap_or("")) };
         let weights =
             index.inventory(&v.name).map(|i| i.items.iter().map(|it| it.id.clone()).collect()).unwrap_or_default();
-        let name = if v.local {
-            if demo {
-                "spark1".to_string()
-            } else {
-                node.clone()
-            }
-        } else {
-            v.name.clone()
-        };
+        let fabric_err = f.as_ref().err().cloned();
+        let fabric = f.ok();
+        let (name, alias, model, device_kind) = label_host(v, &node, fabric.as_ref(), demo);
+        let gpus = gpus_of(t, fabric.as_ref());
         hosts.push(TopoHost {
             key: v.name.clone(),
             name,
+            alias,
+            model,
+            device_kind,
             url: v.url.clone(),
             local: v.local,
             online: v.online,
             error: v.error.clone(),
-            gpu: t.and_then(|t| t.gpus.first().map(|g| g.name.clone())),
+            gpus,
             mem_total_gb: t.map(|t| t.mem_total_gb).filter(|m| *m > 0.0),
             mem_used_gb: t.and_then(|t| t.mem_used_gb),
-            temp_c: t.and_then(|t| t.gpus.first().and_then(|g| g.temp_c).or(t.cpu_temp_c)),
+            temp_c: t.and_then(|t| t.gpus.iter().find_map(|g| g.temp_c).or(t.cpu_temp_c)),
             running: t.map(|t| t.models.iter().map(|m| m.name.clone()).collect()).unwrap_or_default(),
             weights,
-            fabric_error: f.as_ref().err().cloned(),
-            fabric: f.ok(),
+            fabric_error: fabric_err,
+            fabric,
             mgmt_kind,
             mgmt_addr,
         });
     }
     let with_fabric: Vec<(String, &Fabric)> =
         hosts.iter().filter_map(|h| h.fabric.as_ref().map(|f| (h.key.clone(), f))).collect();
-    let mut links = links_from(&file, &entries, &node, &with_fabric);
+    let mut graph = graph_from(&file, &entries, &node, &with_fabric);
     if verify && !demo {
         let checks: Vec<(bool, Option<f64>)> = std::thread::scope(|s| {
-            let jobs: Vec<_> = links
+            let jobs: Vec<_> = graph
+                .links
                 .iter()
+                .filter(|l| !l.a.host.starts_with("switch:") && !l.b.host.starts_with("switch:"))
                 .map(|l| {
                     let (from, to) = (l.a.host.clone(), l.b.ip.clone());
                     let entry = entries.get(&from).cloned();
@@ -266,61 +419,114 @@ pub fn build(paths: &Paths, cfg: &Config, views: &[HostView], verify: bool) -> T
                 .collect();
             jobs.into_iter().map(|j| j.join().unwrap_or((false, None))).collect()
         });
-        for (l, (ok, rtt)) in links.iter_mut().zip(checks) {
-            l.verified = Some(ok);
-            l.rtt_ms = rtt;
+        let mut i = 0;
+        for l in graph.links.iter_mut() {
+            if l.a.host.starts_with("switch:") || l.b.host.starts_with("switch:") {
+                continue;
+            }
+            if let Some((ok, rtt)) = checks.get(i) {
+                l.verified = Some(*ok);
+                l.rtt_ms = *rtt;
+            }
+            i += 1;
         }
     }
-    let busy = if demo { demo_activity(&links) } else { activity(paths, &hosts) };
-    let links: Vec<TopoLink> = links
-        .into_iter()
+    let busy = if demo { demo_activity(&graph.links) } else { activity(paths, &hosts) };
+    let links: Vec<TopoLink> = graph
+        .links
+        .iter()
+        .cloned()
         .map(|l| {
             let active = busy
                 .iter()
-                .filter(|(a, b, _)| l.involves(a) && l.involves(b) && a != b)
-                .filter(|(a, b, _)| fabric::best_link(std::slice::from_ref(&l), a, b).is_some())
+                .filter(|(a, b, _)| {
+                    // Activity between hosts: mark the cable, or every star edge of a shared switch.
+                    if l.involves(a) && l.involves(b) && a != b {
+                        return true;
+                    }
+                    if let Some(sw) =
+                        l.a.host
+                            .starts_with("switch:")
+                            .then_some(&l.a.host)
+                            .or_else(|| l.b.host.starts_with("switch:").then_some(&l.b.host))
+                    {
+                        // Host A and B both on this switch segment?
+                        return graph.segments.iter().any(|s| {
+                            s.switch.as_ref().map(|x| &x.id) == Some(sw)
+                                && s.members.iter().any(|m| &m.host == a)
+                                && s.members.iter().any(|m| &m.host == b)
+                        }) && (l.involves(a) || l.involves(b));
+                    }
+                    false
+                })
                 .map(|(_, _, why)| why.clone())
-                .collect();
+                .collect::<Vec<_>>();
+            let mut active = active;
+            active.sort();
+            active.dedup();
             TopoLink { link: l, active }
         })
         .collect();
-    // Only the best link of a pair carries the activity.
-    let mut links = links;
-    let raw: Vec<Link> = links.iter().map(|l| l.link.clone()).collect();
-    for l in links.iter_mut() {
-        let best = fabric::best_link(&raw, &l.link.a.host, &l.link.b.host);
-        if best != Some(&l.link) {
-            l.active.clear();
-        }
-    }
     let mut notes = vec![];
     if demo {
-        notes.push("demo data (LMDECK_DEMO=1): a simulated 3-Spark triangle from built-in fixtures".into());
+        notes.push(format!(
+            "demo data (LMDECK_DEMO=1, LMDECK_DEMO_TOPO={}): simulated fabric from built-in fixtures",
+            demo_topo.as_deref().unwrap_or("tri")
+        ));
+    }
+    if hosts.len() < 2 {
+        notes.push(
+            "only this machine is in the topology — add peers with `lmdeck host add <name> <url>` \
+             to see cables, switches and run-on / multi-node options"
+                .into(),
+        );
     }
     for h in &hosts {
         if let Some(f) = &h.fabric {
-            if !f.has_cx7() && !f.nics.is_empty() {
+            if !f.has_cx7() && !f.nics.is_empty() && hosts.len() > 1 {
                 notes.push(format!("{}: no ConnectX-7 ports detected", h.name));
             }
         }
     }
-    Topology { at: crate::telemetry::now_ms(), demo, controller: LOCAL.into(), hosts, links, notes }
+    Topology {
+        at: crate::telemetry::now_ms(),
+        demo,
+        demo_topo,
+        controller: LOCAL.into(),
+        hosts,
+        switches: graph.switches,
+        links,
+        segments: graph.segments,
+        notes,
+    }
 }
 
 fn demo_activity(links: &[Link]) -> Vec<(String, String, String)> {
-    // Demo only: pretend a 2-node run spans local↔spark2 over their cable.
-    links
-        .iter()
-        .filter(|l| l.kind == LinkKind::Cx7 && l.involves(LOCAL) && l.involves("spark2"))
-        .map(|_| (LOCAL.to_string(), "spark2".to_string(), "cluster: demo multi-node run".to_string()))
-        .collect()
+    // Prefer a CX7 cable involving local; else the first CX7 star.
+    if let Some(l) = links.iter().find(|l| {
+        l.kind == LinkKind::Cx7
+            && l.involves(LOCAL)
+            && !l.a.host.starts_with("switch:")
+            && !l.b.host.starts_with("switch:")
+    }) {
+        let other = if l.a.host == LOCAL { l.b.host.clone() } else { l.a.host.clone() };
+        return vec![(LOCAL.to_string(), other, "cluster: demo multi-node run".into())];
+    }
+    if let Some(l) = links.iter().find(|l| l.kind == LinkKind::Cx7 && l.involves(LOCAL)) {
+        let other = if l.a.host == LOCAL { l.b.host.clone() } else { l.a.host.clone() };
+        return vec![(LOCAL.to_string(), other, "cluster: demo multi-node run".into())];
+    }
+    vec![]
 }
 
-/// `lmdeck hosts topology`: one block per host, then the links.
+/// `lmdeck hosts topology`: one block per host, then switches, then the links.
 pub fn render_text(t: &Topology) -> String {
     let mut s = String::new();
     if t.demo {
-        s.push_str("DEMO DATA — simulated 3-Spark triangle (LMDECK_DEMO=1)\n\n");
+        s.push_str(&format!(
+            "DEMO DATA — simulated topology ({}) (LMDECK_DEMO=1)\n\n",
+            t.demo_topo.as_deref().unwrap_or("tri")
+        ));
     }
     s.push_str("hosts\n");
     for h in &t.hosts {
@@ -335,14 +541,38 @@ pub fn render_text(t: &Topology) -> String {
             (k, Some(a)) => format!("{k} {a}"),
             (k, None) => k.to_string(),
         };
+        let label = match &h.alias {
+            Some(a) => format!("{} · {a}", h.name),
+            None => h.name.clone(),
+        };
+        let gpu = if h.gpus.is_empty() {
+            "-".into()
+        } else if h.gpus.len() == 1 {
+            h.gpus[0].name.clone()
+        } else {
+            format!("{}× {}", h.gpus.len(), h.gpus[0].name)
+        };
         s.push_str(&format!(
-            "  {:<10} {:<8} {:<14} {:<12} {}\n",
-            h.name,
+            "  {:<22} {:<8} {:<22} {:<12} {}{}\n",
+            label,
             state,
-            h.gpu.as_deref().unwrap_or("-"),
+            gpu,
             mem,
-            mgmt
+            mgmt,
+            h.model.as_deref().map(|m| format!("  [{m}]")).unwrap_or_default()
         ));
+        if h.gpus.len() > 1 {
+            for g in &h.gpus {
+                s.push_str(&format!(
+                    "             gpu{} {}{}{}{}\n",
+                    g.index,
+                    g.name,
+                    g.mem_total_gb.map(|m| format!(" {m:.0}GB")).unwrap_or_default(),
+                    g.temp_c.map(|c| format!(" {c:.0}°C")).unwrap_or_default(),
+                    g.util_pct.map(|u| format!(" {u:.0}%")).unwrap_or_default()
+                ));
+            }
+        }
         if !h.running.is_empty() {
             s.push_str(&format!("             running: {}\n", h.running.join(", ")));
         }
@@ -365,6 +595,12 @@ pub fn render_text(t: &Topology) -> String {
             s.push_str(&format!("             fabric: {e}\n"));
         }
     }
+    if !t.switches.is_empty() {
+        s.push_str("\nswitches\n");
+        for sw in &t.switches {
+            s.push_str(&format!("  {:<22} {:<8} {:>2} ports  {}\n", sw.name, sw.kind.as_str(), sw.ports, sw.subnet));
+        }
+    }
     s.push_str("\nlinks\n");
     if t.links.is_empty() {
         s.push_str("  (none matched: no shared subnets between hosts' fabrics)\n");
@@ -377,7 +613,7 @@ pub fn render_text(t: &Topology) -> String {
             None => "unverified".into(),
         };
         s.push_str(&format!(
-            "  {:<10} {:<16} ⇄ {:<16} {:<10} {:<9} {:<6} {}{}{}\n",
+            "  {:<10} {:<22} ⇄ {:<22} {:<10} {:<18} {:<6} {}{}{}\n",
             k.kind.as_str(),
             format!("{} {}", t.display(&k.a.host), k.a.ip),
             format!("{} {}", t.display(&k.b.host), k.b.ip),
