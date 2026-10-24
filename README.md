@@ -72,6 +72,13 @@ pills, rounded panels, and a status bar with key hints.
   minute, heat-coloured history columns, gauges and a few minutes of history
   for the selected host, and a detail strip with where each number came from.
   Offline hosts are greyed out with the error and when they were last seen.
+  `←→` picks a model running on that host; `x` stops it, `l` shows its log,
+  and `↵` / `s` start or switch the Deck tab's selected recipe **on that
+  host** (see [docs/MULTIHOST.md](docs/MULTIHOST.md)).
+- **Topology**: the hosts as boxes with the ConnectX-7 cables between them
+  (auto-detected, or `[[link]]` in hosts.toml), LAN / Tailscale fallbacks,
+  the management links from this machine, and which links are busy carrying
+  NFS weights or a multi-node run.
 - **Machine**: platform, CPU and memory gauges, the memory held by running
   recipes, per-GPU memory, and which engines and tools are installed.
 - **Sources**: the deck, the built-ins and every recipe source, with recipe
@@ -86,6 +93,7 @@ Quitting leaves servers running.
 | `↑ ↓` / `j k`, `PgUp PgDn`, `g G` | move |
 | `↵` / `space` | start or stop the selected recipe |
 | `s` | switch: stop the others, start this one |
+| `o` | run on another host: a picker with, per host, where the weights come from (here / read-only NFS over CX7), the link, a load-time estimate and the fit on that host |
 | `x` | stop |
 | `p` | pull the weights, or update a wrapped recipe's checkout (runs in the background; the log pane shows progress) |
 | `u` | take a `⬆` upstream update; for a pinned wrapped recipe this also moves the pin (`pull --latest`) |
@@ -93,7 +101,7 @@ Quitting leaves servers running.
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
-| `1 2 3 4`, `tab` | deck · hosts · machine · sources (on Hosts, `↑ ↓` picks a host) |
+| `1 2 3 4 5`, `tab` | deck · hosts · topology · machine · sources (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
 | `t` | next theme (saved to config) |
 | `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
@@ -182,6 +190,18 @@ JSON API are compiled into the binary, so nothing is fetched from a CDN.
 
 ![web dashboard with the live log drawer](docs/screenshots/web-logs.png)
 
+Across machines (details in [docs/MULTIHOST.md](docs/MULTIHOST.md)): host cards
+have `≡` logs and `■` stop per model and a **run here** picker; recipe cards
+show **⛁ weights on: …**, `×N nodes` with the start order for multi-node
+recipes, and a **Run on another host…** dropdown that opens the plan (NFS
+steps, link, load estimate, fit) before anything starts; a **Topology**
+section draws the hosts and their CX7 / LAN / Tailscale links as an SVG.
+
+| | |
+|---|---|
+| ![run on another host: the NFS plan (single-VM test rig)](docs/screenshots/web-run-on.png) | ![topology, LMDECK_DEMO=1 data](docs/screenshots/web-topology-demo.png) |
+| ![host cards with remote stop / logs (test rig)](docs/screenshots/web-hosts-controls.png) | ![TUI topology tab, LMDECK_DEMO=1 data](docs/screenshots/tui-topology-demo.png) |
+
 > [!WARNING]
 > **Binding to anything other than localhost (for example `--host 0.0.0.0`)
 > lets anyone who can reach that port start and stop servers and download
@@ -250,12 +270,21 @@ lmdeck host remove mac
 
 Design:
 
-- **Pull, read-only.** The local instance polls each host's
+- **Pull.** The local instance polls each host's
   `GET /api/telemetry?history=1&since=…` in parallel, every 2 s, with a
-  1.5 s timeout. It only reads; remote start/stop isn't proxied. The
-  first poll fetches the remote history, after that only the new samples.
+  1.5 s timeout. The first poll fetches the remote history, after that only
+  the new samples.
+- **Remote control.** Start, stop, switch and logs on another host go to
+  that host's own `lmdeck serve`: `lmdeck use|switch|stop|logs … --on spark2`,
+  the TUI Hosts tab, or the dashboard's host cards. A host only runs recipes
+  it has by name unless it sets `[serve] accept_recipes = true`.
+- **Multi-host** (weights on another host, running a model where its weights
+  aren't, `[[nodes]]` recipes across Sparks, CX7 detection, topology): see
+  **[docs/MULTIHOST.md](docs/MULTIHOST.md)**.
 - **`hosts.toml`** lives in the config dir (`~/.config/lmdeck/hosts.toml`):
-  `[[host]] name / url / token`. lmdeck writes it with mode `0600` because
+  `[[host]] name / url / token` (or `token_env = "VAR"`, or
+  `LMDECK_HOST_TOKEN_<NAME>` in the environment), optional `link_addr`, and
+  `[[link]]` overrides. lmdeck writes it with mode `0600` because
   it holds tokens. It's re-read every round, so edits apply without a
   restart. Keep it out of git.
 - **Tokens** go out as `Authorization: Bearer <token>`, per host. A wrong
@@ -305,7 +334,10 @@ column and Machine panel there still describe that VM.
 | `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
 | `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
-| `lmdeck logs <ref> [-n N]` | Prints the tail of the server log. |
+| `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
+| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. `--dry-run` prints the plan. |
+| `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
+| `lmdeck hosts topology [--json] [--no-verify]` | Hosts and the links between them: CX7 cables, LAN, Tailscale, with a ping / TCP check. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
 | `lmdeck recipe add <ref\|file\|url> [--name N] [--force]` | Copies a recipe into your deck as TOML. |
 | `lmdeck recipe list [--source S]` / `show <ref> [--toml]` / `run <ref>` / `remove <name>` | Lists, inspects, runs or removes recipes. `run` starts a recipe without adding it to the deck. |
@@ -315,7 +347,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
 | `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |
 | `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
-| `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. |
+| `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. Off loopback every `/api` route but `/api/health` needs the token (reads too), and a state-changing request from a non-loopback peer without a configured token is refused with 403. Token: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
 (`mine/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from

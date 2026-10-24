@@ -63,8 +63,8 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - `tui`, `serve`
 - **Hardware and doctor** (`src/hardware.rs`, `src/compat.rs`): detects GB10, Apple Silicon, NVIDIA, or CPU-only, plus memory, compute capability, and installed engines. Produces a fit table for each recipe.
 - **TUI** (`src/tui/`, ratatui + crossterm): runs on a bare `lmdeck` in a TTY. `--plain` gives the old table output.
-  - Tabs: Deck, Hosts, Machine, Sources.
-  - Keys: `j/k`, Enter (start/stop), `s` switch, `x` stop, `p` pull, `l` logs, `/` search, `f` fits, `a` all, `t` cycle theme, `T` theme picker, `?` help, `q` quit.
+  - Tabs: Deck, Hosts, Topology, Machine, Sources.
+  - Keys: `j/k`, Enter (start/stop), `s` switch, `o` run on another host, `x` stop, `p` pull, `l` logs, `/` search, `f` fits, `a` all, `t` cycle theme, `T` theme picker, `?` help, `q` quit.
 - **Web dashboard** (`src/web.rs`, `src/web/`): `lmdeck serve [--host 127.0.0.1] [-p 7979] [--token]`.
   - A single page embedded in the binary.
   - JSON API: `/api/snapshot|recipes|status|doctor|sources|logs|telemetry|hosts|themes`, plus POST `start|switch|stop|pull|theme`.
@@ -75,12 +75,18 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - On macOS it uses `vm_stat` and `sysctl`. `powermetrics` is used only with `LMDECK_POWERMETRICS=1` and `sudo -n`.
   - `hosts.toml` is stored with mode 0600. Polling is parallel with a 1.5 s timeout and Bearer tokens. Offline hosts are shown greyed out with their last-seen time.
   - `LMDECK_DEMO=1` turns on clearly labelled synthetic data, used for screenshots.
+- **Multi-host** (`src/ops.rs`, `src/placement.rs`, `src/cluster.rs`, `src/weights.rs`, `src/fabric.rs`, `src/topology.rs`; user doc `docs/MULTIHOST.md`):
+  - Remote control: `use|switch|stop|logs --on HOST`, TUI Hosts tab (`←→` model, `↵`/`s`/`x`/`l`), web host cards (`≡`/`■`, run here). Proxied through `/api/hosts/<h>/…` with per-host tokens (`token`, `token_env`, `LMDECK_HOST_TOKEN_<NAME>`). Serve token: `--token`, `LMDECK_TOKEN`, `[serve] token_env`. Non-loopback bind: every `/api` but health needs the token, reads included. Unauthenticated mutation from a non-loopback peer: 403. `[serve] accept_recipes` gates `POST /api/run` (off by default).
+  - Weights: each serve indexes its HF cache + models dir (`/api/weights`); the controller merges (60 s cache). `lmdeck weights`, "⛁ weights on" in list/cards/details, `⛁` in the TUI dl column.
+  - Run-on (`--on`, TUI `o`, web dropdown): the fit check uses the run host; load estimate from size / link speed. **No copy mode exists.** Weights elsewhere → Mia's `WORKER_WEIGHTS=nfs`: read-only `/etc/exports` line + `sudo -n exportfs -ra` only with `[weights] allow_export = true` (else printed), `docker volume` type nfs, `test -f`/`find -L` preflight, mount at `/root/.cache/huggingface:ro`, `HF_HUB_OFFLINE=1`. Docker recipes with HF-cache weights only. No CX7 link → refused unless `--allow-slow-link` (loud warning).
+  - Multi-node `[[nodes]]` recipes: ordered start with readiness gates, rollback on failure, reverse stop, aggregate + per-node status, `logs --node`. Placeholders `{head_addr} {node_addr} {ifname} {hca} {gid_index} {weights_mount} …` mirror lmswitch `vllm-dual` (NCCL ifname/HCA/GID, compile caches off NFS). `examples/vllm-ray-2spark.toml` is marked UNTESTED.
+  - CX7 detection (`/api/fabric`, no sudo): `ip -j`, `/sys/class/net`, mlx5 driver, RDMA devices, RoCE v2 GID index; peers matched by shared small subnet (3-Spark triangle = 3 links), LAN/Tailscale fallback, `link_addr` and `[[link]]` overrides. Views: `lmdeck hosts topology [--json]`, TUI tab 3, web SVG.
 - **Themes** (`src/theme/`, `scripts/import-omarchy-themes.py`):
   - 24 themes: `omp` (the default), the 22 Omarchy themes Javier listed, and Starship.
   - Colours are taken from `omacom/omarchy` `themes/<slug>/colors.toml` at commit 967bbdd. The repo moved there from basecamp/omarchy.
   - Contrast is tested. The theme is saved in `~/.config/lmdeck/config.toml`. `--theme` and `LMDECK_THEME` override it.
   - Omarchy's MIT licence is in `licenses/omarchy-MIT.txt`.
-- **Tests:** 142 (118 unit, 16 `tests/cli.rs`, 8 `tests/web.rs`). Update checks use local bare repos as remotes: branch and pinned recipes going behind/newer, `pull`/`pull --latest` clearing it, a removed remote → unknown, TTL 0, the env switch, the TUI badge and `u`, and the web badge + pull. No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
+- **Tests:** 172 (142 unit, 17 `tests/cli.rs`, 5 `tests/multihost.rs` driving real `lmdeck serve` processes, 8 `tests/web.rs`). Update checks use local bare repos as remotes: branch and pinned recipes going behind/newer, `pull`/`pull --latest` clearing it, a removed remote → unknown, TTL 0, the env switch, the TUI badge and `u`, and the web badge + pull. No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
 - **Docs:** the README covers install, quick start, TUI, themes, the web dashboard, hosts and telemetry, commands, sources, the recipe format, engines, TensorFold, wrapped recipes, and files. This file is also kept in the repo as `docs/HANDOVER.md`. Screenshots are in `docs/screenshots/`.
 
 ## Files and dirs at runtime
@@ -100,6 +106,8 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
 - The TUI has only been driven in a simulated terminal, never a real one.
 - Update checks: tested only against local bare repos. Real GitHub over HTTPS/SSH, the timeout on a hung network, and private repos that need credentials (they should show `unknown`, never prompt) are unverified. The web badge/button was checked through the API and a JS syntax check, not visually.
 
+- Multi-host: tested on one VM only (three `lmdeck serve` homes on loopback, hand-written `[[link]]` entries, python stub servers, real small downloaded weights). Never run: real CX7 cabling or detection on a Spark (the fixtures are constructed, not captured), NFS exports, `exportfs`, docker NFS volumes and the preflight, Ray/vLLM across nodes, `examples/vllm-ray-2spark.toml`, the load-time estimate against reality, and the non-loopback 403 path (no second interface here).
+
 ## Suggested next steps (rough priority)
 1. **Real-hardware pass on a Spark:**
    - `cargo install --git https://github.com/jvr0x/lmdeck`
@@ -108,8 +116,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
    - Start one llama.cpp recipe and one vLLM recipe.
    - Fix whatever doesn't match reality.
 2. **Same pass on the Mac:** MLX, LM Studio, TensorFold.
-3. **Remote control from the Hosts view:** proxy start, stop, and switch to remote `lmdeck serve` instances. The view is watch-only today.
-4. **Multi-node recipes** (`nodes = 2`) across two Sparks. Currently they are listed but refused.
+3. **Multi-host on real Sparks:** check CX7 detection against `lmdeck hosts topology`, one run-on over NFS (`--on`, with `allow_export` off first), then the UNTESTED vLLM+Ray example.
 4b. **Run the Ornith wrapper on a Spark** (`lmdeck use ornith-1.5-122b-tensorfold`), check the detached/container/logs path, and tune `ready_timeout`.
 4c. **Convert `jvr0x/ai-models` to TOML** if Javier wants a default source again (that repo needs his OK; don't touch lmswitch).
 5. **llama-swap config export** (`lmdeck export llama-swap`).

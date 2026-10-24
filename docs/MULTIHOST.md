@@ -1,0 +1,225 @@
+# Multi-host lmdeck: remote control, weights, run-on, multi-node, topology
+
+lmdeck runs one `lmdeck serve` on every machine (DGX Sparks, a Mac). One
+machine, the **controller**, lists the others in `~/.config/lmdeck/hosts.toml`
+and drives them through their `serve` API. The controller is wherever you run
+`lmdeck` / `lmdeck tui` / the dashboard. It has no special install.
+
+> **Status: UNTESTED on real hardware.** Everything here was built and tested
+> on a CPU-only Linux VM. Remote control, weights indexing, the run-on planner
+> and multi-node ordering were exercised end to end against real
+> `lmdeck serve` processes on that one VM (the "rig" below), with stub
+> servers instead of inference engines. CX7 detection is tested against
+> fixtures written to look like a Spark's `ip -j addr`, `/sys/class/net` and
+> RDMA layout; they were **not** captured from a real Spark. NFS exports,
+> docker NFS volumes, Ray and vLLM were never run.
+
+What this mirrors (read, not modified, not copied):
+
+- **Mia's `WORKER_WEIGHTS=nfs`** (MiaAI-Lab Ornith TensorFold scripts): the
+  weights live once on their home Spark; the other Spark mounts the Hugging
+  Face cache read-only over the CX7 link as a docker NFS volume at
+  `/root/.cache/huggingface`, after a `test -f` / `find -L` preflight.
+- **lmswitch's `vllm-dual`** (`jvr0x/lmswitch`, read only): CX7 IPs as
+  `master_addr` / `worker_ip`, NCCL pinned to the CX7 interface
+  (`NCCL_SOCKET_IFNAME`), RDMA device (`NCCL_IB_HCA`) and RoCE GID index
+  (`NCCL_IB_GID_INDEX`), and per-node compile caches kept **off** NFS.
+
+## 1. Remote control
+
+```sh
+# on each machine (LAN / Tailscale address, a token is generated if you don't give one)
+lmdeck serve --host 100.101.102.103 --token "$(openssl rand -hex 16)"
+# on the controller
+lmdeck host add spark2 http://spark2:7979 --token <that token>
+```
+
+| where | how |
+|---|---|
+| CLI | `lmdeck start <recipe> --on spark2`, `lmdeck switch <recipe> --on spark2`, `lmdeck stop <recipe> --on spark2`, `lmdeck logs <recipe> --on spark2 [-n 200]` |
+| TUI, Hosts tab (`2`) | `↑↓` host, `←→` model on that host, `↵`/space start the Deck tab's selected recipe there, `s` switch to it there, `x` stop the selected model, `l` its logs (fetched through that host's serve, polled every 2 s) |
+| web | host cards: `≡` logs and `■` stop per model, **run here** picker; recipe cards: **Run on another host…** |
+
+Every call goes to that host's own `lmdeck serve`
+(`/api/hosts/<host>/{start,stop,switch}/<recipe>` on the controller proxies
+it). A host only runs recipes it already has by name, unless its config has
+`[serve] accept_recipes = true`, which lets a controller upload a recipe
+(`POST /api/run`). A recipe is a command line, so that is off by default.
+
+### Tokens
+
+Per host in `hosts.toml`, first match wins:
+
+1. `token = "…"` (the file is written `0600`),
+2. `token_env = "MY_VAR"`, the name of an environment variable,
+3. `LMDECK_HOST_TOKEN_<NAME>` (name upper-cased, `-` and `.` become `_`).
+
+On the serving side: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`.
+Tokens are never written to the repo or logs.
+
+### Auth rules (`lmdeck serve`)
+
+- **Bind defaults stay safe.** `127.0.0.1` by default. Binding anything
+  else without a token generates one and prints it.
+- **Reads.** On loopback, reads need no token (the Host header must be
+  localhost, against DNS rebinding). On any other bind, every `/api` route
+  except `/api/health` needs the token, **reads included**: telemetry, logs
+  and weights paths say a lot about a machine. Send
+  `Authorization: Bearer <token>` (or `?token=` for EventSource).
+- **Mutations** need `X-Lmdeck: 1` (a cross-site form can't send it), and
+  **a state-changing request from a non-loopback peer without a configured
+  token is refused (403)** whatever the bind. This last rule is defense in
+  depth; its non-loopback path is not covered by an integration test (the
+  test machine has no second interface).
+- No TLS of its own: use Tailscale, a VPN, or an HTTPS reverse proxy.
+
+## 2. Where the weights live
+
+Every `serve` indexes its own weights (Hugging Face cache snapshots and files
+under `models_dir`) and reports them at `GET /api/weights`. The controller
+merges them (cached 60 s):
+
+```sh
+lmdeck weights [--refresh] [--json]
+```
+
+They show up as **weights on: spark2** on web cards, `⛁spark2` in the TUI
+list (the `dl` column shows `⛁` when the weights are only on another host)
+and `on ⛁ spark2 · home spark2` in the TUI details. The **home** is the host
+that serves them to others.
+
+## 3. Choosing where a model runs (`--on`)
+
+```sh
+lmdeck start qwen3.6-35b-a3b-nvfp4-spark --on spark1 --dry-run   # show the plan
+lmdeck start qwen3.6-35b-a3b-nvfp4-spark --on spark1
+```
+
+Also the TUI picker (`o` on the Deck tab) and the web **Run on another host…**
+dropdown. Both show, per host: weights here / `⇄ nfs ro` / no weights /
+can't, the link, a load-time estimate (`size / link speed`, e.g. "≈12 s to
+stream 23.5G at 200 Gb/s"), and the fit check against **the run host's**
+memory.
+
+**Weights are never copied.** No rsync, no copy, no tmpfs: there is no such
+mode. If the weights are on another host, the plan is Mia's
+`WORKER_WEIGHTS=nfs`:
+
+1. On the home: `echo '<hf home> <run host CX7 IP>(ro,no_subtree_check)' | sudo tee -a /etc/exports`
+   and `sudo exportfs -ra`. lmdeck **only runs these** when the home's
+   config has `[weights] allow_export = true` (and then with `sudo -n`, so a
+   password prompt fails instead of hanging). Otherwise it prints them and
+   stops. It never edits `/etc/exports` silently, and skips the line if an
+   equivalent export is already there.
+2. On the run host: `docker volume create --driver local --opt type=nfs --opt device=:<hf home> --opt o=addr=<home CX7 IP>,nfsvers=4.2,ro,… lmdeck-hf-<home>`.
+3. Preflight inside the image, through the volume:
+   `test -f …/snapshots/<rev>/config.json` and `find -L …/snapshots/<rev> -type f`.
+4. The container starts with the volume at `/root/.cache/huggingface:ro`
+   and `HF_HUB_OFFLINE=1`.
+
+This works for Docker recipes (vLLM, SGLang, LMDeploy in Docker). For a
+native engine, or weights under `models_dir` rather than the HF cache, the
+plan refuses and says to run on the home or mount by hand.
+
+**No ConnectX-7 link, no streaming.** Without a CX7 link between the two
+hosts the plan is refused. `--allow-slow-link` (or the web/TUI equivalent)
+allows LAN / Tailscale and adds a loud warning.
+
+## 4. Multi-node recipes (`[[nodes]]`)
+
+One recipe, several machines. Each `[[nodes]]` entry is a command for one
+host (`host = "local"` or a hosts.toml name), with exactly one
+`role = "head"`. lmdeck:
+
+- starts them **in order** (`[cluster] order = "head-first"` by default),
+  waiting for each node's **readiness gate** before the next: `ready_port`
+  answers on TCP if set; the last node, when it is the head, serves
+  `/v1/models`; otherwise the node is still running after `ready_delay`
+  seconds (default 3);
+- stops them in **reverse** order, and if a node fails to come up, stops the
+  ones already started and shows that node's log;
+- reports one aggregate status and per-node status; `lmdeck logs <recipe> --node w1` reads one node's log;
+- fills fast-link facts into each node's command: `{head_addr}`,
+  `{node_addr}`, `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,
+  `{image}`, `{head_port}`, `{node}`, `{rank}`, `{nodes}`;
+- is **engine-agnostic**: the commands decide what runs (Ray + vLLM, SGLang,
+  anything).
+
+Both UIs show it as one recipe: `×2` / `×2 nodes`, a node list with each
+node's host and status, and the cluster error if any. Run-on doesn't apply
+(the recipe says where each node runs).
+
+`examples/vllm-ray-2spark.toml` is a 2-Spark vLLM + Ray example.
+**UNTESTED**: nobody has run it on real Sparks. It follows lmswitch's
+`vllm_dual_ray` sequence and NCCL wiring and Mia's NFS weights, and keeps the
+vLLM / torch compile caches on each node's local disk.
+
+## 5. CX7 auto-detect and topology
+
+Each serve answers `GET /api/fabric` with its NICs, read-only and without
+sudo: `ip -j addr` / `ip -j link` (fallback `/sys/class/net`), speed,
+operstate, MTU, driver (`mlx5_core`), RDMA devices from
+`/sys/class/net/<if>/device/infiniband`, `rdma -j link` if present, and the
+RoCE v2 IPv4 GID index. `ibv_devices` and `lldpctl` are used when installed.
+Missing tools are listed, not errors.
+
+The controller matches peers: two addresses in the same small subnet (/24 or
+narrower) on CX7 ports (mlx5 + RDMA) are a direct cable. A **3-Spark
+triangle** has one subnet per cable, so it comes out as three links. Shared
+LAN subnets and Tailscale (100.64/10) are the slower fallback. Links are
+verified with a ping / TCP check unless `--no-verify`.
+
+Overrides in `hosts.toml` win over detection:
+
+```toml
+[[host]]
+name = "spark2"
+url = "http://spark2:7979"
+token_env = "SPARK2_TOKEN"
+link_addr = "10.10.12.2"     # this host's CX7 address for every peer
+
+[[link]]                     # one pair, when detection can't see it
+a = "local"
+b = "spark2"
+a_addr = "10.10.12.1"
+b_addr = "10.10.12.2"
+a_ifname = "enp1s0f0np0"
+a_hca = "rocep1s0f0"
+a_gid_index = 3
+gbps = 200
+kind = "cx7"                 # or lan / tailscale
+```
+
+Views:
+
+- `lmdeck hosts topology [--json] [--no-verify]`
+- TUI tab `3` **Topology**: host boxes, CX7 cables between them (`● busy`
+  when NFS weights or a cluster use them), the management bus from the
+  controller, a link table and notes.
+- Web dashboard **Topology** section: an SVG (controller on top, CX7 thick,
+  LAN dashed, management dotted, busy links animated, unreachable red) and
+  the same link table.
+
+`LMDECK_DEMO=1` draws a simulated 3-Spark triangle plus an offline Mac from
+built-in fixtures, labelled **DEMO DATA** everywhere.
+
+## Screenshots
+
+Taken on the single-VM rig (three `lmdeck serve` instances, `spark1`
+controlling `spark2` and `spark3`; their `[[link]]` entries were written by
+hand over loopback addresses, so the "cx7 200G" labels there are **not**
+real CX7 cables) unless marked DEMO DATA.
+
+| | |
+|---|---|
+| ![](screenshots/tui-hosts-controls.png) | TUI Hosts tab on spark2: its two running stub servers, `x stop · l logs`, `↵ run <deck pick> here`. |
+| ![](screenshots/tui-run-on.png) | TUI run-on picker (`o`): Qwen3 0.6B's weights are on spark2, so spark1 and spark3 would mount them read-only over NFS. |
+| ![](screenshots/tui-multinode.png) | A 2-node recipe (python stubs) running: head on this machine, worker on spark2, started in order. |
+| ![](screenshots/tui-weights-on.png) | Weights on other hosts: `⛁spark2` / `⛁spark3` in the list, `on ⛁ spark2 · home spark2` in details. Real downloaded files. |
+| ![](screenshots/tui-topology-demo.png) | TUI Topology tab, **DEMO DATA** (simulated triangle). |
+| ![](screenshots/web-run-on.png) | Web run-on dialog: the full NFS plan for running on spark1. Nothing runs until **Start there**. |
+| ![](screenshots/web-hosts-controls.png) | Web host cards with per-model logs / stop and **run here**. |
+| ![](screenshots/web-weights-on.png) | Web card with **weights on: spark2** and the run-on dropdown. |
+| ![](screenshots/web-multinode-card.png) | Web card for the 2-node stub: `×2 nodes`, start order and per-node status. |
+| ![](screenshots/web-topology-rig.png) | Web topology of the rig (hand-written loopback links, busy link to spark2 carries the 2-node stub). |
+| ![](screenshots/web-topology-demo.png) | Web topology, **DEMO DATA**: 3-Spark CX7 triangle plus an offline Mac. |
