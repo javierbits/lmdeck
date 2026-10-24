@@ -586,63 +586,70 @@ function openRemoteLogs(host, name){
 
 // ---- topology ----
 function topoSvg(t){
-  const n = t.hosts.length, W = 960, H = n <= 2 ? 250 : 400, BW = 210, BH = 104;
-  const cx = W / 2, cy = n <= 2 ? 125 : 205, rx = n <= 2 ? 300 : 330, ry = n <= 2 ? 0 : 135;
-  const ctl = Math.max(0, t.hosts.findIndex(h => h.key === t.controller));
-  const order = [ctl, ...t.hosts.map((_, i) => i).filter(i => i !== ctl)];
-  const pos = {};
-  order.forEach((hi, k) => {
-    const a = n <= 2 ? Math.PI * (k === 0 ? 1 : 0) : -Math.PI / 2 + (2 * Math.PI * k) / n;
-    pos[t.hosts[hi].key] = [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+  // One drawn edge per host pair: the fastest kind (cx7 > lan > tailscale); the table lists every link.
+  const rank = {cx7: 0, lan: 1, tailscale: 2};
+  const best = {};
+  t.links.forEach(l => {
+    const pair = [l.a.host, l.b.host].sort().join("|");
+    const cur = best[pair];
+    if (!cur) best[pair] = {l, more: 0};
+    else { cur.more++; if ((rank[l.kind] ?? 3) < (rank[cur.l.kind] ?? 3) || ((l.active || []).length && !(cur.l.active || []).length)) cur.l = l; }
   });
-  if (n === 1) pos[t.hosts[0].key] = [cx, cy];
+  const linked = new Set(Object.values(best).filter(e => e.l.kind === "cx7").flatMap(e => [e.l.a.host, e.l.b.host]));
+  const ring = t.hosts.filter(h => h.key === t.controller || linked.has(h.key));
+  const islands = t.hosts.filter(h => !ring.includes(h));
+  const n = ring.length, W = 960, BW = 236, BH = 118;
+  const H = (n <= 2 ? 200 : 400) + (islands.length ? 150 : 0);
+  const cx = W / 2, cy = n <= 2 ? 100 : 200, rx = n <= 2 ? 300 : 320, ry = n <= 2 ? 0 : 135;
+  const pos = {};
+  const ctl = ring.find(h => h.key === t.controller) || ring[0];
+  const order = ctl ? [ctl, ...ring.filter(h => h !== ctl)] : [];
+  order.forEach((h, k) => {
+    const a = n <= 2 ? Math.PI * (k === 0 ? 1 : 0) : -Math.PI / 2 + (2 * Math.PI * k) / n;
+    pos[h.key] = n === 1 ? [cx, cy] : [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+  });
+  islands.forEach((h, i) => { pos[h.key] = [W / 2 + (i - (islands.length - 1) / 2) * (BW + 30), H - BH / 2 - 8]; });
   let edges = "", labels = "";
-  // management: controller → each serve (dashed, bowed)
+  // management: the controller polls every serve (thin, dotted)
   const C = pos[t.controller] || [cx, cy];
   t.hosts.forEach(h => {
     if (h.key === t.controller) return; const P = pos[h.key];
     const mx = (C[0] + P[0]) / 2, my = (C[1] + P[1]) / 2, dx = P[0] - C[0], dy = P[1] - C[1], L = Math.hypot(dx, dy) || 1;
-    const qx = mx - dy / L * 46, qy = my + dx / L * 46;
-    edges += `<path d="M${C[0]},${C[1]} Q${qx},${qy} ${P[0]},${P[1]}" fill="none" style="stroke:${h.online ? "var(--dim)" : "var(--err)"}" stroke-width="1.4" stroke-dasharray="2 5"/>`;
-    const lx = 0.3 * P[0] + 0.7 * C[0] + (qx - mx) * 0.6, ly = 0.3 * P[1] + 0.7 * C[1] + (qy - my) * 0.6 + 4;
-    labels += `<text x="${lx}" y="${ly}" text-anchor="middle" style="fill:var(--dim)" font-size="10.5" font-family="var(--mono)">${esc(h.mgmt_kind)}${h.mgmt_addr ? " " + esc(h.mgmt_addr) : ""}</text>`;
+    const qx = mx - dy / L * 60, qy = my + dx / L * 60;
+    edges += `<path d="M${C[0]},${C[1]} Q${qx},${qy} ${P[0]},${P[1]}" fill="none" style="stroke:${h.online ? "var(--dim)" : "var(--err)"}" stroke-width="1.2" stroke-dasharray="2 5" opacity=".8"/>`;
   });
-  // fabric links, offset when a pair has several
-  const seen = {};
-  t.links.forEach(l => {
+  Object.values(best).forEach(({l, more}) => {
     const A = pos[l.a.host], B = pos[l.b.host]; if (!A || !B) return;
-    const pair = [l.a.host, l.b.host].sort().join("|"); const k = seen[pair] = (seen[pair] ?? -1) + 1;
-    const dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, off = k * 12;
-    const ox = -dy / L * off, oy = dx / L * off;
     const busy = (l.active || []).length > 0, bad = l.verified === false;
     const color = bad ? "var(--err)" : busy ? "var(--ok)" : l.kind === "cx7" ? "var(--accent)" : l.kind === "lan" ? "var(--sky)" : "var(--dim)";
     const w = l.kind === "cx7" ? 5 : 2, dash = l.kind === "cx7" ? "" : l.kind === "lan" ? 'stroke-dasharray="7 5"' : 'stroke-dasharray="2 4"';
-    edges += `<line class="edge${busy ? " busy" : ""}" x1="${A[0]+ox}" y1="${A[1]+oy}" x2="${B[0]+ox}" y2="${B[1]+oy}" style="stroke:${color}" stroke-width="${w}" stroke-linecap="round" ${busy ? "" : dash}/>`;
+    edges += `<line class="edge${busy ? " busy" : ""}" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" style="stroke:${color}" stroke-width="${w}" stroke-linecap="round" ${busy ? "" : dash}/>`;
     const sp = l.speed_mbps ? Math.round(l.speed_mbps / 1000) + "G" : "";
-    const mx = (A[0] + B[0]) / 2 + ox, my = (A[1] + B[1]) / 2 + oy;
-    const txt = `${l.kind}${sp ? " " + sp : ""}${bad ? " ✗" : l.rtt_ms != null ? " · " + l.rtt_ms.toFixed(2) + "ms" : ""}`;
-    labels += `<g><rect x="${mx - txt.length * 3.6 - 6}" y="${my - 10}" width="${txt.length * 7.2 + 12}" height="19" rx="9" style="fill:var(--bg);stroke:${color}" stroke-width="1"/>
+    const mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2;
+    const txt = `${l.kind}${sp ? " " + sp : ""}${bad ? " ✗" : l.rtt_ms != null ? " · " + l.rtt_ms.toFixed(2) + "ms" : ""}${more ? ` +${more}` : ""}`;
+    labels += `<g><rect x="${mx - txt.length * 3.6 - 7}" y="${my - 10}" width="${txt.length * 7.2 + 14}" height="20" rx="10" style="fill:var(--bg);stroke:${color}" stroke-width="1"/>
       <text x="${mx}" y="${my + 4}" text-anchor="middle" style="fill:${color}" font-size="11.5" font-weight="700" font-family="var(--mono)">${esc(txt)}</text></g>`;
-    if (busy) labels += `<text x="${mx}" y="${my + 24}" text-anchor="middle" style="fill:var(--ok)" font-size="10.5" font-family="var(--mono)">● ${esc(l.active.join(", "))}</text>`;
+    if (busy) labels += `<text x="${mx}" y="${my + 25}" text-anchor="middle" style="fill:var(--ok)" font-size="10.5" font-family="var(--mono)">● ${esc(l.active.join(", "))}</text>`;
   });
   let nodes = "";
+  const clipTxt = s => s.length > 33 ? s.slice(0, 32) + "…" : s;
   t.hosts.forEach(h => {
     const [x, y] = pos[h.key]; const x0 = x - BW / 2, y0 = y - BH / 2;
     const stroke = h.key === t.controller ? "var(--accent)" : h.online ? "var(--blue)" : "var(--err)";
     const mem = h.mem_total_gb ? (h.mem_used_gb != null ? `${Math.round(h.mem_used_gb)}/` : "") + Math.round(h.mem_total_gb) + " GB" : "";
     const cx7 = (h.fabric?.nics || []).filter(c => c.kind === "cx7" && (c.ipv4 || []).length).map(c => c.ipv4[0].ip);
     const lines = [
-      [`${h.gpu || (h.online ? "no GPU" : "")}${mem ? " · " + mem : ""}${h.temp_c != null ? " · " + Math.round(h.temp_c) + "°C" : ""}`, "var(--muted)"],
+      [[h.gpu || (h.online ? "no GPU" : ""), mem, h.temp_c != null ? Math.round(h.temp_c) + "°C" : ""].filter(Boolean).join(" · "), "var(--muted)"],
+      [h.key === t.controller ? "controller (this machine)" : `serve via ${h.mgmt_kind}${h.mgmt_addr ? " " + h.mgmt_addr : ""}`, h.online ? "var(--dim)" : "var(--err)"],
       [h.fabric ? (cx7.length ? "cx7 " + cx7.join(" ") : "no CX7 ports") : (h.fabric_error || "fabric unknown"), h.fabric && !cx7.length ? "var(--warn)" : "var(--fg)"],
       [h.running.length ? "▸ " + h.running.join(", ") : "idle", h.running.length ? "var(--ok)" : "var(--dim)"],
       [h.weights.length ? `⛁ ${h.weights.length === 1 ? h.weights[0] : h.weights.length + " models on disk"}` : "no weights indexed", "var(--sky)"],
     ];
-    const clipTxt = s => s.length > 30 ? s.slice(0, 29) + "…" : s;
-    nodes += `<g${h.online ? "" : ' opacity=".55"'}><rect x="${x0}" y="${y0}" width="${BW}" height="${BH}" rx="12" style="fill:var(--card2);stroke:${stroke}" stroke-width="${h.key === t.controller ? 2.4 : 1.4}"/>
+    nodes += `<g${h.online ? "" : ' opacity=".6"'}><rect x="${x0}" y="${y0}" width="${BW}" height="${BH}" rx="12" style="fill:var(--card2);stroke:${stroke}" stroke-width="${h.key === t.controller ? 2.4 : 1.4}"/>
       <circle cx="${x0 + 16}" cy="${y0 + 19}" r="5" style="fill:${h.online ? "var(--ok)" : "var(--err)"}"/>
       <text x="${x0 + 28}" y="${y0 + 24}" style="fill:var(--fg)" font-size="14.5" font-weight="700" font-family="var(--mono)">${esc(h.name)}</text>
       ${h.key === t.controller ? `<text x="${x0 + BW - 12}" y="${y0 + 23}" text-anchor="end" style="fill:var(--accent)" font-size="10.5" font-weight="700" font-family="var(--mono)">◆ CONTROLLER</text>` : ""}
-      ${lines.map(([s, c], i) => `<text x="${x0 + 14}" y="${y0 + 45 + i * 16}" style="fill:${c}" font-size="11" font-family="var(--mono)">${esc(clipTxt(s))}</text>`).join("")}</g>`;
+      ${lines.map(([s, c], i) => `<text x="${x0 + 14}" y="${y0 + 44 + i * 15.5}" style="fill:${c}" font-size="11" font-family="var(--mono)">${esc(clipTxt(s))}</text>`).join("")}</g>`;
   });
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="hosts and links">${edges}${labels}${nodes}</svg>`;
 }

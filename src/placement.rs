@@ -632,6 +632,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_times_read_naturally() {
+        assert_eq!(human_secs(0.07), "under 1 s");
+        assert_eq!(human_secs(12.4), "≈12 s");
+        assert_eq!(human_secs(300.0), "≈5.0 min");
+    }
+
+    #[test]
     fn exports_matching() {
         let t = "# comment\n/home/a/.cache/huggingface 192.168.100.11(ro,no_subtree_check)\n/srv 10.0.0.0/24(ro)\n/pub *(ro)\n";
         assert!(exports_has(t, "/home/a/.cache/huggingface", "192.168.100.11"));

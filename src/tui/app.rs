@@ -436,13 +436,19 @@ impl App {
     /// stop or tail one of that host's servers.
     fn hosts_key(&mut self, k: KeyEvent) -> Option<Action> {
         let host = self.selected_host_key()?;
-        let recipe = self.selected().map(|r| (r.reference.clone(), r.name.clone()));
+        let recipe = self.selected().map(|r| (r.reference.clone(), r.name.clone(), r.nodes.len()));
         let action = match k.code {
             KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('s') => {
-                let Some((reference, name)) = recipe else {
+                let Some((reference, name, nodes)) = recipe else {
                     self.notify("pick a recipe on the Deck tab first", Level::Warn);
                     return Some(Action::None);
                 };
+                if nodes > 0 {
+                    let msg =
+                        format!("{name} spans {nodes} nodes; its recipe says where each runs (↵ on the Deck tab)");
+                    self.notify(msg, Level::Warn);
+                    return Some(Action::None);
+                }
                 if !self.busy.contains(&name) {
                     self.busy.push(name);
                 }

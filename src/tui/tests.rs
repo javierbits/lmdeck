@@ -716,6 +716,49 @@ fn hosts_tab_controls_reach_the_selected_host() {
 }
 
 #[test]
+fn hosts_tab_wont_place_a_multi_node_recipe_on_one_host() {
+    let mut a = app();
+    let mut s = demo();
+    s.recipes[0].nodes = vec![crate::cluster::NodeView {
+        name: "head".into(),
+        role: "head".into(),
+        host: "local".into(),
+        served_as: "x.head".into(),
+        status: "stopped".into(),
+    }];
+    let name = s.recipes[0].name.clone();
+    a.set_snapshot(s);
+    a.set_hosts(demo_hosts());
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    a.on_key(key('2'));
+    a.on_key(code(KeyCode::Down));
+    assert_eq!(a.on_key(code(KeyCode::Enter)), Action::None);
+    assert!(a.busy.is_empty());
+}
+
+#[test]
+fn list_marks_weights_that_live_on_another_host() {
+    let mut a = app();
+    let mut s = demo();
+    let r = &mut s.recipes[0];
+    r.downloaded = false;
+    r.weights_on = vec!["spark2".into()];
+    let name = r.name.clone();
+    a.set_snapshot(s);
+    let text = buffer_text(&render(&a, 170, 50));
+    let row = text.lines().find(|l| l.contains(&name)).unwrap();
+    assert!(row.contains("⛁spark2") && row.matches('⛁').count() == 2, "{row}");
+}
+
+#[test]
+fn html_frames_pin_fallback_glyphs_to_their_cells() {
+    let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 6, 1));
+    buf.set_string(0, 0, "a⛁│", ratatui::style::Style::default());
+    let html = super::buffer_html(&buf, "t");
+    assert!(html.contains("a<i style=\"width:1ch\">⛁</i>│"), "{html}");
+}
+
+#[test]
 fn details_and_list_show_weights_home_nodes_and_placement() {
     let mut a = app();
     let mut s = demo();

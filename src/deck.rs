@@ -322,7 +322,9 @@ impl Deck {
             let index = listed_refs.iter().position(|x| *x == reference).map(|i| i + 1).unwrap_or(0);
             let p = self.presence(r);
             let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
+            // A multi-node recipe has one launch command per node, shown with its nodes.
             let (command, plan_error) = match engine::plan(r, &PlanCtx::new(&self.cfg, p.local)) {
+                _ if !r.nodes.is_empty() => (None, None),
                 Ok(plan) => (Some(plan.command_line()), None),
                 Err(e) => (None, Some(format!("{e:#}"))),
             };

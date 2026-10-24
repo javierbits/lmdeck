@@ -304,6 +304,9 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Span::styled("↓", Style::new().fg(t.accent).bold())
             } else if r.downloaded {
                 Span::styled("✓", Style::new().fg(t.ok))
+            } else if !r.weights_on.is_empty() {
+                // On another host's disk: runnable here over NFS, never copied.
+                Span::styled("⛁", Style::new().fg(t.info))
             } else {
                 Span::styled("·", Style::new().fg(t.dim))
             };
@@ -368,14 +371,6 @@ fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
         b => b,
     };
     let room = w.saturating_sub(badge.as_ref().map_or(0, |b| 1 + b.width()));
-    let mut spans = vec![Span::styled(fit_to(&r.name, room), Style::new().fg(t.fg).bold())];
-    if !origin.is_empty() && r.name.width() + origin.width() <= room {
-        spans.push(Span::styled(origin, Style::new().fg(t.dim)));
-    }
-    if let Some(b) = badge {
-        spans.push(Span::raw(" "));
-        spans.push(b);
-    }
     // Where it runs and where its weights live, when that isn't just here.
     let mut tags = vec![];
     if !r.nodes.is_empty() {
@@ -386,6 +381,15 @@ fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
     }
     if !r.weights_on.is_empty() && (r.weights_on.len() > 1 || !r.downloaded) {
         tags.push(format!("⛁{}", r.weights_on.join(",")));
+    }
+    let mut spans = vec![Span::styled(fit_to(&r.name, room), Style::new().fg(t.fg).bold())];
+    // The origin label gives way to placement tags, which say more.
+    if !origin.is_empty() && tags.is_empty() && r.name.width() + origin.width() <= room {
+        spans.push(Span::styled(origin, Style::new().fg(t.dim)));
+    }
+    if let Some(b) = badge {
+        spans.push(Span::raw(" "));
+        spans.push(b);
     }
     let mut used: usize = spans.iter().map(|s| s.width()).sum();
     for tag in tags {

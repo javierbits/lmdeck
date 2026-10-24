@@ -424,6 +424,24 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Escapes a run of cells, pinning symbols the monospace font may lack (they
+/// fall back to a proportional font) to exactly their cell width.
+fn pinned(run: &str) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    for ch in run.chars() {
+        let plain = ch.is_ascii() || ('\u{2500}'..='\u{259f}').contains(&ch) || ('\u{a0}'..='\u{17f}').contains(&ch);
+        let esc = html_escape(&ch.to_string());
+        if plain {
+            out.push_str(&esc);
+        } else {
+            let w = ch.width().unwrap_or(1).max(1);
+            out.push_str(&format!("<i style=\"width:{w}ch\">{esc}</i>"));
+        }
+    }
+    out
+}
+
 /// A buffer as a standalone HTML page (monospace grid, true colours), used to
 /// turn TUI frames into screenshots with a headless browser.
 pub fn buffer_html(buf: &Buffer, title: &str) -> String {
@@ -438,7 +456,7 @@ pub fn buffer_html(buf: &Buffer, title: &str) -> String {
                     "<span style=\"color:{fg};background:{bg}{}{}\">{}</span>",
                     if *bold { ";font-weight:700" } else { "" },
                     if *ul { ";text-decoration:underline" } else { "" },
-                    html_escape(run)
+                    pinned(run)
                 ));
             }
             run.clear();
@@ -463,8 +481,9 @@ pub fn buffer_html(buf: &Buffer, title: &str) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>\
          html,body{{margin:0;background:#0d0d10}}\
-         pre{{margin:0;padding:18px;font:14px/normal 'DejaVu Sans Mono','JetBrains Mono',monospace;\
-         display:inline-block;border-radius:10px}}</style></head><body><pre>{body}</pre></body></html>",
+         pre{{margin:0;padding:18px;font:14px/16px 'DejaVu Sans Mono','JetBrains Mono',monospace;\
+         display:inline-block;border-radius:10px}}\
+         i{{display:inline-block;font-style:normal;overflow:hidden;vertical-align:top;text-align:center}}</style></head><body><pre>{body}</pre></body></html>",
         html_escape(title)
     )
 }
