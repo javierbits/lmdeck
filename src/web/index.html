@@ -758,10 +758,10 @@ function topoSvg(t){
   const W = Math.max(960, 280 + n * 70);
   const H = Math.max(hosts.length <= 1 ? 280 : 420, 200 + Math.ceil(Math.sqrt(n)) * 140);
   const pos = topoLayout(t, W, H);
-  // Bundle edges between same endpoints (rails).
+  // Bundle parallel rails: same endpoints AND same kind (dual CX7 ports).
   const buckets = {};
   links.forEach(l => {
-    const pair = [l.a.host, l.b.host].sort().join("|");
+    const pair = [l.a.host, l.b.host].sort().join("|") + "|" + (l.kind || "");
     (buckets[pair] = buckets[pair] || []).push(l);
   });
   let edges = "", labels = "";

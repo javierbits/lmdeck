@@ -154,20 +154,31 @@ node's host and status, and the cluster error if any. Run-on doesn't apply
 `vllm_dual_ray` sequence and NCCL wiring and Mia's NFS weights, and keeps the
 vLLM / torch compile caches on each node's local disk.
 
-## 5. CX7 auto-detect and topology
+## 5. Fabric auto-detect and topology
 
-Each serve answers `GET /api/fabric` with its NICs, read-only and without
-sudo: `ip -j addr` / `ip -j link` (fallback `/sys/class/net`), speed,
-operstate, MTU, driver (`mlx5_core`), RDMA devices from
-`/sys/class/net/<if>/device/infiniband`, `rdma -j link` if present, and the
-RoCE v2 IPv4 GID index. `ibv_devices` and `lldpctl` are used when installed.
-Missing tools are listed, not errors.
+Each serve answers `GET /api/fabric` with its NICs, GPUs, DMI/`hw.model`
+product string, and LLDP neighbours — read-only, no sudo: `ip -j addr` /
+`ip -j link` (fallback `/sys/class/net`), speed, operstate, MTU, driver
+(`mlx5_core`), RDMA devices from `/sys/class/net/<if>/device/infiniband`,
+`rdma -j link` if present, the RoCE v2 IPv4 GID index, `nvidia-smi` (every
+GPU), and `lldpctl` when installed. Missing tools are listed, not errors.
 
-The controller matches peers: two addresses in the same small subnet (/24 or
-narrower) on CX7 ports (mlx5 + RDMA) are a direct cable. A **3-Spark
-triangle** has one subnet per cable, so it comes out as three links. Shared
-LAN subnets and Tailscale (100.64/10) are the slower fallback. Links are
-verified with a ping / TCP check unless `--no-verify`.
+The controller builds an **L2 segment graph** (not a host↔host mesh):
+
+- Hosts that share a subnet form a *segment* (multiple ports of the same
+  host on that subnet collapse into one member with rails).
+- **Two hosts** on a point-to-point segment (`/30`/`/31`, or exactly two
+  members with no LLDP bridge) → a direct **cable**.
+- **Three or more** members, or an LLDP neighbour advertising Bridge /
+  a switch-like chassis name → a synthetic **switch** node with star edges
+  to each host. No phantom pairwise CX7 edges through the switch.
+- Any number of hosts (1…32+), switches, rails, and mixed CX7 / LAN /
+  Tailscale. Single-host view is a centred node with a hint to add peers;
+  two hosts sit side by side. Layout is seeded and overlap-free.
+- Placement / multi-node `head_addr` / `ifname` / `hca` use
+  `path_between` on the graph (shared segment preferred), not pair lookups.
+
+Links are verified with a ping / TCP check unless `--no-verify`.
 
 Overrides in `hosts.toml` win over detection:
 
@@ -193,15 +204,16 @@ kind = "cx7"                 # or lan / tailscale
 Views:
 
 - `lmdeck hosts topology [--json] [--no-verify]`
-- TUI tab `3` **Topology**: host boxes, CX7 cables between them (`● busy`
-  when NFS weights or a cluster use them), the management bus from the
-  controller, a link table and notes.
-- Web dashboard **Topology** section: an SVG (controller on top, CX7 thick,
-  LAN dashed, management dotted, busy links animated, unreachable red) and
-  the same link table.
+- TUI tab `3` **Topology**: host boxes with braille device icons, switch
+  hubs, cables (`● busy` when NFS weights or a cluster use them), a link
+  table; falls back to a segment list when the pane is tight.
+- Web dashboard **Topology** section: SVG with theme-tinted dot-art icons
+  (Spark / Mac / PC / switch / GPU), switches as hubs, bundled rails,
+  management dotted, busy pulse (honours `prefers-reduced-motion`).
 
-`LMDECK_DEMO=1` draws a simulated 3-Spark triangle plus an offline Mac from
-built-in fixtures, labelled **DEMO DATA** everywhere.
+`LMDECK_DEMO=1` draws simulated fabric from built-in fixtures, labelled
+**DEMO DATA**. Shape via `LMDECK_DEMO_TOPO`: `tri` (default), `duo`,
+`switch8`, `single`, `mix`.
 
 ## Screenshots
 
@@ -216,10 +228,17 @@ real CX7 cables) unless marked DEMO DATA.
 | ![](screenshots/tui-run-on.png) | TUI run-on picker (`o`): Qwen3 0.6B's weights are on spark2, so spark1 and spark3 would mount them read-only over NFS. |
 | ![](screenshots/tui-multinode.png) | A 2-node recipe (python stubs) running: head on this machine, worker on spark2, started in order. |
 | ![](screenshots/tui-weights-on.png) | Weights on other hosts: `⛁spark2` / `⛁spark3` in the list, `on ⛁ spark2 · home spark2` in details. Real downloaded files. |
-| ![](screenshots/tui-topology-demo.png) | TUI Topology tab, **DEMO DATA** (simulated triangle). |
+| ![](screenshots/tui-topology-1host.png) | TUI Topology, **DEMO DATA** (`LMDECK_DEMO_TOPO=single`): one centred host. |
+| ![](screenshots/tui-topology-2host.png) | TUI Topology, **DEMO DATA** (`duo`): two Sparks on a CX7 cable. |
+| ![](screenshots/tui-topology-demo.png) | TUI Topology, **DEMO DATA** (`tri`): triangle of /30 cables. |
+| ![](screenshots/tui-topology-switch8.png) | TUI Topology, **DEMO DATA** (`switch8`): eight Sparks on `SN2100-TOR`. |
 | ![](screenshots/web-run-on.png) | Web run-on dialog: the full NFS plan for running on spark1. Nothing runs until **Start there**. |
 | ![](screenshots/web-hosts-controls.png) | Web host cards with per-model logs / stop and **run here**. |
 | ![](screenshots/web-weights-on.png) | Web card with **weights on: spark2** and the run-on dropdown. |
 | ![](screenshots/web-multinode-card.png) | Web card for the 2-node stub: `×2 nodes`, start order and per-node status. |
 | ![](screenshots/web-topology-rig.png) | Web topology of the rig (hand-written loopback links, busy link to spark2 carries the 2-node stub). |
-| ![](screenshots/web-topology-demo.png) | Web topology, **DEMO DATA**: 3-Spark CX7 triangle plus an offline Mac. |
+| ![](screenshots/web-topology-1host.png) | Web topology, **DEMO DATA** (`single`): one host + hint to add peers. |
+| ![](screenshots/web-topology-2host.png) | Web topology, **DEMO DATA** (`duo`): two Sparks, hostname · alias. |
+| ![](screenshots/web-topology-demo.png) | Web topology, **DEMO DATA** (`tri`): triangle + LAN switch + offline Mac. |
+| ![](screenshots/web-topology-switch8.png) | Web topology, **DEMO DATA** (`switch8`): eight Sparks on one CX7 switch. |
+| ![](screenshots/web-topology-gpu-closeup.png) | Node close-up: **2× RTX 4090** cards (demo), temps / util / power. |

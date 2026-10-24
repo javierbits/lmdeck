@@ -345,13 +345,33 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
         }
         "switch8" => {
             for i in 2..=8 {
-                out.push(host(
+                let mut h = host(
                     &format!("spark{i}"),
                     &format!("http://spark{i}:7979"),
                     0.1 * i as f64,
                     i % 3 == 0,
                     3 + i as u64,
-                ));
+                );
+                if i == 3 {
+                    if let Some(t) = h.telemetry.as_mut() {
+                        let mut a = t.gpus.first().cloned().unwrap_or_default();
+                        a.index = 0;
+                        a.name = "NVIDIA GeForce RTX 4090".into();
+                        a.mem_total_gb = Some(24.0);
+                        a.mem_used_gb = Some(18.2);
+                        a.temp_c = Some(68.0);
+                        a.util_pct = Some(91.0);
+                        a.power_w = Some(320.0);
+                        let mut b = a.clone();
+                        b.index = 1;
+                        b.mem_used_gb = Some(4.1);
+                        b.util_pct = Some(12.0);
+                        b.temp_c = Some(41.0);
+                        b.power_w = Some(55.0);
+                        t.gpus = vec![a, b];
+                    }
+                }
+                out.push(h);
             }
         }
         "mix" => {

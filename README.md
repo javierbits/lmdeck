@@ -75,7 +75,7 @@ pills, rounded panels, and a status bar with key hints.
   `←→` picks a model running on that host; `x` stops it, `l` shows its log,
   and `↵` / `s` start or switch the Deck tab's selected recipe **on that
   host** (see [docs/MULTIHOST.md](docs/MULTIHOST.md)).
-- **Topology**: the hosts as boxes with the ConnectX-7 cables between them
+- **Topology**: hosts with dot-art device icons, GPUs, cables and synthetic switches from the L2 graph
   (auto-detected, or `[[link]]` in hosts.toml), LAN / Tailscale fallbacks,
   the management links from this machine, and which links are busy carrying
   NFS weights or a multi-node run.
@@ -211,8 +211,8 @@ section draws the hosts and their CX7 / LAN / Tailscale links as an SVG.
 
 | | |
 |---|---|
-| ![run on another host: the NFS plan (single-VM test rig)](docs/screenshots/web-run-on.png) | ![topology, LMDECK_DEMO=1 data](docs/screenshots/web-topology-demo.png) |
-| ![host cards with remote stop / logs (test rig)](docs/screenshots/web-hosts-controls.png) | ![TUI topology tab, LMDECK_DEMO=1 data](docs/screenshots/tui-topology-demo.png) |
+| ![run on another host: the NFS plan (single-VM test rig)](docs/screenshots/web-run-on.png) | ![topology switch8 DEMO DATA](docs/screenshots/web-topology-switch8.png) |
+| ![host cards with remote stop / logs (test rig)](docs/screenshots/web-hosts-controls.png) | ![TUI topology switch8 DEMO DATA](docs/screenshots/tui-topology-switch8.png) |
 
 > [!WARNING]
 > **Binding to anything other than localhost (for example `--host 0.0.0.0`)
