@@ -83,6 +83,13 @@ pills, rounded panels, and a status bar with key hints.
   recipes, per-GPU memory, and which engines and tools are installed.
 - **Sources**: the deck, the built-ins and every recipe source, with recipe
   counts and when each source was last fetched.
+- **Browse**: the [recipe index](#recipe-index). Each entry shows whether it
+  is installed (● in the deck, ◆ built-in, ○ not yet), a `⬆` badge when its
+  deck copy has an upstream update, the engine, how many Sparks it needs, the
+  speed its README reports, and whether it fits. The details pane has the
+  description, repo, README link, tags and the exact `lmdeck add` command.
+  `↵` installs, `/` searches (`tag:exl3`, `#sparks=2`), `S` sorts by name,
+  sparks or speed, `f` keeps only what fits, `r` fetches the index again.
 
 The screen refreshes every 2 s in the background. Starting, stopping and
 pulling run off the UI thread, so nothing freezes while a server loads.
@@ -101,12 +108,17 @@ Quitting leaves servers running.
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
-| `1 2 3 4 5`, `tab` | deck · hosts · topology · machine · sources (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
+| `1`–`6`, `tab` | deck · hosts · topology · machine · sources · browse (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
 | `t` | next theme (saved to config) |
 | `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
 | `?` | help |
 | `q`, `esc`, `ctrl-c` | quit |
+
+On Browse, `↵` / `i` installs the selected entry (`lmdeck add <name>`), `S`
+cycles the sort, `f` toggles "fits", `r` refreshes the index and `/` searches.
+
+![Browse tab: the recipe index from index.toml on this machine (x86_64, CPU only, so both entries show ✗ no fit)](docs/screenshots/tui-browse.png)
 
 If your terminal font is a Nerd Font, `--nerd` (or `LMDECK_NERD_FONT=1`)
 draws rounded powerline caps on the pills. Themes are covered [below](#themes).
@@ -333,6 +345,8 @@ column and Machine panel there still describe that VM.
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
 | `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
 | `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
+| `lmdeck browse [words] [-t TAG]… [--sort name\|sparks\|speed] [--fits] [--refresh\|--offline] [--json]` | Lists the [recipe index](#recipe-index) with installed state, update badge, fit and the speed each repo reports. Words match name, description and tags; `-t exl3` or `-t sparks=2` filters by tag. |
+| `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
 | `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
 | `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. `--dry-run` prints the plan. |
@@ -352,6 +366,68 @@ column and Machine panel there still describe that VM.
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
 (`mine/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from
 `lmdeck list`. When the same name exists in several places, the deck copy wins.
+
+## Recipe index
+
+[`index.toml`](index.toml) in this repo lists model repos that are known to
+work, with tags (engine, model, family, quant, how many DGX Sparks), the size
+of the weights, and the decode speed each repo's own README reports (lmdeck
+never measured these; the note next to each number says where it's from).
+
+```sh
+lmdeck browse                       # everything, with fit and installed state
+lmdeck browse -t sparks=2 --sort speed
+lmdeck add glm-5.3-flash-exl3-2x-spark-tensorfold
+```
+
+The TUI has a Browse tab and the web dashboard a **Browse** view (next to
+Deck / All) with the same search, tag chips, sort, fit filter and an Install
+button that runs `lmdeck add <name>`.
+
+![web dashboard, Browse view (real index.toml entries on an x86_64 CPU-only box, so neither fits)](docs/screenshots/web-browse.png)
+
+Fetching and auth:
+
+- The index comes from `[index] url` (default
+  `https://github.com/jvr0x/lmdeck/blob/main/index.toml`; `LMDECK_INDEX_URL`
+  overrides it; `file://` works too). It's cached at
+  `~/.cache/lmdeck/index.toml` and re-fetched after `ttl_hours` (6). The TUI
+  and dashboard refresh a stale cache in the background; `browse --refresh`
+  or `r` forces it, `--offline` never fetches.
+- A GitHub URL goes through the contents API with a token if one exists
+  (`GITHUB_TOKEN`, `GH_TOKEN`, else `gh auth token`), so a private repo works;
+  without a token it uses the raw URL. Other URLs only get a token when
+  `[index] token_env` names the variable that holds it. Nothing ever prompts
+  (`gh` runs with `GH_PROMPT_DISABLED` and a timeout; `git` with
+  `GIT_TERMINAL_PROMPT=0`), and tokens are never written to disk.
+- Any failure (offline, 404, a bad file, an index with a newer `schema`)
+  keeps the cached copy and says why, for example
+  `HTTP 404 (private repo? set GITHUB_TOKEN or run \`gh auth login\`)`.
+
+```toml
+# ~/.config/lmdeck/config.toml
+[index]
+# url          = "https://github.com/jvr0x/lmdeck/blob/main/index.toml"
+# ttl_hours    = 6
+# timeout_secs = 5
+# token_env    = "MY_INDEX_TOKEN"   # only for non-GitHub URLs
+```
+
+An entry:
+
+```toml
+schema = 1
+
+[[entry]]
+name        = "ornith-1.5-122b-tensorfold"   # what `lmdeck add` takes
+repo        = "https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold"
+ref         = "0c8fd6a0d1e2ece7557978a7d8c3d96d137eb075"   # optional pin
+description = "…"
+tags        = { engine = "tensorfold", model = "Ornith-1.5-122B", family = "qwen3.5-moe", quant = "exl3", sparks = 1 }
+size_gb     = 66.6
+speed       = { tok_s = 52.6, note = "repo README: one DGX Spark, 1 stream, …" }
+recipe      = "recipes/ornith-1.5-122b-tensorfold.toml"   # optional native recipe
+```
 
 ## Sources
 
