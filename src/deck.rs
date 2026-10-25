@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -23,6 +23,81 @@ use crate::recipe::{Engine, Recipe};
 use crate::runner::{self, Probe, RunRecord, Status};
 use crate::sources::{self, Found};
 use crate::util::now_secs;
+
+/// The port every recipe would be planned on: an explicit `[engine] port`
+/// wins; when `[serve] port_start` is set, recipes without one count up from
+/// it — the deck first, then sources — skipping ports other non-builtin
+/// recipes claim (their defaults included) and ports of running servers.
+/// Built-ins are samples and neither take counted ports nor reserve theirs.
+/// Keyed by `origin/name`; empty when `port_start` is unset (every recipe
+/// keeps its engine default).
+pub fn planned_ports(cat: &Catalog, paths: &Paths, cfg: &Config) -> BTreeMap<String, u16> {
+    let Some(base) = cfg.serve.port_start else { return BTreeMap::new() };
+    let mut taken: BTreeSet<u16> = BTreeSet::new();
+    let mut free: Vec<&Found> = vec![];
+    for f in &cat.entries {
+        // Built-ins are samples: they never take counted ports, and their own
+        // ports don't reserve anything. Multi-node recipes plan one port per
+        // node; only their base is reserved.
+        if f.origin == BUILTIN {
+            continue;
+        }
+        if !f.recipe.nodes.is_empty() || f.recipe.engine.port.is_some() {
+            taken.insert(f.recipe.port());
+        } else {
+            free.push(f);
+        }
+    }
+    for rec in RunRecord::all(paths) {
+        taken.insert(rec.port);
+    }
+    // The deck counts first: your recipes get the low ports, then sources,
+    // then built-ins.
+    free.sort_by(|a, b| {
+        (a.origin != crate::catalog::DECK, &a.origin, &a.recipe.name).cmp(&(
+            b.origin != crate::catalog::DECK,
+            &b.origin,
+            &b.recipe.name,
+        ))
+    });
+    let mut out = BTreeMap::new();
+    let mut next = base;
+    for f in free {
+        while taken.contains(&next) {
+            next = if next == u16::MAX { base } else { next + 1 };
+        }
+        taken.insert(next);
+        out.insert(reference(f), next);
+    }
+    out
+}
+
+/// The port `r` would be planned on (see [`planned_ports`]): its own entry in
+/// the catalog when it has one, else counted from `port_start` on its own.
+pub fn planned_for(cat: &Catalog, paths: &Paths, cfg: &Config, r: &Recipe) -> u16 {
+    if r.engine.port.is_some() || cfg.serve.port_start.is_none() {
+        return r.port();
+    }
+    match cat.entries.iter().find(|f| f.recipe.name == r.name) {
+        Some(f) => planned_port(&planned_ports(cat, paths, cfg), f),
+        None => {
+            let ports = planned_ports(cat, paths, cfg);
+            let mut taken: BTreeSet<u16> = ports.values().copied().collect();
+            taken.extend(cat.entries.iter().map(|f| f.recipe.port()));
+            taken.extend(RunRecord::all(paths).into_iter().map(|x| x.port));
+            let mut next = cfg.serve.port_start.unwrap_or_default();
+            while taken.contains(&next) {
+                next = if next == u16::MAX { 1 } else { next + 1 };
+            }
+            next
+        }
+    }
+}
+
+/// The planned port of one catalog entry (its engine default when unset).
+pub fn planned_port(ports: &BTreeMap<String, u16>, f: &Found) -> u16 {
+    ports.get(&reference(f)).copied().unwrap_or_else(|| f.recipe.port())
+}
 
 /// The recipes `list` numbers: the deck, or the built-ins while the deck is empty.
 pub fn listed(cat: &Catalog) -> Vec<&Found> {
@@ -304,6 +379,7 @@ impl Deck {
         let inv = self.inventory(refresh_inventory);
         let listed_refs: Vec<String> = listed(&cat).iter().map(|f| reference(f)).collect();
         let mut cache: HashMap<u16, Probe> = HashMap::new();
+        let ports = planned_ports(&cat, &self.paths, &self.cfg);
         let mut updates = crate::updates::views(
             &self.paths,
             &crate::updates::Settings::from(&self.cfg),
@@ -328,12 +404,14 @@ impl Deck {
             let p = self.presence(r);
             let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
             // A multi-node recipe has one launch command per node, shown with its nodes.
-            let (command, plan_error) = match engine::plan(r, &PlanCtx::new(&self.cfg, p.local)) {
-                _ if !r.nodes.is_empty() => (None, None),
-                Ok(plan) => (Some(plan.command_line()), None),
-                Err(e) => (None, Some(format!("{e:#}"))),
-            };
-            let mut status = runner::status_cached(&self.paths, &r.name, r.port(), &mut cache);
+            let planned = planned_port(&ports, f);
+            let (command, plan_error) =
+                match engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(ports.get(&reference).copied())) {
+                    _ if !r.nodes.is_empty() => (None, None),
+                    Ok(plan) => (Some(plan.command_line()), None),
+                    Err(e) => (None, Some(format!("{e:#}"))),
+                };
+            let mut status = runner::status_cached(&self.paths, &r.name, planned, &mut cache);
             let nodes = if r.nodes.is_empty() { vec![] } else { crate::cluster::views(&self.paths, r, &node) };
             let crec = (!r.nodes.is_empty()).then(|| crate::cluster::Record::load(&self.paths, &r.name)).flatten();
             if !nodes.is_empty() {
@@ -369,9 +447,9 @@ impl Deck {
                 quant: r.quant_short(),
                 model: r.model.repo.clone().or(r.model.path.clone()),
                 revision: r.model.revision.clone(),
-                port: r.port(),
+                port: rec.as_ref().map(|x| x.port).unwrap_or(planned),
                 ctx: r.engine.ctx,
-                endpoint: format!("http://localhost:{}/v1", r.port()),
+                endpoint: format!("http://localhost:{}/v1", rec.as_ref().map(|x| x.port).unwrap_or(planned)),
                 listed: index > 0,
                 status,
                 pid: rec.as_ref().and_then(|r| r.pid),
@@ -455,7 +533,9 @@ impl Deck {
         let inv = self.inventory(false);
         let p = self.presence(r);
         let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
-        let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local))?;
+        let cat = self.catalog();
+        let port = planned_for(&cat, &self.paths, &self.cfg, r);
+        let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(Some(port)))?;
         match runner::status(&self.paths, &r.name, plan.port) {
             Status::Loaded | Status::External => return Ok(format!("{} is already up on :{}", r.name, plan.port)),
             Status::Loading => return Ok(format!("{} is still loading", r.name)),
@@ -669,6 +749,68 @@ pub fn tail_lines(path: &Path, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn found(origin: &str, name: &str, port: Option<u16>) -> Found {
+        let engine = match port {
+            Some(p) => format!("[engine]\nname = \"llama.cpp\"\nport = {p}\n"),
+            None => "[engine]\nname = \"llama.cpp\"\n".to_string(),
+        };
+        let toml = format!("[model]\nrepo = \"x/y\"\nfiles = [\"a.gguf\"]\n{engine}");
+        Found { recipe: Recipe::parse(&toml, name).unwrap(), origin: origin.into(), file: format!("{name}.toml") }
+    }
+
+    fn test_cat(entries: Vec<Found>) -> Catalog {
+        Catalog { entries, errors: vec![] }
+    }
+
+    fn sandbox_paths() -> (tempfile::TempDir, Paths) {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("home");
+        std::fs::create_dir_all(root.join("state/run")).unwrap();
+        let home = root.display().to_string();
+        let paths = Paths::resolve(|k| if k == "LMDECK_HOME" { Some(home.clone()) } else { None }, root);
+        (d, paths)
+    }
+
+    #[test]
+    fn portless_recipes_count_from_port_start() {
+        let (_d, paths) = sandbox_paths();
+        let cat = test_cat(vec![
+            found("deck", "alpha", Some(9000)),
+            found("deck", "bravo", None),
+            found("deck", "charlie", None),
+            found("builtin", "bravo", None), // same name, other origin: counted too
+        ]);
+        let mut cfg = Config::default();
+        // no port_start: every recipe keeps its engine default
+        assert_eq!(planned_ports(&cat, &paths, &cfg).len(), 0);
+        cfg.serve.port_start = Some(8080);
+        let ports = planned_ports(&cat, &paths, &cfg);
+        // The deck counts first: deck/bravo, deck/charlie. deck/alpha has an
+        // explicit port (9000), which is reserved but not counted. Built-ins
+        // are ignored: builtin/bravo keeps its engine default.
+        assert_eq!(ports["deck/bravo"], 8080);
+        assert_eq!(ports["deck/charlie"], 8081);
+        assert!(!ports.contains_key("builtin/bravo"));
+        assert_eq!(planned_port(&ports, &cat.entries[0]), 9000, "explicit port wins");
+        assert_eq!(planned_port(&ports, &cat.entries[3]), 8080, "built-ins keep their default");
+    }
+
+    #[test]
+    fn running_servers_hold_their_port() {
+        let (_d, paths) = sandbox_paths();
+        let cat = test_cat(vec![found("deck", "alpha", None), found("deck", "bravo", None)]);
+        let rec = serde_json::json!({
+            "name": "old", "engine": "llama.cpp", "pid": std::process::id(),
+            "port": 8080, "started_at": 0, "log": "/tmp/x.log", "argv": ["x"], "oneshot": false,
+        });
+        std::fs::write(paths.run_dir().join("old.json"), serde_json::to_string(&rec).unwrap()).unwrap();
+        let mut cfg = Config::default();
+        cfg.serve.port_start = Some(8080);
+        let ports = planned_ports(&cat, &paths, &cfg);
+        assert_eq!(ports["deck/alpha"], 8081, "8080 is taken by a running server");
+        assert_eq!(ports["deck/bravo"], 8082);
+    }
 
     #[test]
     fn tail_collapses_progress_and_ansi() {

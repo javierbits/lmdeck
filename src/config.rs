@@ -108,6 +108,11 @@ pub struct ServeConfig {
     /// `LMDECK_TOKEN` win over it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
+    /// The first port lmdeck counts serving models from. Recipes without an
+    /// explicit `[engine] port` get consecutive ports starting here (their
+    /// engine's own default is used when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_start: Option<u16>,
 }
 
 impl ServeConfig {

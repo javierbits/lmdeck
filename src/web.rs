@@ -302,18 +302,20 @@ fn handle(st: &State, mut req: Request) {
                 // One recipe, without building a whole snapshot (controllers poll this while waiting).
                 let name = query_param(&query, "name").unwrap_or_default();
                 let cat = st.deck.catalog();
+                let ports = crate::deck::planned_ports(&cat, &st.deck.paths, &st.deck.cfg);
                 let rows: Vec<Value> = cat
                     .entries
                     .iter()
                     .filter(|f| f.recipe.name == name)
                     .take(1)
                     .map(|f| {
-                        let s = crate::runner::status(&st.deck.paths, &f.recipe.name, f.recipe.port());
+                        let port = crate::deck::planned_port(&ports, f);
+                        let s = crate::runner::status(&st.deck.paths, &f.recipe.name, port);
                         json!({"name": f.recipe.name, "reference": format!("{}/{}", f.origin, f.recipe.name),
-                               "status": crate::deck::status_word(&s), "port": f.recipe.port()})
+                           "status": crate::deck::status_word(&s), "port": port})
                     })
                     .collect();
-                json_reply(req, 200, &json!(rows))
+                json_reply(req, 200, &json!(rows));
             }
             "status" => {
                 let s = st.snapshot();

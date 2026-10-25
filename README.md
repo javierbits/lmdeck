@@ -519,7 +519,8 @@ label  = "4.0bpw"
 
 [engine]
 name  = "tabbyapi"     # llama.cpp | vllm | sglang | lmdeploy | tabbyapi | lmstudio | mlx | tensorfold | custom
-port  = 5000
+port  = 5000        # optional; without it the engine's default is used, or
+                    # counted from `[serve] port_start` when that is set
 ctx   = 32768
 args  = ["--cache-mode", "Q8"]            # appended last; placeholders below
 # env        = { CUDA_VISIBLE_DEVICES = "0" }
@@ -754,7 +755,11 @@ timeout_secs = 5
 name = "mine"
 spec = "github:someone/recipes"
 
-[harness]                 # agent harnesses to point at served models (see Harness sync)
+[serve]                   # serving defaults
+# port_start = 8080       # count port-less recipes from here (8080, 8081, …);
+                           # your deck counts first, built-ins keep their own ports
+
+[harness]                  # agent harnesses to point at served models (see Harness sync)
 asked = true
 sync = ["opencode", "omp"]
 ```

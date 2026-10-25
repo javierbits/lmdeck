@@ -279,6 +279,9 @@ pub struct PlanCtx {
     pub bins: BTreeMap<String, String>,
     /// Where `[source]` checkouts live (`<cache>/checkouts`).
     pub checkouts_dir: PathBuf,
+    /// The port to plan on, when the caller pre-computed one (`[serve]
+    /// port_start` counting); `None` uses the recipe's own default.
+    pub port: Option<u16>,
 }
 
 impl PlanCtx {
@@ -304,7 +307,14 @@ impl PlanCtx {
             local_present,
             bins,
             checkouts_dir: crate::paths::Paths::from_env().checkouts_dir(),
+            port: None,
         }
+    }
+
+    /// [`PlanCtx`] planning on a pre-computed port (see `deck::planned_ports`).
+    pub fn with_port(mut self, port: Option<u16>) -> Self {
+        self.port = port;
+        self
     }
 }
 
@@ -380,7 +390,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             r.name
         );
     }
-    let port = r.port();
+    let port = ctx.port.unwrap_or_else(|| r.port());
     let local = r.local_path(&ctx.models_dir);
     let use_local =
         local.is_some() && (ctx.local_present || r.engine.name.needs_local_weights() || r.model.repo.is_none());
@@ -716,6 +726,7 @@ mod tests {
             local_present,
             bins: BTreeMap::new(),
             checkouts_dir: PathBuf::from("/c/checkouts"),
+            port: None,
         }
     }
 

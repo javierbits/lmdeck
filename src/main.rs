@@ -905,11 +905,13 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         .max_width(2, 48);
     let mut rows = vec![];
     let node = ctx.cfg.node_name();
+    let ports = deck::planned_ports(&ctx.catalog(), &ctx.paths, &ctx.cfg);
     let has_hosts = hosts::HostsFile::load(&ctx.paths).map(|f| !f.hosts.is_empty()).unwrap_or(false);
     let idx = has_hosts.then(|| lmdeck::weights::Index::fresh(&ctx.paths, &ctx.cfg, lmdeck::weights::INDEX_TTL));
     for (i, f) in entries.iter().enumerate() {
         let r = &f.recipe;
-        let st = runner::status_cached(&ctx.paths, &r.name, r.port(), &mut cache);
+        let port = deck::planned_port(&ports, f);
+        let st = runner::status_cached(&ctx.paths, &r.name, port, &mut cache);
         let weights_on: Vec<String> = match &idx {
             Some(idx) => {
                 let mut v: Vec<String> = idx.locate(r).into_iter().map(|l| l.host).collect();
@@ -932,7 +934,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         let p = ctx.presence(r);
         rows.push(json!({
             "index": i + 1, "name": r.name, "origin": f.origin, "engine": r.engine.name.as_str(),
-            "quant": r.quant_short(), "port": r.port(), "status": status_word(&st),
+            "quant": r.quant_short(), "port": port, "status": status_word(&st),
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
             "update": update_json(ups.get(&r.name)),
             "weights_on": weights_on, "nodes": nodes,
@@ -965,7 +967,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
             r.quant_short(),
             size_cell(r, &p),
             downloaded_cell(&p),
-            r.port().to_string(),
+            port.to_string(),
             dim(&f.origin),
         ]);
     }
@@ -1048,21 +1050,23 @@ fn list_loaded(ctx: &Ctx, cat: &Catalog, json_out: bool) -> Result<()> {
         ]);
     }
     // Servers lmdeck didn't start but that serve a deck recipe's name.
+    let ports = deck::planned_ports(cat, &ctx.paths, &ctx.cfg);
     let mut cache = HashMap::new();
     for f in listed(cat) {
         if seen.contains(&f.recipe.name) {
             continue;
         }
-        let st = runner::status_cached(&ctx.paths, &f.recipe.name, f.recipe.port(), &mut cache);
+        let ext_port = deck::planned_port(&ports, f);
+        let st = runner::status_cached(&ctx.paths, &f.recipe.name, ext_port, &mut cache);
         if st == Status::External {
-            let ep = format!("http://localhost:{}/v1", f.recipe.port());
-            rows.push(json!({"name": f.recipe.name, "engine": f.recipe.engine.name.as_str(), "port": f.recipe.port(),
+            let ep = format!("http://localhost:{}/v1", ext_port);
+            rows.push(json!({"name": f.recipe.name, "engine": f.recipe.engine.name.as_str(), "port": ext_port,
                 "status": "external", "endpoint": ep}));
             t.row(vec![
                 status_cell(&st),
                 bold(&f.recipe.name),
                 f.recipe.engine.name.as_str().into(),
-                f.recipe.port().to_string(),
+                ext_port.to_string(),
                 "-".into(),
                 "-".into(),
                 ep,
@@ -1147,7 +1151,8 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let inv = Inventory::detect(&ctx.cfg);
     let p = ctx.presence(r);
     let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
-    let plan = engine::plan(r, &PlanCtx::new(&ctx.cfg, p.local))?;
+    let port = deck::planned_for(&cat, &ctx.paths, &ctx.cfg, r);
+    let plan = engine::plan(r, &PlanCtx::new(&ctx.cfg, p.local).with_port(Some(port)))?;
 
     if a.dry_run {
         println!(

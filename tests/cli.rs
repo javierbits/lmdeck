@@ -95,6 +95,33 @@ fn bare_invocation_shows_wordmark_and_builtins() {
 }
 
 #[test]
+fn port_start_counts_portless_recipes() {
+    let e = Env::new();
+    let cfg = e.path("home/config");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(cfg.join("config.toml"), "[serve]\nport_start = 8080\n").unwrap();
+    let deck = e.path("home/config/recipes");
+    fs::create_dir_all(&deck).unwrap();
+    let body = "[model]\nrepo = \"x/y\"\nfiles = [\"a.gguf\"]\n\n[engine]\nname = \"llama.cpp\"\n";
+    write(&deck, "alpha.toml", body);
+    write(&deck, "bravo.toml", body);
+    write(&deck, "explicit.toml", &body.replace("llama.cpp\"\n", "llama.cpp\"\nport = 9000\n"));
+    let list = e.run(&["list", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+    let port_of = |name: &str| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name && r["origin"] == "deck")
+            .map(|r| r["port"].as_u64().unwrap())
+            .unwrap()
+    };
+    assert_eq!(port_of("alpha"), 8080);
+    assert_eq!(port_of("bravo"), 8081);
+    assert_eq!(port_of("explicit"), 9000, "an explicit [engine] port wins");
+}
+
+#[test]
 fn doctor_json_reports_hardware_and_recipes() {
     let e = Env::new();
     let out = e.run(&["doctor", "--json"]);
