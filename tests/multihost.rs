@@ -41,7 +41,8 @@ impl Host {
 
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_lmdeck"));
-        c.env("LMDECK_HOME", self.dir.join("home"))
+        c.env("HOME", self.dir.join("home"))
+            .env("LMDECK_HOME", self.dir.join("home"))
             .env("LMDECK_MODELS_DIR", self.dir.join("models"))
             .env("HF_HUB_CACHE", self.dir.join("hf"))
             .env("NO_COLOR", "1")

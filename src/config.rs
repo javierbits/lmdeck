@@ -46,6 +46,10 @@ pub struct Config {
     /// `[index]`: the recipe index Browse and `lmdeck add <name>` read.
     #[serde(default, skip_serializing_if = "IndexConfig::is_default")]
     pub index: IndexConfig,
+    /// `[harness]`: which agent harnesses (opencode, omp, grok, pi, hermes)
+    /// lmdeck points at served models.
+    #[serde(default, skip_serializing_if = "HarnessConfig::is_default")]
+    pub harness: HarnessConfig,
 }
 
 /// `[index]` in config.toml.
@@ -170,6 +174,25 @@ impl UpdateChecks {
     }
 }
 
+/// `[harness]` in config.toml: which harnesses get provider entries for
+/// served models. See [`crate::harness`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HarnessConfig {
+    /// Harness ids (see `crate::harness::KNOWN`). Empty with `asked` means
+    /// the user chose none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sync: Vec<String>,
+    /// Set once the first-run prompt has run, so it doesn't ask again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
+}
+
+impl HarnessConfig {
+    pub fn is_default(&self) -> bool {
+        *self == HarnessConfig::default()
+    }
+}
+
 /// Explicit locations for engines that are not on `$PATH`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct EngineOverrides {
@@ -231,6 +254,7 @@ impl Default for Config {
             serve: ServeConfig::default(),
             weights: WeightsConfig::default(),
             index: IndexConfig::default(),
+            harness: HarnessConfig::default(),
         }
     }
 }
@@ -288,6 +312,53 @@ impl Config {
         let text = fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
         let out = set_top_level(&text, "theme", theme.map(|t| toml::Value::String(t.into()).to_string()).as_deref());
         Self::parse(&out).context("updated config would not parse")?;
+        let tmp = file.with_extension("toml.tmp");
+        fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, &file)?;
+        Ok(file)
+    }
+
+    /// Saves `[harness]` (replacing any existing one) without touching the
+    /// rest of the file: comments and other settings stay as they are.
+    pub fn save_harness(paths: &Paths, sync: &[String], asked: bool) -> Result<PathBuf> {
+        let file = paths.config_file();
+        let body = match fs::read_to_string(&file) {
+            Ok(text) => {
+                let mut out = String::new();
+                let mut skipping = false;
+                for line in text.lines() {
+                    if line.trim() == "[harness]" {
+                        skipping = true;
+                        continue;
+                    }
+                    if skipping {
+                        if line.trim_start().starts_with('[') {
+                            skipping = false;
+                        } else {
+                            continue;
+                        }
+                    }
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                let trimmed = out.trim_end_matches('\n');
+                if trimmed.is_empty() {
+                    String::new()
+                } else {
+                    format!("{trimmed}\n\n")
+                }
+            }
+            Err(_) => String::new(),
+        };
+        let mut out = body;
+        out.push_str("[harness]\n");
+        out.push_str(&format!("asked = {asked}\n"));
+        if !sync.is_empty() {
+            let list: Vec<String> = sync.iter().map(|s| format!("\"{s}\"")).collect();
+            out.push_str(&format!("sync = [{}]\n", list.join(", ")));
+        }
+        Self::parse(&out).context("updated config would not parse")?;
+        fs::create_dir_all(&paths.config_dir)?;
         let tmp = file.with_extension("toml.tmp");
         fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
         fs::rename(&tmp, &file)?;
@@ -361,6 +432,31 @@ mod tests {
         assert_eq!(back, c);
     }
 
+    #[test]
+    fn harness_table_replaces_and_preserves_comments() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths { config_dir: d.path().into(), cache_dir: d.path().join("c"), state_dir: d.path().join("s") };
+        // no file yet: created with just the table
+        Config::save_harness(&paths, &["omp".to_string()], true).unwrap();
+        let c = Config::load(&paths).unwrap();
+        assert!(c.harness.asked && c.harness.sync == vec!["omp"]);
+        // existing file: comments and other tables survive, the table is replaced
+        fs::write(
+            paths.config_file(),
+            "# my notes\nmodels_dir = \"/data\" # keep\n\n[harness]\nasked = true\nsync = [\"old\"]\n\n[engines]\n# tabby\ntabbyapi_dir = \"~/t\"\n",
+        )
+        .unwrap();
+        Config::save_harness(&paths, &["opencode".to_string(), "pi".to_string()], true).unwrap();
+        let text = fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.starts_with("# my notes\nmodels_dir = \"/data\" # keep"), "{text}");
+        assert!(text.contains("[engines]\n# tabby\ntabbyapi_dir = \"~/t\""), "{text}");
+        assert!(!text.contains("old"), "{text}");
+        let c = Config::load(&paths).unwrap();
+        assert_eq!(c.models_dir, "/data");
+        assert_eq!(c.harness.sync, vec!["opencode", "pi"]);
+        assert!(c.harness.asked);
+        assert_eq!(c.engines.tabbyapi_dir.as_deref(), Some("~/t"));
+    }
     #[test]
     fn rejects_garbage() {
         assert!(Config::parse("models_dir = [").is_err());

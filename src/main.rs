@@ -155,6 +155,11 @@ enum Cmd {
     /// Colour themes for the TUI and web dashboard (Omarchy's, plus omp).
     #[command(subcommand)]
     Theme(ThemeCmd),
+    /// Agent harnesses (opencode, omp, grok, pi, hermes) lmdeck points at served models.
+    Harness {
+        #[command(subcommand)]
+        cmd: Option<HarnessCmd>,
+    },
     /// Full-screen dashboard (also what bare `lmdeck` opens in a terminal).
     Tui(TuiArgs),
     /// Serve the web dashboard and JSON API (localhost only by default).
@@ -192,6 +197,19 @@ enum ThemeCmd {
     SyncOmarchy,
     /// Forget the saved theme (back to omp).
     Reset,
+}
+
+#[derive(Subcommand)]
+enum HarnessCmd {
+    /// Show every known harness: detected, enabled, config path.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Sync every enabled harness now.
+    Sync,
+    /// Start syncing a harness (its config is written on the next serve).
+    Enable { name: String },
+    /// Stop syncing a harness (entries already written stay until rewritten).
+    Disable { name: String },
 }
 
 #[derive(Args, Default)]
@@ -429,7 +447,20 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let ctx = Ctx::load()?;
+    let mut ctx = Ctx::load()?;
+    // The first-run harness prompt runs once, before anything that serves or
+    // shows models; it never touches non-interactive runs.
+    if matches!(
+        cli.cmd,
+        None | Some(Cmd::Tui(_))
+            | Some(Cmd::Serve { .. })
+            | Some(Cmd::Use(_))
+            | Some(Cmd::Switch(_))
+            | Some(Cmd::List(_))
+            | Some(Cmd::Init { .. })
+    ) {
+        first_run(&mut ctx);
+    }
     match cli.cmd {
         None if !cli.plain
             && std::io::stdin().is_terminal()
@@ -463,8 +494,96 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
         Some(Cmd::Host(c)) => host_cmd(&ctx, c),
         Some(Cmd::Doctor { json }) => doctor(&ctx, json),
+        Some(Cmd::Harness { cmd }) => harness_cmd(&ctx, cmd),
         Some(Cmd::Init { models_dir, force }) => init(ctx, models_dir, force),
     }
+}
+
+// ───────────────────────────── harnesses ─────────────────────────────
+
+/// The once-only first-run prompt: asks which agent harnesses lmdeck should
+/// point at served models, and saves the answer to config.toml.
+fn first_run(ctx: &mut Ctx) {
+    if !lmdeck::harness::should_ask(&ctx.cfg) {
+        return;
+    }
+    if let Some(sync) = lmdeck::harness::wizard(&ctx.cfg) {
+        match Config::save_harness(&ctx.paths, &sync, true) {
+            Ok(file) => {
+                ctx.cfg.harness = lmdeck::config::HarnessConfig { sync, asked: true };
+                println!("{} {}", green("✓"), dim(&format!("saved to {}", file.display())));
+            }
+            Err(e) => eprintln!("{} {e:#}", yellow("warning:")),
+        }
+    }
+}
+
+fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
+    let home = lmdeck::paths::home_dir();
+    let known_list = lmdeck::harness::KNOWN.iter().map(|h| h.id).collect::<Vec<_>>().join(", ");
+    let list_view = |ctx: &Ctx| -> Result<()> {
+        let enabled = lmdeck::harness::enabled(&ctx.cfg);
+        let mut t = Table::new(&["harness", "state", "config"]);
+        for h in lmdeck::harness::KNOWN {
+            let path = lmdeck::harness::config_path(h.id, &home).unwrap_or_default();
+            let state = if enabled.contains(&h.id) {
+                if lmdeck::harness::detected(h.id, &home) {
+                    green("synced")
+                } else {
+                    dim("not installed")
+                }
+            } else {
+                dim("off")
+            };
+            t.row(vec![bold(h.label), state, dim(&path.display().to_string())]);
+        }
+        println!("{}", t.render());
+        if !ctx.cfg.harness.asked {
+            println!("{}", dim("the first-run prompt hasn't run yet; everything detected gets synced."));
+        }
+        Ok(())
+    };
+    match c {
+        Some(HarnessCmd::List) => return list_view(ctx),
+        Some(HarnessCmd::Sync) => {
+            let done = lmdeck::harness::sync(&ctx.paths, &ctx.cfg);
+            if done.is_empty() {
+                println!("{}", dim("harness sync is off (LMDECK_NO_SYNC, or none enabled)"));
+            }
+            for s in done {
+                let state = if !s.installed {
+                    "not installed"
+                } else if let Some(e) = &s.error {
+                    e
+                } else if s.changed {
+                    "updated"
+                } else {
+                    "unchanged"
+                };
+                println!("{} {state}", dim(&format!("· {}", s.id)));
+            }
+        }
+        Some(HarnessCmd::Enable { name }) => {
+            let h = lmdeck::harness::known(&name)
+                .ok_or_else(|| anyhow!("unknown harness '{name}' (known: {known_list})"))?;
+            let mut sync = ctx.cfg.harness.sync.clone();
+            if !sync.iter().any(|s| s == h.id) {
+                sync.push(h.id.to_string());
+            }
+            Config::save_harness(&ctx.paths, &sync, true)?;
+            let path = lmdeck::harness::config_path(h.id, &home).unwrap_or_default();
+            println!("{} {} — written on the next serve ({})", green("✓"), h.label, dim(&path.display().to_string()));
+        }
+        Some(HarnessCmd::Disable { name }) => {
+            let h = lmdeck::harness::known(&name)
+                .ok_or_else(|| anyhow!("unknown harness '{name}' (known: {known_list})"))?;
+            let sync: Vec<String> = ctx.cfg.harness.sync.iter().filter(|s| s.as_str() != h.id).cloned().collect();
+            Config::save_harness(&ctx.paths, &sync, true)?;
+            println!("{} {} — no longer synced (entries already written stay)", green("✓"), h.label);
+        }
+        None => list_view(ctx)?,
+    }
+    Ok(())
 }
 
 // ───────────────────────────── hosts ─────────────────────────────
@@ -1140,6 +1259,7 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     println!("{} starting {} {}", cyan("▶"), bold(&r.name), dim(&format!("({}, port {})", r.engine.name, plan.port)));
     println!("  {}", dim(&plan.command_line()));
     let rec = runner::start(&ctx.paths, &r.name, r.engine.name.as_str(), &plan)?;
+    println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));
     println!("  {}", dim(&format!("log: {}", rec.log.display())));
     if a.no_wait {
         println!("{} launched; check with `lmdeck list`", yellow("◐"));
@@ -1225,6 +1345,7 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<
             println!("{} {n} was not started by lmdeck", dim("○"));
         }
     }
+    println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));
     Ok(())
 }
 

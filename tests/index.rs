@@ -84,7 +84,8 @@ impl Env {
 
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("lmdeck").unwrap();
-        c.env("LMDECK_HOME", self.path("home"))
+        c.env("HOME", self.path("home"))
+            .env("LMDECK_HOME", self.path("home"))
             .env("LMDECK_MODELS_DIR", self.path("models"))
             .env("HF_HUB_CACHE", self.path("hf"))
             .env("NO_COLOR", "1")

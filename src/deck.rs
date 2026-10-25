@@ -495,7 +495,8 @@ impl Deck {
         }
         crate::checkout::ensure(&self.paths, r)?;
         runner::start(&self.paths, &r.name, r.engine.name.as_str(), &plan)?;
-        let mut msg = format!("starting {} on :{}", r.name, plan.port);
+        let mut msg =
+            format!("starting {} on :{}{}", r.name, plan.port, crate::harness::sync_note(&self.paths, &self.cfg));
         if !stopped.is_empty() {
             msg.push_str(&format!(" (stopped {})", stopped.join(", ")));
         }
@@ -511,7 +512,7 @@ impl Deck {
             Err(e) => return Err(e),
         };
         if runner::stop(&self.paths, &name, &self.docker())? {
-            Ok(format!("stopped {name}"))
+            Ok(format!("stopped {name}{}", crate::harness::sync_note(&self.paths, &self.cfg)))
         } else {
             bail!("{name} was not started by lmdeck")
         }

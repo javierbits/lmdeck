@@ -60,7 +60,8 @@ impl Served {
 
 fn lmdeck_cmd(root: &std::path::Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_lmdeck"));
-    c.env("LMDECK_HOME", root.join("home"))
+    c.env("HOME", root.join("home"))
+        .env("LMDECK_HOME", root.join("home"))
         .env("LMDECK_MODELS_DIR", root.join("models"))
         .env("HF_HUB_CACHE", root.join("hf"))
         .env("NO_COLOR", "1")
@@ -113,7 +114,7 @@ fn status(e: ureq::Error) -> u16 {
 
 #[test]
 fn dashboard_and_read_endpoints() {
-    let s = serve(&[], |_| {});
+    let s = serve_with(&[], &[("LMDECK_NO_PROBE", "1".to_string())], |_| {});
     let html = ureq::get(&format!("{}/", s.base)).call().unwrap();
     assert!(html.header("Content-Security-Policy").unwrap().contains("frame-ancestors 'none'"));
     let body = html.into_string().unwrap();

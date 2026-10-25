@@ -165,6 +165,11 @@ pub enum Probe {
 /// Probes an OpenAI-compatible server on localhost. Any HTTP response counts
 /// as up (TabbyAPI answers 401 without a key).
 pub fn probe(port: u16, timeout: Duration) -> Probe {
+    // Hermetic mode: tests set this so recipe statuses never depend on what
+    // happens to be listening on the machine's real ports.
+    if std::env::var_os("LMDECK_NO_PROBE").is_some() {
+        return Probe::Down;
+    }
     let url = format!("http://127.0.0.1:{port}/v1/models");
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     match agent.get(&url).call() {

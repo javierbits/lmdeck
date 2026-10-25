@@ -177,7 +177,7 @@ pub(crate) mod tests {
 
     pub(crate) fn sh_git(dir: &Path, args: &[&str]) {
         let st = Command::new("git")
-            .args(["-c", "commit.gpgsign=false", "-C"])
+            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-C"])
             .arg(dir)
             .args(args)
             .env("GIT_AUTHOR_NAME", "t")

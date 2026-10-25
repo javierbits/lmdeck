@@ -12,6 +12,7 @@ pub mod deck;
 pub mod engine;
 pub mod fabric;
 pub mod hardware;
+pub mod harness;
 pub mod hosts;
 pub mod icons;
 pub mod index;

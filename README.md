@@ -181,6 +181,32 @@ git clone https://github.com/omacom/omarchy /tmp/omarchy
 python3 scripts/import-omarchy-themes.py /tmp/omarchy > src/theme/omarchy.rs
 ```
 
+## Harness sync
+
+When a recipe starts, lmdeck can also point your agent CLIs at it, the way
+lmswitch does: every running server becomes a provider entry (or a
+custom-provider lane) in the config of each harness you chose, with its own
+`http://<host>:<port>/v1` base URL, display name and context window. When the
+server stops, its entry goes away. Your own entries in those files are never
+touched.
+
+Supported harnesses: **OpenCode** (`~/.config/opencode/opencode.json`),
+**omp** (`~/.omp/agent/models.yml`), **Grok** (`~/.grok/config.toml`),
+**pi** (`~/.pi/agent/models.json`) and **Hermes** (`~/.hermes/config.yaml`).
+
+The first time you run lmdeck in a terminal it asks which ones to sync with
+(detected ones default to yes); the answer is saved to `[harness]` in
+config.toml. Change it later with `lmdeck harness enable|disable <name>`, run
+a sync right now with `lmdeck harness sync`, or list what is detected with
+`lmdeck harness`. `LMDECK_NO_SYNC=1` turns the whole thing off, and
+`LMDECK_SYNC_HOST=<host>` overrides the host used in the written URLs (by
+default the config `host` when it is a specific address, else
+`<hostname>.local`, so the URLs also resolve from other machines on the LAN).
+
+Each machine syncs its own harness configs for the models it serves; a model
+started with `--on HOST` is synced by that host's lmdeck.
+
+
 ## Web dashboard
 
 ```sh
@@ -361,6 +387,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
 | `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |
 | `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
+| `lmdeck harness [list]` / `sync` / `enable <name>` / `disable <name>` | Agent harnesses (OpenCode, omp, Grok, pi, Hermes) lmdeck keeps pointed at served models; see [Harness sync](#harness-sync). |
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. Off loopback every `/api` route but `/api/health` needs the token (reads too), and a state-changing request from a non-loopback peer without a configured token is refused with 403. Token: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
@@ -697,6 +724,7 @@ timeout_secs = 5      # per ls-remote, 1-120
 | upstream update checks | `~/.cache/lmdeck/update-check.json` |
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
+| harness configs | written into each harness's own file: `~/.config/opencode/opencode.json`, `~/.omp/agent/models.yml`, `~/.grok/config.toml`, `~/.pi/agent/models.json`, `~/.hermes/config.yaml` (see [Harness sync](#harness-sync)) |
 | model weights | `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) plus the Hugging Face cache |
 
 Set `LMDECK_HOME=/some/dir` to put all of lmdeck's files under one directory.
@@ -725,6 +753,10 @@ timeout_secs = 5
 [[sources]]               # none by default
 name = "mine"
 spec = "github:someone/recipes"
+
+[harness]                 # agent harnesses to point at served models (see Harness sync)
+asked = true
+sync = ["opencode", "omp"]
 ```
 
 ## Built-in examples

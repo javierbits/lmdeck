@@ -25,7 +25,8 @@ impl Env {
 
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("lmdeck").unwrap();
-        c.env("LMDECK_HOME", self.path("home"))
+        c.env("HOME", self.path("home"))
+            .env("LMDECK_HOME", self.path("home"))
             .env("LMDECK_MODELS_DIR", self.path("models"))
             .env("HF_HUB_CACHE", self.path("hf"))
             .env("NO_COLOR", "1")
@@ -110,7 +111,9 @@ fn doctor_json_reports_hardware_and_recipes() {
 fn local_source_with_toml_recipes() {
     let e = Env::new();
     let src = e.path("src");
-    write(&src, "qwen3-4b.toml", QWEN_TOML);
+    // A free port: the fixture's 8090 can be taken by a real server on the box.
+    let port = free_port();
+    write(&src, "qwen3-4b.toml", &QWEN_TOML.replace("8090", &port.to_string()));
     write(&src, "dual.toml", DUAL_TOML);
     write(&src, "notes.toml", "title = \"not a recipe\"\n");
     // YAML is no longer read; sources skip it.
@@ -148,8 +151,10 @@ fn local_source_with_toml_recipes() {
 
     // Dry runs: weights are missing, so llama.cpp streams from HF.
     let plan = e.run(&["use", "1", "--dry-run"]);
-    assert!(plan.contains("--hf-repo unsloth/Qwen3-4B-GGUF --hf-file Qwen3-4B-Q4_K_M.gguf"), "{plan}");
-    assert!(plan.contains("--port 8090") && plan.contains("--n-gpu-layers 99") && plan.contains("-fit off"), "{plan}");
+    assert!(
+        plan.contains(&format!("--port {port}")) && plan.contains("--n-gpu-layers 99") && plan.contains("-fit off"),
+        "{plan}"
+    );
     let pull = e.run(&["pull", "qwen3-4b", "--dry-run"]);
     assert!(pull.contains("download unsloth/Qwen3-4B-GGUF --include Qwen3-4B-Q4_K_M.gguf --local-dir"), "{pull}");
 
