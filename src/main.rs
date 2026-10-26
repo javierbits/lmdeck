@@ -263,6 +263,9 @@ struct ListArgs {
     all: bool,
     #[arg(long)]
     json: bool,
+    /// Don't group the table by model family (Qwen, GLM, …).
+    #[arg(long)]
+    flat: bool,
 }
 
 #[derive(Args, Clone)]
@@ -898,12 +901,19 @@ fn update_hint(ups: &std::collections::BTreeMap<String, UpdateView>) {
 }
 
 fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) -> Result<()> {
+    deck_table_grouped(ctx, entries, loaded_only, json_out, true)
+}
+
+/// The recipe table. The human table groups recipes by model family
+/// (`── Qwen ──` separators) unless `group` is off; JSON stays flat.
+fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool, group: bool) -> Result<()> {
     let ups = update_views(ctx, entries);
     let mut cache: HashMap<u16, Probe> = HashMap::new();
     let mut t = Table::new(&["#", "", "name", "engine", "quant", "size", "dl", "port", "origin"])
         .right(&[0, 5, 7])
         .max_width(2, 48);
     let mut rows = vec![];
+    let mut display: Vec<(usize, usize, &'static str, Vec<String>)> = vec![];
     let node = ctx.cfg.node_name();
     let ports = deck::planned_ports(&ctx.catalog(), &ctx.paths, &ctx.cfg);
     let has_hosts = hosts::HostsFile::load(&ctx.paths).map(|f| !f.hosts.is_empty()).unwrap_or(false);
@@ -934,7 +944,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         let p = ctx.presence(r);
         rows.push(json!({
             "index": i + 1, "name": r.name, "origin": f.origin, "engine": r.engine.name.as_str(),
-            "quant": r.quant_short(), "port": port, "status": status_word(&st),
+            "quant": r.quant_short(), "port": port, "status": status_word(&st), "family": r.family(),
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
             "update": update_json(ups.get(&r.name)),
             "weights_on": weights_on, "nodes": nodes,
@@ -959,17 +969,39 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
         if weights_on.iter().any(|h| h != hosts::LOCAL) {
             name = format!("{name} {}", dim(&format!("weights on: {}", weights_on.join(", "))));
         }
-        t.row(vec![
-            (i + 1).to_string(),
-            glyph,
-            name,
-            r.engine.name.as_str().into(),
-            r.quant_short(),
-            size_cell(r, &p),
-            downloaded_cell(&p),
-            port.to_string(),
-            dim(&f.origin),
-        ]);
+        display.push((
+            i,
+            r.family_rank(),
+            r.family(),
+            vec![
+                (i + 1).to_string(),
+                glyph,
+                name,
+                r.engine.name.as_str().into(),
+                r.quant_short(),
+                size_cell(r, &p),
+                downloaded_cell(&p),
+                port.to_string(),
+                dim(&f.origin),
+            ],
+        ));
+    }
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    // Family-grouped table: rows keep their `#` (resolve order), the display
+    // just sorts them under `── Family ──` separators.
+    display.sort_by_key(|(i, rank, _, _)| (*rank, *i));
+    let mut prev: Option<&'static str> = None;
+    for (_, _, fam, cells) in &display {
+        if group && prev != Some(fam) {
+            prev = Some(fam);
+            let mut sep = vec![String::new(); 9];
+            sep[2] = cyan(&format!("── {fam}"));
+            t.row(sep);
+        }
+        t.row(cells.clone());
     }
     if json_out {
         println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -993,7 +1025,7 @@ fn list(ctx: &Ctx, a: &ListArgs) -> Result<()> {
     if a.loaded && !a.all {
         return list_loaded(ctx, &cat, a.json);
     }
-    deck_table(ctx, &entries, a.loaded, a.json)?;
+    deck_table_grouped(ctx, &entries, a.loaded, a.json, !a.flat)?;
     if !a.json {
         hints(ctx, &cat, a.all);
     }

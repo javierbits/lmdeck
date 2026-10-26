@@ -130,9 +130,10 @@ pub struct App {
     pub cursor: usize,
     pub query: String,
     pub only_fit: bool,
-    pub show_all: bool,
+    /// Group the deck list under `── Family ──` separators (default on).
+    pub grouped: bool,
     pub theme: usize,
-    /// Logs pane takes over the right-hand column.
+    pub show_all: bool,
     pub logs_max: bool,
     /// Lines scrolled up from the bottom of the log.
     pub log_scroll: usize,
@@ -177,6 +178,7 @@ impl Default for App {
             cursor: 0,
             query: String::new(),
             only_fit: false,
+            grouped: true,
             show_all: false,
             theme: 0,
             logs_max: false,
@@ -726,6 +728,10 @@ impl App {
                 self.theme = (self.theme + 1) % themes().len();
                 self.notify(format!("theme: {}", self.theme().title), Level::Ok);
                 return Action::SaveTheme(self.theme().name.to_string());
+            }
+            KeyCode::Char('F') if self.tab == Tab::Deck => {
+                self.grouped = !self.grouped;
+                self.notify(if self.grouped { "grouped by family" } else { "flat list" }, Level::Ok);
             }
             KeyCode::Char('T') => self.open_theme_picker(),
             KeyCode::Char('r') => return Action::Refresh,

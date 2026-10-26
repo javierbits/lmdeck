@@ -75,6 +75,7 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:12p
 .card .speed{font-family:var(--mono,monospace);font-size:12px;color:var(--fg)} .card .speed small{color:var(--dim)}
 .card a.rd{color:var(--accent);font-size:12px;text-decoration:none} .card a.rd:hover{text-decoration:underline}
 .empty{grid-column:1/-1;padding:50px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px}
+.famhead{grid-column:1/-1;margin:8px 0 -4px;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--line2);padding-bottom:6px}
 
 /* cards */
 .card{position:relative;display:flex;flex-direction:column;gap:9px;padding:15px 16px 13px;background:linear-gradient(180deg,var(--card2),var(--card));
@@ -290,6 +291,7 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   <button class="chipbtn" data-f="fits">Fits this machine</button>
   <button class="chipbtn deckonly" data-f="running">Running</button>
   <button class="chipbtn deckonly" data-f="disk">On disk</button>
+  <button class="chipbtn deckonly" id="groupbtn" title="group the cards by model family (Qwen, GLM, …)">Group families</button>
   <label class="sortsel browseonly hidden">sort <select id="bsort"><option value="name">name</option><option value="sparks">sparks</option><option value="speed">speed</option></select></label>
   <button class="chipbtn browseonly hidden" id="brefresh" title="fetch the index now">↻ Refresh index</button>
   <div class="grow"></div>
@@ -333,7 +335,7 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const st = {hosts:null, snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null, index:null, bsort:"name", btags:new Set()};
+const st = {hosts:null, snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null, index:null, bsort:"name", btags:new Set(), group:localStorage.getItem("lmdeck-group") !== "0"};
 
 // token: #token=… in the URL, else remembered
 (function(){ const m = location.hash.match(/token=([^&]+)/); if (m) { localStorage.setItem("lmdeck-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); } })();
@@ -371,6 +373,24 @@ function visible(){
 }
 const up = r => ["loaded","loading","external"].includes(r.status);
 const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port busy", stopped:"stopped"};
+
+// Family display order mirrors the Rust FAMILY_RULES; "Other" sorts last.
+const FAMILY_RANKS = ["Qwen","Gemma","DeepSeek","Nemotron","Kimi","GPT-OSS","GLM","Nex","Step","Ornith","MiMo","MiniMax","Llama","Mistral","Phi","Command","Yi","Falcon","SmolLM","OLMo","InternLM","Hunyuan","Granite","Seed","Apertus","Ernie","Grok","RWKV","Apex"];
+function deckGrid(v){
+  const empty = `<div class="empty">${st.q ? "Nothing matches “" + esc(st.q) + "”." : "No recipes match these filters."}<br><span class="dim">Try All, or clear the filters.</span></div>`;
+  if (!v.length) return empty;
+  if (!st.group) return v.map(card).join("");
+  // Cards grouped under family headers; the incoming sort (running first)
+  // is stable, so families keep their internal order.
+  const rank = f => { const i = FAMILY_RANKS.indexOf(f); return i < 0 ? 999 : i; };
+  const sorted = [...v].sort((a, b) => rank(a.family) - rank(b.family));
+  let out = "", cur = null;
+  for (const r of sorted) {
+    if (r.family !== cur) { cur = r.family; out += `<h2 class="famhead">${esc(cur)}</h2>`; }
+    out += card(r);
+  }
+  return out;
+}
 
 function liveLine(r){
   const m = up(r) && localTel() && (localTel().models||[]).find(x => x.name === r.name); if (!m) return "";
@@ -527,8 +547,7 @@ function render(){
   if (browsing) renderBrowse();
   const v = visible();
   if (document.activeElement?.matches?.("select.runon")) return; // don't close an open picker
-  if (!browsing) $("#grid").innerHTML = v.length ? v.map(card).join("") :
-    `<div class="empty">${st.q ? "Nothing matches “" + esc(st.q) + "”." : "No recipes match these filters."}<br><span class="dim">Try All, or clear the filters.</span></div>`;
+  if (!browsing) $("#grid").innerHTML = deckGrid(v);
 
   const gpus = (hw.gpus||[]).map(g => `${esc(g.vendor)} ${esc(g.name)}${g.memory_gb ? " · " + gb(g.memory_gb) : ""}`).join("<br>") || "none";
   $("#mach").innerHTML = [["host",hw.hostname],["platform",hw.platform],["cpu",`${hw.cpu} (${hw.cores})`],["memory",gb(total) + (hw.unified_memory ? " unified" : "")]]
@@ -1127,6 +1146,8 @@ $("#grid").addEventListener("click", e => { const b = e.target.closest("[data-ba
   if (b.dataset.bact === "add") install(b.dataset.name);
   else { $("#scope [data-v=deck]").click(); $("#q").value = b.dataset.name; st.q = b.dataset.name; render(); } }, true);
 document.querySelectorAll(".chipbtn").forEach(b => b.onclick = () => { const f = b.dataset.f; st.f.has(f) ? st.f.delete(f) : st.f.add(f); b.classList.toggle("on"); render(); });
+$("#groupbtn").onclick = () => { st.group = !st.group; localStorage.setItem("lmdeck-group", st.group ? "1" : "0"); $("#groupbtn").classList.toggle("on", st.group); render(); };
+$("#groupbtn").classList.toggle("on", st.group);
 document.addEventListener("keydown", e => {
   if (e.key === "/" && document.activeElement !== $("#q")) { e.preventDefault(); $("#q").focus(); }
   if (e.key === "Escape" && !$("#thmenu").classList.contains("hidden")) { closeThemeMenu(); $("#thbtn").focus(); return; }

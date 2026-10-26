@@ -454,6 +454,47 @@ pub fn is_yaml_file(p: &Path) -> bool {
 pub const YAML_UNSUPPORTED: &str =
     "YAML recipes are no longer supported: lmdeck reads TOML only (convert it to a .toml recipe; see the README's \"Recipe format\")";
 
+/// Model families for the grouped views, in display order: the first rule
+/// whose key appears (case-insensitive substring) in a recipe's display name,
+/// name or model id wins; everything else is "Other". The list mirrors
+/// lmswitch's `FAMILY_RULES` plus the other major labs.
+pub const FAMILY_RULES: &[(&str, &[&str])] = &[
+    ("Qwen", &["qwen", "qwopus"]),
+    ("Gemma", &["diffusiongemma", "gemma", "gemini"]),
+    ("DeepSeek", &["deepseek"]),
+    ("Nemotron", &["nemotron"]),
+    ("Kimi", &["kimi", "moonshot"]),
+    ("GPT-OSS", &["gpt-oss", "gpt"]),
+    ("GLM", &["glm"]),
+    ("Nex", &["nex"]),
+    ("Step", &["step"]),
+    ("Ornith", &["ornith"]),
+    ("MiMo", &["mimo"]),
+    ("MiniMax", &["minimax"]),
+    ("Llama", &["llama"]),
+    ("Mistral", &["mistral", "mixtral", "ministral", "magistral", "voxtral", "pixtral", "codestral"]),
+    ("Phi", &["phi"]),
+    ("Command", &["command-r", "commandr"]),
+    ("Yi", &["yi-"]),
+    ("Falcon", &["falcon"]),
+    ("SmolLM", &["smollm", "smol"]),
+    ("OLMo", &["olmo"]),
+    ("InternLM", &["internlm"]),
+    ("Hunyuan", &["hunyuan"]),
+    ("Granite", &["granite"]),
+    ("Seed", &["seed-oss"]),
+    ("Apertus", &["apertus"]),
+    ("Ernie", &["ernie"]),
+    ("Grok", &["grok"]),
+    ("RWKV", &["rwkv"]),
+    ("Apex", &["apex"]),
+];
+
+/// Sort rank of a family label (families keep their rule order; unknown → last).
+pub fn family_rank_of(family: &str) -> usize {
+    FAMILY_RULES.iter().position(|(l, _)| *l == family).unwrap_or(usize::MAX)
+}
+
 /// Returned (wrapped in anyhow) when a file parses but is not a recipe,
 /// so source indexing can skip READMEs, CI configs, etc. quietly.
 #[derive(Debug)]
@@ -594,6 +635,34 @@ impl Recipe {
         self.display_name.as_deref().unwrap_or(&self.name)
     }
 
+    /// The model family this recipe belongs to (for the grouped views): the
+    /// first [`FAMILY_RULES`] entry whose key appears in the display name,
+    /// recipe name or model id.
+    pub fn family(&self) -> &'static str {
+        let hay = format!(
+            "{} {} {}",
+            self.display(),
+            self.name,
+            [self.model.repo.as_deref(), self.model.path.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+        .to_lowercase();
+        for (label, keys) in FAMILY_RULES {
+            if keys.iter().any(|k| hay.contains(k)) {
+                return label;
+            }
+        }
+        "Other"
+    }
+
+    /// Sort rank of [`Recipe::family`] (families keep their rule order).
+    pub fn family_rank(&self) -> usize {
+        family_rank_of(self.family())
+    }
+
     pub fn port(&self) -> u16 {
         self.engine.port.unwrap_or_else(|| self.engine.name.default_port())
     }
@@ -691,6 +760,29 @@ args = ["-fa", "on"]
 [hardware]
 min_memory_gb = 4
 "#;
+    #[test]
+    fn families_group_the_major_labs() {
+        let fam = |toml: &str| Recipe::parse(toml, "t").unwrap().family();
+        let with_name = |name: &str| {
+            fam(&format!("[model]\nrepo = \"org/{name}\"\nfiles = [\"a.gguf\"]\n[engine]\nname = \"llama.cpp\"\n"))
+        };
+        assert_eq!(with_name("Qwen3-4B-GGUF"), "Qwen");
+        assert_eq!(with_name("GLM-5.3"), "GLM");
+        assert_eq!(with_name("DeepSeek-V3"), "DeepSeek");
+        assert_eq!(with_name("gpt-oss-20b"), "GPT-OSS");
+        assert_eq!(with_name("Llama-3.1-8B"), "Llama");
+        assert_eq!(with_name("Mixtral-8x7B"), "Mistral");
+        assert_eq!(with_name("Kimi-K2"), "Kimi");
+        assert_eq!(with_name("ornith-1.5-122b"), "Ornith");
+        assert_eq!(with_name("mystery-model"), "Other");
+        // the display name counts when the id carries nothing
+        let mut r =
+            Recipe::parse("[model]\nrepo = \"org/zzz\"\nfiles = [\"a.gguf\"]\n[engine]\nname = \"llama.cpp\"\n", "t")
+                .unwrap();
+        r.display_name = Some("GLM-5.3-Flash".into());
+        assert_eq!(r.family(), "GLM");
+        assert!(r.family_rank() < family_rank_of("Other"));
+    }
 
     #[test]
     fn parses_native_toml() {

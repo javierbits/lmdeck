@@ -59,10 +59,11 @@ table instead, and can type a row number to toggle that recipe on or off.
 `lmdeck` (or `lmdeck tui`) opens a full-screen dashboard. Its look borrows from
 [oh-my-pi](https://github.com/can1357/oh-my-pi): powerline segments, status
 pills, rounded panels, and a status bar with key hints.
-
 - **Deck**: your recipes with status pills (running, loading, stopped, pulling),
   download state (✓ on disk, ↓ pulling, · not yet) and fit (✓ fits, ! tight,
-  ✗ no fit). Next to the list are a details pane with the checks and the exact
+  ✗ no fit). The list groups models by family under `── Qwen ──`-style
+  separators (`F` toggles it; the web dashboard has a Group families button).
+  Next to the list are a details pane with the checks and the exact
   launch command, and the live log of the selected recipe. A running recipe
   also shows its process RSS and share of RAM, VRAM on discrete GPUs, tok/s
   when the engine exposes metrics, and GPU / power / temperature sparklines.
@@ -112,7 +113,8 @@ Quitting leaves servers running.
 | `t` | next theme (saved to config) |
 | `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
-| `?` | help |
+| `F` | group the deck by model family (`── Qwen ──` sections; `Qwen`, `GLM`, `DeepSeek`, …) — on again to flatten |
+| `1`–`6`, `tab` | deck · hosts · topology · machine · sources · browse (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
 | `q`, `esc`, `ctrl-c` | quit |
 
 On Browse, `↵` / `i` installs the selected entry (`lmdeck add <name>`), `S`
@@ -365,7 +367,7 @@ column and Machine panel there still describe that VM.
 
 | command | what it does |
 |---|---|
-| `lmdeck list [-a] [-l] [-d] [--json]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port. `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache). |
+| `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache). |
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |

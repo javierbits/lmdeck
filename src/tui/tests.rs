@@ -17,6 +17,7 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         description: Some(format!("{name} test recipe")),
         tags: vec!["chat".into()],
         engine: engine.into(),
+        family: "Other",
         quant: "Q4_K_M".into(),
         model: Some(format!("org/{name}")),
         revision: Some("0123456789abcdef".into()),
@@ -757,6 +758,7 @@ fn hosts_tab_wont_place_a_multi_node_recipe_on_one_host() {
 fn list_marks_weights_that_live_on_another_host() {
     let mut a = app();
     let mut s = demo();
+    a.grouped = false; // the badge is what this test checks, not the grouping
     let r = &mut s.recipes[0];
     r.downloaded = false;
     r.weights_on = vec!["spark2".into()];

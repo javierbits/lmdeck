@@ -222,6 +222,9 @@ pub struct RecipeView {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub engine: String,
+    /// Model family for the grouped views (`Qwen`, `GLM`, …; see
+    /// [`crate::recipe::FAMILY_RULES`]).
+    pub family: &'static str,
     pub quant: String,
     pub model: Option<String>,
     pub revision: Option<String>,
@@ -441,6 +444,7 @@ impl Deck {
                 reference,
                 origin: f.origin.clone(),
                 display_name: r.display().to_string(),
+                family: r.family(),
                 description: r.description.clone(),
                 tags: r.tags.clone(),
                 engine: r.engine.name.as_str().into(),

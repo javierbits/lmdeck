@@ -242,20 +242,31 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(format!("  {icon} {}", toast.text), Style::new().fg(level_color(toast.level, t))));
         }
     }
-    let hints: &[(&str, &str)] = match app.mode {
-        Mode::Search => &[("↵", "keep"), ("esc", "clear"), ("↑↓", "move")],
-        Mode::RunOn => &[("↑↓", "host"), ("↵", "start there"), ("s", "switch there"), ("esc", "cancel")],
-        _ if app.tab == Tab::Hosts => {
-            &[("↑↓", "host"), ("←→", "model"), ("↵", "run deck pick here"), ("x", "stop"), ("l", "logs"), ("?", "help")]
-        }
+    let hints: Vec<(&str, &str)> = match app.mode {
+        Mode::Search => vec![("↵", "keep"), ("esc", "clear"), ("↑↓", "move")],
+        Mode::RunOn => vec![("↑↓", "host"), ("↵", "start there"), ("s", "switch there"), ("esc", "cancel")],
+        _ if app.tab == Tab::Hosts => vec![
+            ("↑↓", "host"),
+            ("←→", "model"),
+            ("↵", "run deck pick here"),
+            ("x", "stop"),
+            ("l", "logs"),
+            ("?", "help"),
+        ],
         _ if app.tab == Tab::Browse => {
-            &[("/", "search"), ("↵", "install"), ("S", "sort"), ("f", "fits"), ("r", "refresh index"), ("?", "help")]
+            vec![("/", "search"), ("↵", "install"), ("S", "sort"), ("f", "fits"), ("r", "refresh index"), ("?", "help")]
         }
-        _ if app.tab == Tab::Topology => &[("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
-        _ => &[("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs"), ("?", "help")],
+        _ if app.tab == Tab::Topology => vec![("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
+        _ if app.tab == Tab::Deck => {
+            let mut h = vec![("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs")];
+            h.push(("F", if app.grouped { "flat" } else { "group by family" }));
+            h.push(("?", "help"));
+            h
+        }
+        _ => vec![("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs"), ("?", "help")],
     };
     let mut right = vec![];
-    for (k, label) in hints {
+    for (k, label) in &hints {
         right.push(Span::styled(format!(" {k}"), Style::new().fg(t.accent).bold()));
         right.push(Span::styled(format!(" {label} "), Style::new().fg(t.muted)));
     }
@@ -297,33 +308,54 @@ const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 2 + 8 + 6;
 fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let t = app.theme();
     let vis = app.visible();
+    // Family-grouped display: a stable sort by family rank over (index,
+    // recipe) pairs, so `app.cursor` (an index into `visible()`) still maps
+    // to its row — tracked through `sel_row`, since separators add rows.
+    let mut ordered: Vec<(usize, &RecipeView)> = vis.iter().enumerate().map(|(i, r)| (i, *r)).collect();
+    if app.grouped {
+        ordered.sort_by_key(|(i, r)| (crate::recipe::family_rank_of(r.family), *i));
+    }
     let total = s.recipes.iter().filter(|r| app.show_all || r.listed).count();
     let extra = if vis.len() == total { format!("{total}") } else { format!("{} of {total}", vis.len()) };
     let block = panel(title("▤", if app.show_all { "All recipes" } else { "Deck" }, Some(extra), t), t, !app.logs_max);
     let pill_w: u16 = if app.nerd { 13 } else { 11 };
     let name_w = (area.width.saturating_sub(LIST_FIXED_COLS + pill_w) as usize).max(14);
-    let rows: Vec<Row> = vis
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let busy = app.busy.contains(&r.name);
-            let (label, color) = status_pill(r, busy);
-            let dl = if r.pulling {
-                Span::styled("↓", Style::new().fg(t.accent).bold())
-            } else if r.downloaded {
-                Span::styled("✓", Style::new().fg(t.ok))
-            } else if !r.weights_on.is_empty() {
-                // On another host's disk: runnable here over NFS, never copied.
-                Span::styled("⛁", Style::new().fg(t.info))
-            } else {
-                Span::styled("·", Style::new().fg(t.dim))
-            };
-            let fit = match r.fit {
-                Level::Ok => Span::styled("✓ fits", Style::new().fg(t.ok)),
-                Level::Warn => Span::styled("! tight", Style::new().fg(t.warn)),
-                Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
-            };
-            let name = name_cell(r, t, name_w);
+    let mut rows: Vec<Row> = vec![];
+    let mut sel_row: Option<usize> = None;
+    let mut prev_family: Option<&'static str> = None;
+    for (vis_i, r) in &ordered {
+        if app.grouped && prev_family != Some(r.family) {
+            prev_family = Some(r.family);
+            let label = format!("── {} ", r.family);
+            let dashes = "─".repeat(name_w.saturating_sub(label.width() + 1).max(3));
+            rows.push(Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(format!("{label}{dashes}"), Style::new().fg(t.accent))),
+            ]));
+        }
+        if *vis_i == app.cursor {
+            sel_row = Some(rows.len());
+        }
+        let r = *r;
+        let busy = app.busy.contains(&r.name);
+        let (label, color) = status_pill(r, busy);
+        let dl = if r.pulling {
+            Span::styled("↓", Style::new().fg(t.accent).bold())
+        } else if r.downloaded {
+            Span::styled("✓", Style::new().fg(t.ok))
+        } else if !r.weights_on.is_empty() {
+            // On another host's disk: runnable here over NFS, never copied.
+            Span::styled("⛁", Style::new().fg(t.info))
+        } else {
+            Span::styled("·", Style::new().fg(t.dim))
+        };
+        let fit = match r.fit {
+            Level::Ok => Span::styled("✓ fits", Style::new().fg(t.ok)),
+            Level::Warn => Span::styled("! tight", Style::new().fg(t.warn)),
+            Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
+        };
+        let name = name_cell(r, t, name_w);
+        rows.push(
             Row::new(vec![
                 Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
                 Cell::from(name),
@@ -336,9 +368,13 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Cell::from(fit),
             ])
             // Row style sits under the cells, so pills keep their colours when selected.
-            .style(if i == app.cursor { Style::new().bg(t.selected_bg) } else { Style::new() })
-        })
-        .collect();
+            .style(if sel_row == Some(rows.len()) {
+                Style::new().bg(t.selected_bg)
+            } else {
+                Style::new()
+            }),
+        );
+    }
     let header = Row::new(["status", "recipe", "engine", "quant", "size", "dl", "fit"])
         .style(Style::new().fg(t.dim))
         .bottom_margin(0);
@@ -358,7 +394,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     .block(block)
     .column_spacing(1)
     .highlight_symbol(Span::styled("▎", Style::new().fg(t.accent)));
-    let mut state = TableState::default().with_selected(if vis.is_empty() { None } else { Some(app.cursor) });
+    let mut state = TableState::default().with_selected(sel_row);
     f.render_stateful_widget(table, area, &mut state);
     if vis.is_empty() {
         let msg = if app.query.is_empty() { "no recipes match the filters" } else { "nothing matches that search" };
