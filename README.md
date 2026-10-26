@@ -197,17 +197,21 @@ Supported harnesses: **OpenCode** (`~/.config/opencode/opencode.json`),
 **pi** (`~/.pi/agent/models.json`) and **Hermes** (`~/.hermes/config.yaml`).
 
 The first time you run lmdeck in a terminal it asks which ones to sync with
-(detected ones default to yes); the answer is saved to `[harness]` in
-config.toml. Change it later with `lmdeck harness enable|disable <name>`, run
-a sync right now with `lmdeck harness sync`, or list what is detected with
+(detected ones default to yes) and which hosts' running models to include;
+the answers are saved to `[harness]` in config.toml. Change them later with
+`lmdeck harness enable|disable <name>` and `lmdeck harness hosts all|none|NAME…`,
+run a sync right now with `lmdeck harness sync`, or list what is detected with
 `lmdeck harness`. `LMDECK_NO_SYNC=1` turns the whole thing off, and
 `LMDECK_SYNC_HOST=<host>` overrides the host used in the written URLs (by
 default the config `host` when it is a specific address, else
 `<hostname>.local`, so the URLs also resolve from other machines on the LAN).
 
-Each machine syncs its own harness configs for the models it serves; a model
-started with `--on HOST` is synced by that host's lmdeck.
-
+Models running on your other machines are included too: every configured host
+(hosts.toml) is asked what it is serving, and its running models become lanes
+in the same configs, pointed at that host's address — spark2's models show up
+in sparkA's opencode without touching spark2. Each lane gets its own base
+URL; remote lanes are tagged with the host (`glm5.3-flash [Spark2]` in grok).
+An offline host just contributes nothing.
 
 ## Web dashboard
 
@@ -763,6 +767,7 @@ spec = "github:someone/recipes"
 [harness]                  # agent harnesses to point at served models (see Harness sync)
 asked = true
 sync = ["opencode", "omp"]
+# hosts = ["spark2"]       # whose running models are included (all configured by default)
 ```
 
 ## Built-in examples

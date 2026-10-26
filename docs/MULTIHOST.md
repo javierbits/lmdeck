@@ -72,13 +72,12 @@ Tokens are never written to the repo or logs.
   depth; its non-loopback path is not covered by an integration test (the
   test machine has no second interface).
 - No TLS of its own: use Tailscale, a VPN, or an HTTPS reverse proxy.
-- **Harness sync is per host.** When a host serves a model, *its* lmdeck
-  writes the harness configs *on that machine* (opencode, omp, grok, pi,
-  hermes — see the README's Harness sync). A model started with
-  `lmdeck use … --on spark2` is synced by spark2's lmdeck into spark2's
-  configs, so a harness on spark2 sees it; harnesses on other machines point
-  at it through their own `host add` + a `plan/<ref>?on=`-style start (the
-  URLs use each machine's LAN name).
+- **Harness sync spans hosts.** Each machine writes the harness configs on
+  *itself* for the models it serves (opencode, omp, grok, pi, hermes — see
+  the README's Harness sync), and every lmdeck also asks its configured
+  hosts what *they* are serving: sparkA's opencode lists sparkB's running
+  model (base URL pointed at sparkB), no copy involved. `lmdeck harness
+  hosts all|none|NAME…` and `[harness] hosts` choose which hosts count.
 
 
 ## 2. Where the weights live

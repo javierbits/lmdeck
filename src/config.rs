@@ -204,6 +204,11 @@ pub struct HarnessConfig {
     /// Set once the first-run prompt has run, so it doesn't ask again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asked: bool,
+    /// Hosts whose running models are included in the sync (from
+    /// hosts.toml). `None` means every configured host; an empty list means
+    /// local models only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<Vec<String>>,
 }
 
 impl HarnessConfig {
@@ -339,7 +344,7 @@ impl Config {
 
     /// Saves `[harness]` (replacing any existing one) without touching the
     /// rest of the file: comments and other settings stay as they are.
-    pub fn save_harness(paths: &Paths, sync: &[String], asked: bool) -> Result<PathBuf> {
+    pub fn save_harness(paths: &Paths, sync: &[String], hosts: Option<&[String]>, asked: bool) -> Result<PathBuf> {
         let file = paths.config_file();
         let body = match fs::read_to_string(&file) {
             Ok(text) => {
@@ -372,11 +377,14 @@ impl Config {
         let mut out = body;
         out.push_str("[harness]\n");
         out.push_str(&format!("asked = {asked}\n"));
+        if let Some(hosts) = hosts {
+            let list: Vec<String> = hosts.iter().map(|s| format!("\"{s}\"")).collect();
+            out.push_str(&format!("hosts = [{}]\n", list.join(", ")));
+        }
         if !sync.is_empty() {
             let list: Vec<String> = sync.iter().map(|s| format!("\"{s}\"")).collect();
             out.push_str(&format!("sync = [{}]\n", list.join(", ")));
         }
-        Self::parse(&out).context("updated config would not parse")?;
         fs::create_dir_all(&paths.config_dir)?;
         let tmp = file.with_extension("toml.tmp");
         fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
@@ -456,7 +464,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths { config_dir: d.path().into(), cache_dir: d.path().join("c"), state_dir: d.path().join("s") };
         // no file yet: created with just the table
-        Config::save_harness(&paths, &["omp".to_string()], true).unwrap();
+        Config::save_harness(&paths, &["omp".to_string()], None, true).unwrap();
         let c = Config::load(&paths).unwrap();
         assert!(c.harness.asked && c.harness.sync == vec!["omp"]);
         // existing file: comments and other tables survive, the table is replaced
@@ -465,7 +473,7 @@ mod tests {
             "# my notes\nmodels_dir = \"/data\" # keep\n\n[harness]\nasked = true\nsync = [\"old\"]\n\n[engines]\n# tabby\ntabbyapi_dir = \"~/t\"\n",
         )
         .unwrap();
-        Config::save_harness(&paths, &["opencode".to_string(), "pi".to_string()], true).unwrap();
+        Config::save_harness(&paths, &["opencode".to_string(), "pi".to_string()], None, true).unwrap();
         let text = fs::read_to_string(paths.config_file()).unwrap();
         assert!(text.starts_with("# my notes\nmodels_dir = \"/data\" # keep"), "{text}");
         assert!(text.contains("[engines]\n# tabby\ntabbyapi_dir = \"~/t\""), "{text}");

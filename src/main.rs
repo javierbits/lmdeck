@@ -210,6 +210,9 @@ enum HarnessCmd {
     Enable { name: String },
     /// Stop syncing a harness (entries already written stay until rewritten).
     Disable { name: String },
+    /// Which hosts' running models are included in the sync: `all`, `none`,
+    /// or a list of hosts.toml names.
+    Hosts { hosts: Vec<String> },
 }
 
 #[derive(Args, Default)]
@@ -510,10 +513,11 @@ fn first_run(ctx: &mut Ctx) {
     if !lmdeck::harness::should_ask(&ctx.cfg) {
         return;
     }
-    if let Some(sync) = lmdeck::harness::wizard(&ctx.cfg) {
-        match Config::save_harness(&ctx.paths, &sync, true) {
+    if let Some(choice) = lmdeck::harness::wizard(&ctx.cfg) {
+        match Config::save_harness(&ctx.paths, &choice.harnesses, choice.hosts.as_deref(), true) {
             Ok(file) => {
-                ctx.cfg.harness = lmdeck::config::HarnessConfig { sync, asked: true };
+                ctx.cfg.harness =
+                    lmdeck::config::HarnessConfig { sync: choice.harnesses, hosts: choice.hosts, asked: true };
                 println!("{} {}", green("✓"), dim(&format!("saved to {}", file.display())));
             }
             Err(e) => eprintln!("{} {e:#}", yellow("warning:")),
@@ -524,6 +528,14 @@ fn first_run(ctx: &mut Ctx) {
 fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
     let home = lmdeck::paths::home_dir();
     let known_list = lmdeck::harness::KNOWN.iter().map(|h| h.id).collect::<Vec<_>>().join(", ");
+    let hosts_line = |cfg: &Config| -> String {
+        match (&cfg.harness.hosts, configured_hosts(ctx)) {
+            (Some(h), _) if h.is_empty() => "none (local models only)".to_string(),
+            (Some(h), _) => h.join(", "),
+            (None, known) if known.is_empty() => "no hosts configured".to_string(),
+            (None, known) => format!("all configured ({})", known.join(", ")),
+        }
+    };
     let list_view = |ctx: &Ctx| -> Result<()> {
         let enabled = lmdeck::harness::enabled(&ctx.cfg);
         let mut t = Table::new(&["harness", "state", "config"]);
@@ -541,6 +553,7 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
             t.row(vec![bold(h.label), state, dim(&path.display().to_string())]);
         }
         println!("{}", t.render());
+        println!("{} {}", dim("hosts:"), hosts_line(&ctx.cfg));
         if !ctx.cfg.harness.asked {
             println!("{}", dim("the first-run prompt hasn't run yet; everything detected gets synced."));
         }
@@ -573,7 +586,7 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
             if !sync.iter().any(|s| s == h.id) {
                 sync.push(h.id.to_string());
             }
-            Config::save_harness(&ctx.paths, &sync, true)?;
+            Config::save_harness(&ctx.paths, &sync, ctx.cfg.harness.hosts.as_deref(), true)?;
             let path = lmdeck::harness::config_path(h.id, &home).unwrap_or_default();
             println!("{} {} — written on the next serve ({})", green("✓"), h.label, dim(&path.display().to_string()));
         }
@@ -581,14 +594,53 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
             let h = lmdeck::harness::known(&name)
                 .ok_or_else(|| anyhow!("unknown harness '{name}' (known: {known_list})"))?;
             let sync: Vec<String> = ctx.cfg.harness.sync.iter().filter(|s| s.as_str() != h.id).cloned().collect();
-            Config::save_harness(&ctx.paths, &sync, true)?;
-            println!("{} {} — no longer synced (entries already written stay)", green("✓"), h.label);
+            Config::save_harness(&ctx.paths, &sync, ctx.cfg.harness.hosts.as_deref(), true)?;
+        }
+        Some(HarnessCmd::Hosts { hosts }) => {
+            let known = configured_hosts(ctx);
+            let set: Option<Vec<String>> = match hosts.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                [] => {
+                    println!("{} {}", dim("hosts:"), hosts_line(&ctx.cfg));
+                    return Ok(());
+                }
+                ["all"] => None,
+                ["none"] => Some(vec![]),
+                _ => {
+                    let unknown: Vec<&String> = hosts.iter().filter(|h| !known.contains(h)).collect();
+                    if !unknown.is_empty() {
+                        bail!(
+                            "no host{} {} in hosts.toml (known: {})",
+                            if unknown.len() > 1 { "s" } else { "" },
+                            unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                            known.join(", ")
+                        );
+                    }
+                    Some(hosts.clone())
+                }
+            };
+            Config::save_harness(&ctx.paths, &ctx.cfg.harness.sync.clone(), set.as_deref(), true)?;
+            println!(
+                "{} sync hosts: {}",
+                green("✓"),
+                match &set {
+                    None => "all configured hosts".to_string(),
+                    Some(h) if h.is_empty() => "none (local models only)".to_string(),
+                    Some(h) => h.join(", "),
+                }
+            );
         }
         None => list_view(ctx)?,
     }
     Ok(())
 }
 
+/// The non-local host names in hosts.toml.
+fn configured_hosts(ctx: &Ctx) -> Vec<String> {
+    let node = ctx.cfg.node_name();
+    lmdeck::hosts::HostsFile::load(&ctx.paths)
+        .map(|f| f.hosts.iter().filter(|e| !lmdeck::remote::is_local(&e.name, &node)).map(|e| e.name.clone()).collect())
+        .unwrap_or_default()
+}
 // ───────────────────────────── hosts ─────────────────────────────
 
 fn host_row(h: &HostView) -> Vec<String> {

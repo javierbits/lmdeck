@@ -32,6 +32,7 @@ use serde_json::json;
 
 use crate::catalog::Catalog;
 use crate::config::Config;
+use crate::hosts::{HostEntry, HostsFile, FETCH_TIMEOUT};
 use crate::paths::{home_dir, Paths};
 use crate::runner::{self, RunRecord, Status};
 use crate::util::hostname;
@@ -51,6 +52,8 @@ pub struct Lane {
     pub ctx: u64,
     /// Accepts images (name heuristic: contains "vision" or a `vl` token).
     pub vision: bool,
+    /// Served on another host (its grok display gets a ` [Host]` tag).
+    pub remote: bool,
 }
 
 impl Lane {
@@ -190,7 +193,9 @@ fn serve_host_with(bind: &str, sync_env: Option<String>, hostname: &str) -> Stri
 }
 
 /// The running lanes plus the set of recipe names lmdeck manages (for hermes'
-/// custom-provider ownership rule).
+/// custom-provider ownership rule). Local lanes first, then every configured
+/// host's running models (same-name remote lanes are skipped: a local lane
+/// and a remote one share the model id, and the harnesses key on it).
 fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
     let host = serve_host(cfg);
     let cat = Catalog::load(paths, cfg);
@@ -219,9 +224,78 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
             display,
             host: host.clone(),
             port: rec.port,
+            remote: false,
         });
     }
+    let wanted = cfg.harness.hosts.as_deref();
+    for mut lane in remote_lanes(paths, wanted, &cfg.node_name()) {
+        if lanes.iter().any(|l| l.name == lane.name) {
+            continue;
+        }
+        managed.insert(lane.name.clone());
+        lane.vision = looks_vision(&lane.name) || looks_vision(&lane.display);
+        lanes.push(lane);
+    }
     (lanes, managed)
+}
+
+/// The running models of the configured hosts, fetched in parallel
+/// (best-effort: an unreachable host just contributes nothing). Each lane's
+/// host is the address part of the host's `hosts.toml` URL, so the written
+/// base URLs resolve wherever the harnesses run.
+fn remote_lanes(paths: &Paths, hosts: Option<&[String]>, node_name: &str) -> Vec<Lane> {
+    let Ok(file) = HostsFile::load(paths) else { return vec![] };
+    let targets: Vec<&HostEntry> = file
+        .hosts
+        .iter()
+        .filter(|e| !crate::remote::is_local(&e.name, node_name))
+        .filter(|e| hosts.is_none_or(|h| h.iter().any(|n| n == &e.name)))
+        .collect();
+    if targets.is_empty() {
+        return vec![];
+    }
+    std::thread::scope(|s| {
+        let jobs: Vec<_> = targets.iter().map(|e| s.spawn(move || lanes_from(e))).collect();
+        jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+    })
+}
+
+/// One host's running models, from its `/api/snapshot`.
+fn lanes_from(e: &HostEntry) -> Vec<Lane> {
+    let Ok(v) = crate::remote::Client::new(e).get_timeout::<serde_json::Value>("snapshot", FETCH_TIMEOUT) else {
+        return vec![];
+    };
+    let Some(rows) = v.get("recipes").and_then(|r| r.as_array()) else { return vec![] };
+    let Some(host) = url_host(&e.url) else { return vec![] };
+    rows.iter()
+        .filter(|r| r.get("status").and_then(|s| s.as_str()).is_some_and(|s| s == "loaded" || s == "loading"))
+        .filter_map(|r| {
+            let name = r.get("name")?.as_str()?.to_string();
+            let display = r.get("display_name").and_then(|d| d.as_str()).unwrap_or(&name).to_string();
+            Some(Lane {
+                vision: false,
+                remote: true,
+                name,
+                display,
+                host: host.clone(),
+                port: r.get("port")?.as_u64()? as u16,
+                ctx: r.get("ctx").and_then(|c| c.as_u64()).unwrap_or(65_536),
+            })
+        })
+        .collect()
+}
+
+/// The host part of a serve URL: `http://spark2.lan:7979` → `spark2.lan`.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split('/').next()?;
+    if let Some(rest) = rest.strip_prefix('[') {
+        return rest.split_once(']').map(|(h, _)| h.to_string());
+    }
+    match rest.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !h.is_empty() => Some(h.to_string()),
+        _ => Some(rest.to_string()),
+    }
 }
 
 /// Name heuristic from lmswitch: "vision" anywhere, or a standalone `vl`
@@ -365,11 +439,13 @@ fn write_grok(path: &Path, lanes: &[Lane]) -> Result<bool> {
     let mut sections: Vec<String> = vec![];
     for l in lanes {
         let key: String = l.name.chars().map(|c| if c == '.' || c == '_' { '-' } else { c }).collect();
+        // Remote lanes get a host tag, like lmswitch's cluster models.
+        let display = if l.remote { format!("{} [{}]", l.display, l.label()) } else { l.display.clone() };
         sections.push(format!(
             "[model.{key}]\nmodel = \"{}\"\nbase_url = \"{}\"\nname = \"{}\"\ncontext_window = {}",
             l.name,
             l.base_url(),
-            l.display,
+            display,
             l.ctx
         ));
     }
@@ -597,10 +673,20 @@ pub fn should_ask(cfg: &Config) -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choice {
+    /// Harness ids to sync.
+    pub harnesses: Vec<String>,
+    /// Hosts whose running models are included (`None` = every configured
+    /// host, as lmswitch did with its cluster).
+    pub hosts: Option<Vec<String>>,
+}
+
 /// The first-run prompt: one y/N per known harness (defaulting to yes for the
-/// detected ones). Returns the chosen ids, or `None` when skipped
-/// (non-interactive, `LMDECK_NO_SYNC`, or a config from a newer lmdeck).
-pub fn wizard(cfg: &Config) -> Option<Vec<String>> {
+/// detected ones), then one per configured host for including its running
+/// models. Returns the choice, or `None` when skipped (non-interactive,
+/// `LMDECK_NO_SYNC`, or a config from a newer lmdeck).
+pub fn wizard(cfg: &Config) -> Option<Choice> {
     use std::io::Write as _;
     if !should_ask(cfg) {
         return None;
@@ -613,7 +699,7 @@ pub fn wizard(cfg: &Config) -> Option<Vec<String>> {
             "when a model is served, its config gets a provider entry pointing at it; on stop it goes away."
         )
     );
-    let mut chosen = vec![];
+    let mut harnesses = vec![];
     for h in KNOWN {
         let on = detected(h.id, &home);
         let mark = if on { crate::ui::green("●") } else { crate::ui::dim("○") };
@@ -637,15 +723,48 @@ pub fn wizard(cfg: &Config) -> Option<Vec<String>> {
             _ => on,
         };
         if yes {
-            chosen.push(h.id.to_string());
+            harnesses.push(h.id.to_string());
         }
     }
-    if chosen.is_empty() {
+    if harnesses.is_empty() {
         println!("{}", crate::ui::dim("no harnesses selected — `lmdeck harness enable <name>` later."));
     } else {
-        println!("{} {}", crate::ui::green("✓"), chosen.join(", "));
+        println!("{} {}", crate::ui::green("✓"), harnesses.join(", "));
     }
-    Some(chosen)
+
+    // Models running on the other machines: include each host's lanes?
+    let node = cfg.node_name();
+    let remote: Vec<String> = HostsFile::load(&Paths::from_env())
+        .map(|f| f.hosts.iter().filter(|e| !crate::remote::is_local(&e.name, &node)).map(|e| e.name.clone()).collect())
+        .unwrap_or_default();
+    let mut hosts = None;
+    if !remote.is_empty() {
+        println!("{}", crate::ui::bold("models running on other hosts can be synced too:"));
+        let mut chosen = vec![];
+        for name in &remote {
+            print!("  include models running on {} [Y/n] > ", crate::ui::bold(name));
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                break;
+            }
+            let yes = match line.trim().to_lowercase().as_str() {
+                "" => true,
+                "y" | "yes" => true,
+                "n" | "no" => false,
+                _ => true,
+            };
+            if yes {
+                chosen.push(name.clone());
+            }
+        }
+        if chosen.is_empty() {
+            println!("{}", crate::ui::dim("local models only — `lmdeck harness hosts all` later."));
+        } else {
+            hosts = Some(chosen);
+        }
+    }
+    Some(Choice { harnesses, hosts })
 }
 
 #[cfg(test)]
@@ -661,7 +780,23 @@ mod tests {
     }
 
     fn lane(name: &str, port: u16, vision: bool) -> Lane {
-        Lane { name: name.into(), display: name.into(), host: "spark.local".into(), port, ctx: 65_536, vision }
+        Lane {
+            name: name.into(),
+            display: name.into(),
+            host: "spark.local".into(),
+            port,
+            ctx: 65_536,
+            vision,
+            remote: false,
+        }
+    }
+
+    #[test]
+    fn url_host_extracts_the_address() {
+        assert_eq!(url_host("http://spark2.lan:7979").as_deref(), Some("spark2.lan"));
+        assert_eq!(url_host("http://10.0.0.5:7979/").as_deref(), Some("10.0.0.5"));
+        assert_eq!(url_host("http://[::1]:7979").as_deref(), Some("::1"));
+        assert_eq!(url_host("spark.lan").as_deref(), Some("spark.lan"));
     }
 
     fn lane_ctx(name: &str, port: u16, ctx: u64) -> Lane {
@@ -873,9 +1008,86 @@ mod tests {
     fn enabled_follows_the_asked_flag() {
         let mut cfg = Config::default();
         assert_eq!(enabled(&cfg), vec!["opencode", "omp", "grok", "pi", "hermes"]);
-        cfg.harness = crate::config::HarnessConfig { sync: vec!["omp".into()], asked: true };
+        cfg.harness = crate::config::HarnessConfig { sync: vec!["omp".into()], asked: true, hosts: None };
         assert_eq!(enabled(&cfg), vec!["omp"]);
-        cfg.harness = crate::config::HarnessConfig { sync: vec![], asked: true };
+        cfg.harness = crate::config::HarnessConfig { sync: vec![], asked: true, hosts: None };
         assert!(enabled(&cfg).is_empty());
+    }
+
+    /// A one-shot HTTP server answering `/api/snapshot` with the given rows.
+    fn stub_snapshot(rows: serde_json::Value) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = serde_json::json!({ "recipes": rows }).to_string();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn remote_lanes_come_from_configured_hosts() {
+        let root = tempdir("remote");
+        let home = root.display().to_string();
+        let paths = Paths::resolve(|k| if k == "LMDECK_HOME" { Some(home.clone()) } else { None }, root);
+        fs::create_dir_all(paths.config_dir.clone()).unwrap();
+        let (port, handle) = stub_snapshot(serde_json::json!([
+            {"name": "glm5.3-flash", "display_name": "GLM-5.3-Flash", "status": "loaded", "port": 8890, "ctx": 1048576},
+            {"name": "stopped-one", "display_name": "stopped", "status": "stopped", "port": 8080}
+        ]));
+        fs::write(
+            paths.config_dir.join("hosts.toml"),
+            format!("[[host]]\nname = \"spark2\"\nurl = \"http://127.0.0.1:{port}\"\n"),
+        )
+        .unwrap();
+        let lanes = remote_lanes(&paths, None, "this-box");
+        assert_eq!(lanes.len(), 1, "{lanes:?}");
+        assert_eq!(lanes[0].name, "glm5.3-flash");
+        assert_eq!(lanes[0].host, "127.0.0.1");
+        assert_eq!(lanes[0].port, 8890);
+        assert_eq!(lanes[0].ctx, 1_048_576);
+        assert!(lanes[0].remote);
+        handle.join().unwrap();
+        // a host filter naming nothing configured yields no lanes
+        assert!(remote_lanes(&paths, Some(&["other".into()]), "this-box").is_empty());
+    }
+
+    #[test]
+    fn grok_tags_remote_lanes_with_the_host() {
+        let dir = tempdir("grok-remote");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut lane = lane_ctx("glm5.3-flash", 8890, 1_048_576);
+        lane.host = "spark2.lan".into();
+        lane.remote = true;
+        assert!(write_grok(&path, &[lane]).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("name = \"glm5.3-flash [Spark2]\""), "{text}");
+        assert!(text.contains("base_url = \"http://spark2.lan:8890/v1\""));
+    }
+
+    #[test]
+    fn same_name_remote_lane_is_skipped() {
+        let mut local = lane("alpha", 8080, false);
+        local.host = "spark.local".into();
+        let mut remote = lane("alpha", 9999, false);
+        remote.host = "spark2.lan".into();
+        remote.remote = true;
+        let mut lanes = vec![local];
+        if !lanes.iter().any(|l| l.name == remote.name) {
+            lanes.push(remote);
+        }
+        assert_eq!(lanes.len(), 1);
+        assert!(!lanes[0].remote);
     }
 }
