@@ -144,7 +144,13 @@ pub fn sync(paths: &Paths, cfg: &Config) -> Vec<Synced> {
             let path = config_path(id, &home).expect("enabled ids are known");
             let installed = detected(id, &home);
             let write = match id {
-                "opencode" => write_opencode(&path, &lanes),
+                "opencode" => {
+                    // The opencode-export mirror is the copy the Mac's 30 s
+                    // pull job fetches; off unless [harness] opencode_export.
+                    let export =
+                        cfg.harness.opencode_export.then(|| home.join(".local/share/opencode-export/opencode.json"));
+                    write_opencode(&path, export.as_deref(), &lanes)
+                }
                 "omp" => write_omp(&path, &lanes),
                 "grok" => write_grok(&path, &lanes),
                 "pi" => write_pi(&path, &lanes),
@@ -335,7 +341,7 @@ fn harness_installed(path: &Path) -> bool {
 // its own port). lmdeck owns the `provider` table; everything else (schema,
 // plugin, permissions, commands) is left alone.
 
-fn write_opencode(path: &Path, lanes: &[Lane]) -> Result<bool> {
+fn write_opencode(path: &Path, export: Option<&Path>, lanes: &[Lane]) -> Result<bool> {
     if !harness_installed(path) {
         return Ok(false);
     }
@@ -362,7 +368,14 @@ fn write_opencode(path: &Path, lanes: &[Lane]) -> Result<bool> {
         );
     }
     cfg["provider"] = serde_json::Value::Object(providers);
-    write_atomic(path, &format!("{}\n", serde_json::to_string_pretty(&cfg)?))
+    let payload = format!("{}\n", serde_json::to_string_pretty(&cfg)?);
+    let changed = write_atomic(path, &payload)?;
+    // The export mirror is what the Mac's 30 s pull job fetches (served on
+    // :8079); best-effort, only when the copy's directory exists.
+    if let Some(export) = export.filter(|p| p.parent().is_some_and(|p| p.exists())) {
+        write_atomic(export, &payload)?;
+    }
+    Ok(changed)
 }
 
 // ───────────────────────────── omp ─────────────────────────────
@@ -837,7 +850,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(&path, r#"{"$schema":"https://opencode.ai/config.json","theme":"omarchy"}"#).unwrap();
         let lanes = vec![lane("glm5.3-flash", 8890, false), lane("qwen3-vl-8b", 8109, true)];
-        assert!(write_opencode(&path, &lanes).unwrap());
+        assert!(write_opencode(&path, None, &lanes).unwrap());
         let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["theme"], "omarchy");
         let p = &v["provider"];
@@ -847,15 +860,37 @@ mod tests {
         assert_eq!(p["qwen3-vl-8b"]["models"]["qwen3-vl-8b"]["attachment"], true);
         assert!(p["glm5.3-flash"]["models"]["glm5.3-flash"].get("attachment").is_none());
         // idempotent
-        assert!(!write_opencode(&path, &lanes).unwrap());
+        assert!(!write_opencode(&path, None, &lanes).unwrap());
     }
 
     #[test]
     fn opencode_missing_dir_is_a_noop() {
         let path = PathBuf::from("/nonexistent-lmdeck-test/opencode.json");
-        assert!(!write_opencode(&path, &[lane("x", 1, false)]).unwrap());
+        assert!(!write_opencode(&path, None, &[lane("x", 1, false)]).unwrap());
     }
 
+    #[test]
+    fn opencode_writes_the_export_mirror_only_when_asked() {
+        let dir = tempdir("opencode-export");
+        let path = dir.join("opencode.json");
+        let export_dir = dir.join("opencode-export");
+        fs::create_dir_all(&export_dir).unwrap();
+        let export = export_dir.join("opencode.json");
+        let lanes = vec![lane_ctx("glm5.3-flash", 8890, 1_048_576)];
+        // No export path: nothing mirrored.
+        assert!(write_opencode(&path, None, &lanes).unwrap());
+        assert!(!export.exists());
+        // Export path: the mirror always gets the same payload as the main
+        // file — even when the main file itself is unchanged (return false).
+        write_opencode(&path, Some(&export), &lanes).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), fs::read_to_string(&export).unwrap());
+        write_opencode(&path, Some(&export), &lanes).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), fs::read_to_string(&export).unwrap());
+        // A missing export directory is skipped silently (no dirs created).
+        let absent = dir.join("nope/opencode.json");
+        write_opencode(&path, Some(&absent), &lanes).unwrap();
+        assert!(!absent.exists());
+    }
     #[test]
     fn omp_preserves_foreign_providers_and_drops_empty_lmdeck() {
         let dir = tempdir("omp");
@@ -1008,9 +1043,10 @@ mod tests {
     fn enabled_follows_the_asked_flag() {
         let mut cfg = Config::default();
         assert_eq!(enabled(&cfg), vec!["opencode", "omp", "grok", "pi", "hermes"]);
-        cfg.harness = crate::config::HarnessConfig { sync: vec!["omp".into()], asked: true, hosts: None };
+        cfg.harness =
+            crate::config::HarnessConfig { sync: vec!["omp".into()], asked: true, hosts: None, ..Default::default() };
         assert_eq!(enabled(&cfg), vec!["omp"]);
-        cfg.harness = crate::config::HarnessConfig { sync: vec![], asked: true, hosts: None };
+        cfg.harness = crate::config::HarnessConfig { sync: vec![], asked: true, hosts: None, ..Default::default() };
         assert!(enabled(&cfg).is_empty());
     }
 

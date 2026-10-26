@@ -213,6 +213,9 @@ enum HarnessCmd {
     /// Which hosts' running models are included in the sync: `all`, `none`,
     /// or a list of hosts.toml names.
     Hosts { hosts: Vec<String> },
+    /// Mirror opencode.json to ~/.local/share/opencode-export/ (the copy the
+    /// Mac's pull job fetches): `on` or `off`.
+    Export { on: String },
 }
 
 #[derive(Args, Default)]
@@ -514,10 +517,13 @@ fn first_run(ctx: &mut Ctx) {
         return;
     }
     if let Some(choice) = lmdeck::harness::wizard(&ctx.cfg) {
-        match Config::save_harness(&ctx.paths, &choice.harnesses, choice.hosts.as_deref(), true) {
+        let mut h = ctx.cfg.harness.clone();
+        h.sync = choice.harnesses;
+        h.hosts = choice.hosts;
+        h.asked = true;
+        match Config::save_harness(&ctx.paths, &h) {
             Ok(file) => {
-                ctx.cfg.harness =
-                    lmdeck::config::HarnessConfig { sync: choice.harnesses, hosts: choice.hosts, asked: true };
+                ctx.cfg.harness = h;
                 println!("{} {}", green("✓"), dim(&format!("saved to {}", file.display())));
             }
             Err(e) => eprintln!("{} {e:#}", yellow("warning:")),
@@ -554,6 +560,11 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
         }
         println!("{}", t.render());
         println!("{} {}", dim("hosts:"), hosts_line(&ctx.cfg));
+        println!(
+            "{} {}",
+            dim("opencode-export:"),
+            if ctx.cfg.harness.opencode_export { green("on") } else { dim("off") }
+        );
         if !ctx.cfg.harness.asked {
             println!("{}", dim("the first-run prompt hasn't run yet; everything detected gets synced."));
         }
@@ -582,19 +593,22 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
         Some(HarnessCmd::Enable { name }) => {
             let h = lmdeck::harness::known(&name)
                 .ok_or_else(|| anyhow!("unknown harness '{name}' (known: {known_list})"))?;
-            let mut sync = ctx.cfg.harness.sync.clone();
-            if !sync.iter().any(|s| s == h.id) {
-                sync.push(h.id.to_string());
+            let mut hc = ctx.cfg.harness.clone();
+            hc.asked = true;
+            if !hc.sync.iter().any(|s| s == h.id) {
+                hc.sync.push(h.id.to_string());
             }
-            Config::save_harness(&ctx.paths, &sync, ctx.cfg.harness.hosts.as_deref(), true)?;
+            Config::save_harness(&ctx.paths, &hc)?;
             let path = lmdeck::harness::config_path(h.id, &home).unwrap_or_default();
             println!("{} {} — written on the next serve ({})", green("✓"), h.label, dim(&path.display().to_string()));
         }
         Some(HarnessCmd::Disable { name }) => {
             let h = lmdeck::harness::known(&name)
                 .ok_or_else(|| anyhow!("unknown harness '{name}' (known: {known_list})"))?;
-            let sync: Vec<String> = ctx.cfg.harness.sync.iter().filter(|s| s.as_str() != h.id).cloned().collect();
-            Config::save_harness(&ctx.paths, &sync, ctx.cfg.harness.hosts.as_deref(), true)?;
+            let mut hc = ctx.cfg.harness.clone();
+            hc.asked = true;
+            hc.sync.retain(|s| s.as_str() != h.id);
+            Config::save_harness(&ctx.paths, &hc)?;
         }
         Some(HarnessCmd::Hosts { hosts }) => {
             let known = configured_hosts(ctx);
@@ -618,7 +632,10 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
                     Some(hosts.clone())
                 }
             };
-            Config::save_harness(&ctx.paths, &ctx.cfg.harness.sync.clone(), set.as_deref(), true)?;
+            let mut hc = ctx.cfg.harness.clone();
+            hc.hosts = set.clone();
+            hc.asked = true;
+            Config::save_harness(&ctx.paths, &hc)?;
             println!(
                 "{} sync hosts: {}",
                 green("✓"),
@@ -627,6 +644,23 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
                     Some(h) if h.is_empty() => "none (local models only)".to_string(),
                     Some(h) => h.join(", "),
                 }
+            );
+        }
+        Some(HarnessCmd::Export { on }) => {
+            let on = match on.to_lowercase().as_str() {
+                "on" | "true" | "yes" | "1" => true,
+                "off" | "false" | "no" | "0" => false,
+                other => bail!("opencode-export is 'on' or 'off' (got '{other}')"),
+            };
+            let mut hc = ctx.cfg.harness.clone();
+            hc.opencode_export = on;
+            Config::save_harness(&ctx.paths, &hc)?;
+            let where_ = home.join(".local/share/opencode-export");
+            println!(
+                "{} opencode-export {} (mirrors opencode.json to {})",
+                green("✓"),
+                if on { "on" } else { "off" },
+                dim(&where_.display().to_string())
             );
         }
         None => list_view(ctx)?,

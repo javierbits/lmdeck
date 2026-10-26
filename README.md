@@ -213,6 +213,11 @@ in sparkA's opencode without touching spark2. Each lane gets its own base
 URL; remote lanes are tagged with the host (`glm5.3-flash [Spark2]` in grok).
 An offline host just contributes nothing.
 
+There is also an opt-in mirror: `lmdeck harness export on` writes the same
+`opencode.json` payload to `~/.local/share/opencode-export/` — the copy a
+second machine's pull job can fetch over HTTP (lmdeck serves nothing for
+this itself). Off by default; `lmdeck harness` shows its state.
+
 ## Web dashboard
 
 ```sh

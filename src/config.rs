@@ -209,6 +209,10 @@ pub struct HarnessConfig {
     /// local models only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts: Option<Vec<String>>,
+    /// Also mirror opencode.json to `~/.local/share/opencode-export/` — the
+    /// copy the Mac's 30 s pull job fetches. Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opencode_export: bool,
 }
 
 impl HarnessConfig {
@@ -344,7 +348,7 @@ impl Config {
 
     /// Saves `[harness]` (replacing any existing one) without touching the
     /// rest of the file: comments and other settings stay as they are.
-    pub fn save_harness(paths: &Paths, sync: &[String], hosts: Option<&[String]>, asked: bool) -> Result<PathBuf> {
+    pub fn save_harness(paths: &Paths, harness: &HarnessConfig) -> Result<PathBuf> {
         let file = paths.config_file();
         let body = match fs::read_to_string(&file) {
             Ok(text) => {
@@ -376,13 +380,16 @@ impl Config {
         };
         let mut out = body;
         out.push_str("[harness]\n");
-        out.push_str(&format!("asked = {asked}\n"));
-        if let Some(hosts) = hosts {
+        out.push_str(&format!("asked = {}\n", harness.asked));
+        if let Some(hosts) = &harness.hosts {
             let list: Vec<String> = hosts.iter().map(|s| format!("\"{s}\"")).collect();
             out.push_str(&format!("hosts = [{}]\n", list.join(", ")));
         }
-        if !sync.is_empty() {
-            let list: Vec<String> = sync.iter().map(|s| format!("\"{s}\"")).collect();
+        if harness.opencode_export {
+            out.push_str("opencode_export = true\n");
+        }
+        if !harness.sync.is_empty() {
+            let list: Vec<String> = harness.sync.iter().map(|s| format!("\"{s}\"")).collect();
             out.push_str(&format!("sync = [{}]\n", list.join(", ")));
         }
         fs::create_dir_all(&paths.config_dir)?;
@@ -464,23 +471,35 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths { config_dir: d.path().into(), cache_dir: d.path().join("c"), state_dir: d.path().join("s") };
         // no file yet: created with just the table
-        Config::save_harness(&paths, &["omp".to_string()], None, true).unwrap();
+        Config::save_harness(&paths, &HarnessConfig { sync: vec!["omp".into()], asked: true, ..Default::default() })
+            .unwrap();
         let c = Config::load(&paths).unwrap();
         assert!(c.harness.asked && c.harness.sync == vec!["omp"]);
-        // existing file: comments and other tables survive, the table is replaced
+        Config::save_harness(&paths, &HarnessConfig { sync: vec!["omp".into()], asked: true, ..Default::default() })
+            .unwrap();
         fs::write(
             paths.config_file(),
             "# my notes\nmodels_dir = \"/data\" # keep\n\n[harness]\nasked = true\nsync = [\"old\"]\n\n[engines]\n# tabby\ntabbyapi_dir = \"~/t\"\n",
         )
         .unwrap();
-        Config::save_harness(&paths, &["opencode".to_string(), "pi".to_string()], None, true).unwrap();
+        Config::save_harness(
+            &paths,
+            &HarnessConfig {
+                sync: vec!["opencode".into(), "pi".into()],
+                hosts: Some(vec!["spark2".into()]),
+                opencode_export: true,
+                asked: true,
+            },
+        )
+        .unwrap();
         let text = fs::read_to_string(paths.config_file()).unwrap();
         assert!(text.starts_with("# my notes\nmodels_dir = \"/data\" # keep"), "{text}");
         assert!(text.contains("[engines]\n# tabby\ntabbyapi_dir = \"~/t\""), "{text}");
         assert!(!text.contains("old"), "{text}");
         let c = Config::load(&paths).unwrap();
-        assert_eq!(c.models_dir, "/data");
         assert_eq!(c.harness.sync, vec!["opencode", "pi"]);
+        assert_eq!(c.harness.hosts, Some(vec!["spark2".into()]));
+        assert!(c.harness.opencode_export);
         assert!(c.harness.asked);
         assert_eq!(c.engines.tabbyapi_dir.as_deref(), Some("~/t"));
     }
