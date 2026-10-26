@@ -94,9 +94,8 @@ impl NodeConfig {
         *self == NodeConfig::default()
     }
 }
-
 /// `[serve]` in config.toml.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServeConfig {
     /// Accept whole recipes from a controller (`POST /api/run`). A recipe is a
     /// command line, so this is off by default; starting recipes this machine
@@ -108,11 +107,26 @@ pub struct ServeConfig {
     /// `LMDECK_TOKEN` win over it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
-    /// The first port lmdeck counts serving models from. Recipes without an
-    /// explicit `[engine] port` get consecutive ports starting here (their
-    /// engine's own default is used when unset).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port_start: Option<u16>,
+    /// The first port lmdeck counts serving models from (default 8000).
+    /// Recipes without an explicit `[engine] port` get consecutive ports
+    /// starting here — your deck first, then sources. Built-ins keep their
+    /// own ports.
+    #[serde(default = "default_port_start", skip_serializing_if = "is_default_port_start")]
+    pub port_start: u16,
+}
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        ServeConfig { accept_recipes: false, token_env: None, port_start: default_port_start() }
+    }
+}
+
+fn default_port_start() -> u16 {
+    8000
+}
+
+fn is_default_port_start(v: &u16) -> bool {
+    *v == 8000
 }
 
 impl ServeConfig {

@@ -425,7 +425,7 @@ fn lmdeploy_dry_run() {
     let file = e.path("lmd.toml");
     fs::write(
         &file,
-        "[model]\nrepo = \"Qwen/Qwen3-8B-AWQ\"\n[engine]\nname = \"lmdeploy\"\nctx = 32768\nargs = [\"--model-format\", \"awq\"]\n",
+        "[model]\nrepo = \"Qwen/Qwen3-8B-AWQ\"\n[engine]\nname = \"lmdeploy\"\nport = 23333\nctx = 32768\nargs = [\"--model-format\", \"awq\"]\n",
     )
     .unwrap();
     e.run(&["recipe", "add", file.to_str().unwrap()]);

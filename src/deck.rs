@@ -25,14 +25,13 @@ use crate::sources::{self, Found};
 use crate::util::now_secs;
 
 /// The port every recipe would be planned on: an explicit `[engine] port`
-/// wins; when `[serve] port_start` is set, recipes without one count up from
-/// it — the deck first, then sources — skipping ports other non-builtin
+/// wins; recipes without one count up from `[serve] port_start` (default
+/// 8000) — the deck first, then sources — skipping ports other non-builtin
 /// recipes claim (their defaults included) and ports of running servers.
 /// Built-ins are samples and neither take counted ports nor reserve theirs.
-/// Keyed by `origin/name`; empty when `port_start` is unset (every recipe
-/// keeps its engine default).
+/// Keyed by `origin/name`.
 pub fn planned_ports(cat: &Catalog, paths: &Paths, cfg: &Config) -> BTreeMap<String, u16> {
-    let Some(base) = cfg.serve.port_start else { return BTreeMap::new() };
+    let base = cfg.serve.port_start;
     let mut taken: BTreeSet<u16> = BTreeSet::new();
     let mut free: Vec<&Found> = vec![];
     for f in &cat.entries {
@@ -75,7 +74,7 @@ pub fn planned_ports(cat: &Catalog, paths: &Paths, cfg: &Config) -> BTreeMap<Str
 /// The port `r` would be planned on (see [`planned_ports`]): its own entry in
 /// the catalog when it has one, else counted from `port_start` on its own.
 pub fn planned_for(cat: &Catalog, paths: &Paths, cfg: &Config, r: &Recipe) -> u16 {
-    if r.engine.port.is_some() || cfg.serve.port_start.is_none() {
+    if r.engine.port.is_some() {
         return r.port();
     }
     match cat.entries.iter().find(|f| f.recipe.name == r.name) {
@@ -85,7 +84,7 @@ pub fn planned_for(cat: &Catalog, paths: &Paths, cfg: &Config, r: &Recipe) -> u1
             let mut taken: BTreeSet<u16> = ports.values().copied().collect();
             taken.extend(cat.entries.iter().map(|f| f.recipe.port()));
             taken.extend(RunRecord::all(paths).into_iter().map(|x| x.port));
-            let mut next = cfg.serve.port_start.unwrap_or_default();
+            let mut next = cfg.serve.port_start;
             while taken.contains(&next) {
                 next = if next == u16::MAX { 1 } else { next + 1 };
             }
@@ -785,19 +784,24 @@ mod tests {
             found("deck", "charlie", None),
             found("builtin", "bravo", None), // same name, other origin: counted too
         ]);
-        let mut cfg = Config::default();
-        // no port_start: every recipe keeps its engine default
-        assert_eq!(planned_ports(&cat, &paths, &cfg).len(), 0);
-        cfg.serve.port_start = Some(8080);
+        // The default counts from 8000. The deck counts first: deck/bravo,
+        // deck/charlie. deck/alpha has an explicit port (9000), which is
+        // reserved but not counted. Built-ins are ignored: builtin/bravo
+        // keeps its engine default.
+        let cfg = Config::default();
+        assert_eq!(cfg.serve.port_start, 8000);
         let ports = planned_ports(&cat, &paths, &cfg);
-        // The deck counts first: deck/bravo, deck/charlie. deck/alpha has an
-        // explicit port (9000), which is reserved but not counted. Built-ins
-        // are ignored: builtin/bravo keeps its engine default.
-        assert_eq!(ports["deck/bravo"], 8080);
-        assert_eq!(ports["deck/charlie"], 8081);
+        assert_eq!(ports["deck/bravo"], 8000);
+        assert_eq!(ports["deck/charlie"], 8001);
         assert!(!ports.contains_key("builtin/bravo"));
         assert_eq!(planned_port(&ports, &cat.entries[0]), 9000, "explicit port wins");
         assert_eq!(planned_port(&ports, &cat.entries[3]), 8080, "built-ins keep their default");
+        // an explicit base moves the counting
+        let mut cfg = Config::default();
+        cfg.serve.port_start = 8080;
+        let ports = planned_ports(&cat, &paths, &cfg);
+        assert_eq!(ports["deck/bravo"], 8080);
+        assert_eq!(ports["deck/charlie"], 8081);
     }
 
     #[test]
@@ -810,7 +814,7 @@ mod tests {
         });
         std::fs::write(paths.run_dir().join("old.json"), serde_json::to_string(&rec).unwrap()).unwrap();
         let mut cfg = Config::default();
-        cfg.serve.port_start = Some(8080);
+        cfg.serve.port_start = 8080;
         let ports = planned_ports(&cat, &paths, &cfg);
         assert_eq!(ports["deck/alpha"], 8081, "8080 is taken by a running server");
         assert_eq!(ports["deck/bravo"], 8082);
