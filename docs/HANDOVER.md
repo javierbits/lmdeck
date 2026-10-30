@@ -1,6 +1,6 @@
 # lmdeck: handover
 
-**Repo:** https://github.com/jvr0x/lmdeck. It is a **private** repo owned by `jvr0x` (Javier).
+**Repo:** https://github.com/javierbits/lmdeck. It is a **private** repo owned by `javierbits` (Javier; the account was `jvr0x` before).
 
 **State (2026-10-30):**
 - `main` on top of `c423cc7` (opencode-export mirror) holds:
@@ -128,7 +128,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
 
 ## Suggested next steps (rough priority)
 1. **Real-hardware pass on a Spark:**
-   - `cargo install --git https://github.com/jvr0x/lmdeck`
+   - `cargo install --git https://github.com/javierbits/lmdeck`
    - `lmdeck doctor`
    - `lmdeck host list` and `LMDECK_DEBUG=1 lmdeck serve`
    - Start one llama.cpp recipe and one vLLM recipe.
@@ -145,7 +145,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
    - MLX and LM Studio have no tok/s.
    - Tiny local models show "0M" in the size column.
    - The older screenshots (`tui-deck`, `tui-machine`, `web-dashboard`) still show the 3-tab header.
-7. **Launch prep:** Javier plans a public launch of lmdeck and is growing his X audience (@jvr0x) for it. The repo is private until he decides. Don't make it public, publish to crates.io, or post anything without his go-ahead.
+7. **Launch prep:** Javier plans a public launch of lmdeck and is growing his X audience (@javierbits, formerly @jvr0x) for it. The repo is private until he decides. Don't make it public, publish to crates.io, or post anything without his go-ahead.
 
 ## Working rules
 - Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` before every push. Keep MSRV 1.85 building.

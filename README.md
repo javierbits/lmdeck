@@ -28,7 +28,7 @@ Recipes are TOML only.
 ## Install
 
 ```sh
-cargo install --git https://github.com/jvr0x/lmdeck
+cargo install --git https://github.com/javierbits/lmdeck
 ```
 
 You need Rust 1.85 or newer. lmdeck runs on Linux and macOS, on both arm64 and
@@ -437,7 +437,7 @@ lmdeck add glm-5.3-flash-exl3-2x-spark-tensorfold
 Fetching and auth:
 
 - The index comes from `[index] url` (default
-  `https://github.com/jvr0x/lmdeck/blob/main/index.toml`; `LMDECK_INDEX_URL`
+  `https://github.com/javierbits/lmdeck/blob/main/index.toml`; `LMDECK_INDEX_URL`
   overrides it; `file://` works too). It's cached at
   `~/.cache/lmdeck/index.toml` and re-fetched after `ttl_hours` (6);
   `browse --refresh` forces it, `--offline` never fetches.
@@ -454,7 +454,7 @@ Fetching and auth:
 ```toml
 # ~/.config/lmdeck/config.toml
 [index]
-# url          = "https://github.com/jvr0x/lmdeck/blob/main/index.toml"
+# url          = "https://github.com/javierbits/lmdeck/blob/main/index.toml"
 # ttl_hours    = 6
 # timeout_secs = 5
 # token_env    = "MY_INDEX_TOKEN"   # only for non-GitHub URLs

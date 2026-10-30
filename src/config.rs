@@ -334,7 +334,7 @@ impl Config {
         fs::create_dir_all(&paths.config_dir)?;
         let file = paths.config_file();
         let body =
-            format!("# lmdeck configuration — https://github.com/jvr0x/lmdeck\n{}", toml::to_string_pretty(self)?);
+            format!("# lmdeck configuration — https://github.com/javierbits/lmdeck\n{}", toml::to_string_pretty(self)?);
         fs::write(&file, body).with_context(|| format!("writing {}", file.display()))?;
         Ok(file)
     }
@@ -423,7 +423,7 @@ impl Config {
         }
         let trimmed = kept.trim_end_matches('\n');
         let mut out = if trimmed.is_empty() {
-            "# lmdeck configuration — https://github.com/jvr0x/lmdeck\n".to_string()
+            "# lmdeck configuration — https://github.com/javierbits/lmdeck\n".to_string()
         } else {
             format!("{trimmed}\n\n")
         };
