@@ -307,6 +307,25 @@ fn a_gguf_path_at_the_repo_root_or_named_apart_from_its_file() {
     assert!(err.contains("mine/R.gguf") && err.contains("UD-Q2/R-00001-of-00002.gguf"), "{err}");
 }
 
+#[test]
+fn a_vllm_recipe_with_a_path_downloads_where_it_runs() {
+    let e = Env::new();
+    let repo = "nvidia/Qwen3.6-35B-A3B-NVFP4";
+    let toml = |path: &str| format!("[model]\nrepo = \"{repo}\"\n{path}[engine]\nname = \"vllm\"\nport = 8201\n");
+    e.recipe("nv", &toml("path = \"nvidia/qwen36-nvfp4\"\n"));
+    let dir = local_dir(&e, "nv").expect("a [model] path downloads into the models dir");
+    assert_eq!(dir, e.path("models/nvidia/qwen36-nvfp4"));
+    // Once there, the run serves it from there.
+    put(&dir.join("config.json"), b"{}");
+    let plan = e.run(&["use", "nv", "--dry-run"]);
+    assert!(plan.contains(&format!("serve {} --served-model-name nv", dir.display())), "{plan}");
+    // `~` and absolute paths are the download dir as written; no path, the HF cache.
+    e.recipe("home", &toml("path = \"~/weights/qwen36\"\n"));
+    assert_eq!(local_dir(&e, "home"), Some(e.path("home/weights/qwen36")));
+    e.recipe("cache", &toml(""));
+    assert_eq!(local_dir(&e, "cache"), None);
+}
+
 /// Free TCP ports for the nodes, never the same twice in this process.
 fn free_port() -> u16 {
     static USED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(vec![]);
@@ -409,6 +428,21 @@ fn a_directory_path_holds_the_repo_files_for_model_dir() {
 }
 
 proptest! {
+    /// Whatever the engine (`hf download` ones), a recipe with a `[model] path`
+    /// directory downloads into that directory, and without one into the cache.
+    #[test]
+    fn a_path_is_where_any_engine_downloads(
+        engine in prop::sample::select(vec!["vllm", "sglang", "mlx", "lmdeploy", "tabbyapi"]),
+        path in prop::option::of("/[a-z]{1,8}(/[A-Za-z0-9_.-]{1,10}){0,3}"),
+    ) {
+        let at = path.as_ref().map(|p| format!("path = \"{p}\"\n")).unwrap_or_default();
+        let text = format!("[model]\nrepo = \"o/R\"\n{at}[engine]\nname = \"{engine}\"\n");
+        let r = Recipe::parse(&text, "p").unwrap();
+        let argv = lmdeck::deck::pull_argv(&lmdeck::config::Config::default(), &r).unwrap();
+        let dir = argv.windows(2).find(|w| w[0] == "--local-dir").map(|w| w[1].clone());
+        prop_assert_eq!(dir, path);
+    }
+
     /// With a `[model] path`, a llama.cpp GGUF lands at that path wherever it sits in its repo.
     #[test]
     fn a_gguf_downloads_to_its_path(

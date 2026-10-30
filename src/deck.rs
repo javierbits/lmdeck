@@ -182,12 +182,12 @@ pub fn pull_argv(cfg: &Config, r: &Recipe) -> Result<Vec<String>> {
             }
         }
     }
-    // Hugging Face downloads fill its cache; only a `[model] path` puts them somewhere else.
+    // Hugging Face downloads fill its cache; a `[model] path` gets them instead, since
+    // that is where every engine then loads them from.
     let local = r.model.path.as_ref().and_then(|_| r.local_path(&cfg.models_dir()));
     let dir = match (r.engine.name, local) {
         (Engine::LlamaCpp, Some(p)) => Some(r.gguf_download_dir(&p)?),
-        (Engine::TabbyApi, Some(p)) => Some(p),
-        _ => None,
+        (_, p) => p,
     };
     if let Some(d) = dir {
         argv.extend(["--local-dir".into(), d.display().to_string()]);
