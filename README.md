@@ -819,9 +819,15 @@ CONTAINER_NAME = "{container}"
 
 - `[model]` is optional for `custom` recipes; leave it out when the scripts fetch
   their own weights.
-- `[source]` is cloned on the first `use` (never fetched then). `lmdeck pull`
-  fetches and checks out `ref` again; it refuses if you've changed tracked files
-  in the checkout. Untracked files such as `.env` are kept.
+- `[source]` is cloned on the first `use`. A later `use` fetches only when the
+  checkout isn't at `ref` (you changed `ref`, or it names a commit not fetched
+  yet) and then checks `ref` out. `lmdeck pull` fetches and checks out `ref`
+  again (for a branch, its newest commit); it refuses if you've changed tracked
+  files in the checkout. Untracked files such as `.env` are kept.
+- With `[[nodes]]`, each node runs from its own checkout on its own machine
+  (`checkouts/<recipe>.<node>/`). A start first brings this machine's
+  `checkouts/<recipe>/` to `ref` and pins every node to that commit, so a new
+  `ref`, or a `lmdeck pull` that moved a branch, reaches every node at its next start.
 - `dir` defaults to the checkout. A relative `dir` is resolved inside it.
 - `detached = true`: start exiting with status 0 isn't a crash. The server is
   alive while `container` is running (or, without `container`, while the port

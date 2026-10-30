@@ -540,7 +540,7 @@ fn gate(deck: &Deck, t: &Target, n: &NodePlan, spec: &NodeSpec, timeout: Duratio
 /// Brings every node up in order; on a failure, stops the nodes it started
 /// (newest first) and returns the failing node's log tail.
 pub fn start(deck: &Deck, r: &Recipe, opts: &Opts, mut progress: impl FnMut(&str)) -> Result<Vec<String>> {
-    let p = plan(deck, r, opts)?;
+    let mut p = plan(deck, r, opts)?;
     for w in &p.warnings {
         progress(&format!("warning: {w}"));
     }
@@ -563,6 +563,24 @@ pub fn start(deck: &Deck, r: &Recipe, opts: &Opts, mut progress: impl FnMut(&str
         progress: vec![],
     };
     rec.save(&deck.paths);
+    // Reason: each node runs from its own checkout on its own machine; pinning them to the
+    // commit this machine's checkout of the ref is at (which `lmdeck pull` moves) brings
+    // every one of them to it, whatever they had checked out before.
+    match crate::checkout::ensure(&deck.paths, r) {
+        Ok(Some(o)) => {
+            progress(&format!("checkout {}", o.describe()));
+            for s in p.nodes.iter_mut().filter_map(|n| n.recipe.source.as_mut()) {
+                s.git_ref = Some(o.commit().to_string());
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            rec.phase = "failed".into();
+            rec.error = Some(format!("{e:#}"));
+            rec.save(&deck.paths);
+            return Err(e);
+        }
+    }
     let mut started: Vec<(&NodePlan, Target)> = vec![];
     let mut lines = vec![];
     let fail = |e: anyhow::Error, started: &mut Vec<(&NodePlan, Target)>, who: &NodePlan, t: Option<&Target>| {

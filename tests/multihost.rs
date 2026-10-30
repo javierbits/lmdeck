@@ -655,3 +655,109 @@ fn only_nodes_that_mount_the_weights_get_the_nfs_volume() {
         assert!(plan.contains(want), "missing {want:?} in\n{plan}");
     }
 }
+
+/// `git` in `dir`, unsigned, as a fixture repo's author.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let o = Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// Commits `version` as the fixture repo's version.txt; returns the commit.
+fn commit_version(repo: &Path, version: &str) -> String {
+    fs::write(repo.join("version.txt"), version).unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", version]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+/// Every node of a `[source]` recipe runs from its own checkout, on its own
+/// machine: a new `ref` and `lmdeck pull` must reach all of them.
+#[test]
+fn every_node_runs_the_recipes_ref_after_it_changes_or_a_pull() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let up = root.join("upstream");
+    fs::create_dir_all(&up).unwrap();
+    git(&up, &["init", "-q"]);
+    let v1 = commit_version(&up, "v1");
+    let c = Host::new(root, "ctl", "");
+    let out = root.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let node = |name: &str, role: &str| {
+        format!(
+            "[[nodes]]\nname = \"{name}\"\nrole = \"{role}\"\nhost = \"local\"\nport = {}\nready_delay = 1\n\
+             command = [\"sh\", \"-c\", \"cat version.txt > {}/{name}.txt; trap 'exit 0' TERM; while :; do sleep 0.2; done\"]\n",
+            free_port(),
+            out.display()
+        )
+    };
+    let nodes = format!("{}{}", node("w", "worker"), node("h", "head"));
+    let recipe = |r: &str| {
+        format!(
+            "name = \"duo\"\n[source]\nrepo = \"{}\"\nref = \"{r}\"\n[engine]\nname = \"custom\"\nport = {}\n\
+             [cluster]\ngate_timeout = 30\n{nodes}",
+            up.display(),
+            free_port()
+        )
+    };
+    // Starts duo, waits for each node to say which version.txt its checkout has, stops it.
+    let versions = || -> Vec<String> {
+        for n in ["w", "h"] {
+            let _ = fs::remove_file(out.join(format!("{n}.txt")));
+        }
+        c.run(&["use", "duo", "--no-wait"]);
+        let got = ["w", "h"].map(|n| {
+            let f = out.join(format!("{n}.txt"));
+            let t0 = Instant::now();
+            while !f.exists() && t0.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            fs::read_to_string(&f).unwrap_or_default()
+        });
+        c.run(&["stop", "duo"]);
+        got.to_vec()
+    };
+    c.add_recipe("duo", &recipe(&v1));
+    let deck = c.dir.join("home/config/recipes/duo.toml");
+    assert_eq!(versions(), ["v1", "v1"]);
+    // A new ref reaches every node.
+    let v2 = commit_version(&up, "v2");
+    fs::write(&deck, recipe(&v2)).unwrap();
+    assert_eq!(versions(), ["v2", "v2"], "the nodes kept their first clone");
+    // A branch moves with `lmdeck pull`, and the nodes follow.
+    fs::write(&deck, recipe("main")).unwrap();
+    assert_eq!(versions(), ["v2", "v2"]);
+    commit_version(&up, "v3");
+    c.run(&["pull", "duo"]);
+    assert_eq!(versions(), ["v3", "v3"], "pull moved a checkout no node uses");
+}
+
+/// A start fetches only when a checkout isn't at its recipe's ref: one that is
+/// starts even with its remote gone, and a ref the remote doesn't have fails.
+#[test]
+fn a_checkout_at_its_ref_starts_offline_and_a_missing_ref_fails() {
+    use lmdeck::checkout::{sync, Outcome};
+    let tmp = tempfile::tempdir().unwrap();
+    let up = tmp.path().join("upstream");
+    fs::create_dir_all(&up).unwrap();
+    git(&up, &["init", "-q"]);
+    let v1 = commit_version(&up, "v1");
+    let src =
+        |r: &str| lmdeck::recipe::GitSource { repo: up.display().to_string(), git_ref: Some(r.into()), branch: None };
+    let dest = tmp.path().join("checkouts/duo.w");
+    assert!(matches!(sync(&src(&v1), &dest, false), Ok(Outcome::Cloned(c)) if c == v1));
+    let err = format!("{:#}", sync(&src("no-such-branch"), &dest, false).unwrap_err());
+    assert!(err.contains("ref 'no-such-branch' not found"), "{err}");
+    fs::rename(&up, tmp.path().join("moved")).unwrap();
+    assert!(matches!(sync(&src(&v1), &dest, false), Ok(Outcome::Present(c)) if c == v1));
+}

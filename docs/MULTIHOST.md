@@ -162,6 +162,13 @@ places, see below), with exactly one `role = "head"`. lmdeck:
   (on the weights home's disk, else `size_gb`) divided by the number of
   nodes, or `[hardware] min_memory_gb` when the recipe sets it, which counts
   per node. `--dry-run` prints it as `memory: needs ~N GB` under each node;
+- with a `[source]`, runs every node from its own checkout
+  (`checkouts/<recipe>.<node>/` on its machine) at **one commit**: a start
+  brings the controller's `checkouts/<recipe>/` to the recipe's `ref`
+  (fetching when the checkout isn't there yet) and pins each node to that
+  commit, and a node whose checkout is elsewhere fetches and checks it out.
+  A changed `ref`, or `lmdeck pull <recipe>` moving a branch, reaches every
+  node at its next start;
 
 - fills fast-link facts into each node's command: `{head_addr}`,
   `{node_addr}`, `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,

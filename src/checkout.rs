@@ -83,13 +83,21 @@ fn checkout(dir: &Path, git_ref: Option<&str>) -> Result<String> {
     git(Some(dir), &["rev-parse", "HEAD"])
 }
 
-/// Clones `src` into `dest` if it is not there yet; otherwise, when `update`
-/// is set, fetches and checks out `source.ref` again.
+/// Whether the checkout in `dir` is at `head`, the commit `git_ref` names
+/// there as fetched so far (`false` when it names none yet).
+fn at_ref(dir: &Path, git_ref: Option<&str>, head: &str) -> bool {
+    let want = target(dir, git_ref).and_then(|t| git(Some(dir), &["rev-parse", &format!("{t}^{{commit}}")]));
+    want.is_ok_and(|c| c == head)
+}
+
+/// Clones `src` into `dest` if it is not there yet. Otherwise it fetches and
+/// checks out `source.ref` again when `update` is set, or when the checkout
+/// isn't at the ref (the recipe's ref changed, or names a commit not fetched yet).
 pub fn sync(src: &GitSource, dest: &Path, update: bool) -> Result<Outcome> {
     let git_ref = src.git_ref.as_deref();
     if dest.join(".git").exists() {
         let before = git(Some(dest), &["rev-parse", "HEAD"])?;
-        if !update {
+        if !update && at_ref(dest, git_ref, &before) {
             return Ok(Outcome::Present(before));
         }
         git(Some(dest), &["fetch", "--quiet", "--tags", "--force", "origin"])?;
@@ -128,8 +136,9 @@ pub fn sync(src: &GitSource, dest: &Path, update: bool) -> Result<Outcome> {
     }
 }
 
-/// Makes sure a recipe's `[source]` is checked out (cloning it the first
-/// time; never fetching). `None` for recipes without a `[source]`.
+/// Makes sure a recipe's `[source]` is checked out at its ref (cloning it the
+/// first time; fetching only when the checkout isn't at the ref). `None` for
+/// recipes without a `[source]`.
 pub fn ensure(paths: &Paths, r: &Recipe) -> Result<Option<Outcome>> {
     match &r.source {
         Some(src) => sync(src, &checkout_dir(&paths.checkouts_dir(), &r.name), false).map(Some),
@@ -160,7 +169,8 @@ pub fn default_branch(dir: &Path) -> Option<String> {
 pub fn describe_sync(src: &GitSource, dest: &Path, update: bool) -> Vec<String> {
     let r = src.git_ref.as_deref().filter(|r| !r.is_empty()).unwrap_or("<default branch>");
     if dest.join(".git").exists() {
-        if update {
+        let head = git(Some(dest), &["rev-parse", "HEAD"]).unwrap_or_default();
+        if update || !at_ref(dest, src.git_ref.as_deref(), &head) {
             vec![format!("git -C {} fetch origin && git checkout --detach {r}", dest.display())]
         } else {
             vec![]
