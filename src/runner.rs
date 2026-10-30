@@ -101,16 +101,34 @@ impl RunRecord {
     }
 
     /// A detached server whose start command has exited: its container is
-    /// running, or (without a container) the start succeeded and the port answers.
+    /// running, or (without a container) the start succeeded and the port
+    /// answers. A script that backgrounds the server (`nohup … &`) exits
+    /// before the port opens, so the first seconds after it exits count too.
     fn detached_alive(&self) -> bool {
         match &self.container {
             Some(c) => container_running("docker", c),
             None => {
-                self.start_exit() == Some(0) && matches!(probe(self.port, Duration::from_millis(800)), Probe::Up(_))
+                self.start_exit() == Some(0)
+                    && (matches!(probe(self.port, Duration::from_millis(800)), Probe::Up(_))
+                        || self.start_exited_within(DETACHED_GRACE))
             }
         }
     }
+
+    fn start_exited_within(&self, d: Duration) -> bool {
+        self.exit_file
+            .as_ref()
+            .and_then(|f| fs::metadata(f).ok()?.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|e| e < d)
+    }
 }
+
+/// How long a detached server without a container may take to open its port
+/// after its start script exits.
+const DETACHED_GRACE: Duration = Duration::from_secs(15);
+
+impl RunRecord {}
 
 fn exit_file(paths: &Paths, name: &str) -> PathBuf {
     paths.run_dir().join(format!("{name}.exit"))
