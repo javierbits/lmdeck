@@ -311,11 +311,7 @@ pub fn shape_for(paths: &Paths, cfg: &Config) -> fabric::Shape {
     let mut keys = vec![LOCAL.to_string()];
     keys.extend(peers);
     let graph = graph_for(paths, cfg, &keys);
-    let on_cx7 = |h: &str| {
-        graph.segments.iter().any(|s| s.kind == LinkKind::Cx7 && s.members.iter().any(|m| m.host == h))
-            || graph.links.iter().any(|l| l.kind == LinkKind::Cx7 && l.involves(h))
-    };
-    let rack: Vec<String> = keys.into_iter().filter(|k| on_cx7(k)).collect();
+    let rack: Vec<String> = keys.into_iter().filter(|k| crate::pick::on_cx7(&graph, k)).collect();
     if rack.len() <= 1 {
         return fabric::shape(&graph, &[LOCAL.to_string()]);
     }

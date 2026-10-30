@@ -1560,7 +1560,12 @@ fn logs(ctx: &Ctx, target: &str, lines: usize, on: Option<&str>, node: Option<&s
             None => r.nodes.iter().find(|n| n.role == lmdeck::recipe::NodeRole::Head).expect("validated"),
         };
         name = lmdeck::cluster::node_name(r, n);
-        on = Some(n.host.clone());
+        let rec = lmdeck::cluster::Record::load(&ctx.paths, &r.name);
+        let host = rec.as_ref().and_then(|x| x.host(&n.name)).unwrap_or(&n.host);
+        if host == lmdeck::recipe::AUTO {
+            bail!("{} hasn't started: node {} gets its machine when it starts (host = \"auto\")", r.name, n.name);
+        }
+        on = Some(host.to_string());
     } else if on.is_none() {
         if let Some(p) = lmdeck::placement::Record::load(&ctx.paths, &name).filter(|p| p.run_host != hosts::LOCAL) {
             if !ctx.paths.log_dir().join(format!("{name}.log")).exists() {

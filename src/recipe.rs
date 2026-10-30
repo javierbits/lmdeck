@@ -426,7 +426,8 @@ pub enum NodeRole {
 pub struct NodeSpec {
     pub name: String,
     pub role: NodeRole,
-    /// `local` / this machine's `[node] name`, or a hosts.toml name.
+    /// `local` / this machine's `[node] name`, a hosts.toml name, or
+    /// [`AUTO`]: a worker lmdeck places on the head's CX7 fabric (`crate::pick`).
     pub host: String,
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -451,6 +452,9 @@ pub struct NodeSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_delay: Option<u64>,
 }
+
+/// `host = "auto"`: lmdeck picks the node's machine when it plans the start.
+pub const AUTO: &str = "auto";
 
 /// Is this a recipe file name (`.toml`)?
 pub fn is_recipe_file(p: &Path) -> bool {
@@ -641,6 +645,9 @@ impl Recipe {
                 }
                 if n.host.trim().is_empty() {
                     bail!("[[nodes]] {}: needs host", n.name);
+                }
+                if n.host == AUTO && n.role == NodeRole::Head {
+                    bail!("[[nodes]] {}: the head needs a host (\"local\" or a hosts.toml name); \"auto\" places workers around it", n.name);
                 }
                 if n.command.is_empty() {
                     bail!("[[nodes]] {}: needs command", n.name);

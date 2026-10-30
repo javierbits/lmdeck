@@ -136,8 +136,8 @@ allows LAN / Tailscale and adds a loud warning.
 ## 4. Multi-node recipes (`[[nodes]]`)
 
 One recipe, several machines. Each `[[nodes]]` entry is a command for one
-host (`host = "local"` or a hosts.toml name), with exactly one
-`role = "head"`. lmdeck:
+host (`host = "local"`, a hosts.toml name, or `"auto"` for a worker lmdeck
+places, see below), with exactly one `role = "head"`. lmdeck:
 
 - starts them **in order** (`[cluster] order = "head-first"` by default),
   waiting for each node's **readiness gate** before the next: `ready_port`
@@ -166,6 +166,29 @@ host (`host = "local"` or a hosts.toml name), with exactly one
 Both UIs show it as one recipe: `×2` / `×2 nodes`, a node list with each
 node's host and status, and the cluster error if any. Run-on doesn't apply
 (the recipe says where each node runs).
+
+### `host = "auto"`
+
+A worker can leave its machine to lmdeck: `host = "auto"`. When the start is
+planned (`--dry-run` too, which shows `on gigabyte (auto)`), lmdeck reads the
+CX7 fabric across this machine and every hosts.toml host and picks from the
+machines that answer and have a CX7 path to the head, skipping any host
+another node names:
+
+- switchless **ring**: the head's cable neighbours, next then previous in
+  the cabled order, then onward around the ring from next. The picks are
+  ranked in cabled order from the head, so with every Spark in use the ranks
+  walk the cables (no "skip cables" warning).
+- **cable**: the other Spark.
+- **switch**, **mesh** or anything else: the machines sharing a CX7 segment
+  with the head, then the ones reached through other machines' cables, each
+  group in rack order (this machine, then hosts.toml).
+
+The choice is deterministic. With too few machines the plan fails and names
+the free ones, the ones other nodes hold, and the ones offline or without a
+CX7 path to the head. The head itself needs a host (`"local"` or a
+hosts.toml name). A running recipe's nodes stay where its start put them
+(`lmdeck logs <recipe> --node w1`, stop and the status views read it).
 
 `examples/vllm-ray-2spark.toml` is a 2-Spark vLLM + Ray example.
 **UNTESTED**: nobody has run it on real Sparks. It follows lmswitch's

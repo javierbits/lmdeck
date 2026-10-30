@@ -23,7 +23,7 @@ use crate::ops::{NodeState, Target};
 use crate::paths::Paths;
 use crate::placement::Nfs;
 pub use crate::recipe::NodeRole as Role;
-use crate::recipe::{Engine, NodeSpec, Recipe, StartOrder};
+use crate::recipe::{Engine, NodeSpec, Recipe, StartOrder, AUTO};
 
 #[derive(Debug, Clone, Default)]
 pub struct Opts {
@@ -86,6 +86,11 @@ impl Record {
     pub fn remove(paths: &Paths, recipe: &str) {
         let _ = fs::remove_file(dir(paths).join(format!("{recipe}.json")));
     }
+
+    /// The host node `name` was started on (where a `host = "auto"` node runs).
+    pub fn host(&self, name: &str) -> Option<&str> {
+        self.nodes.iter().find(|n| n.name == name).map(|n| n.host.as_str())
+    }
 }
 
 /// One node's resolved launch.
@@ -94,6 +99,8 @@ pub struct NodePlan {
     pub name: String,
     pub role: Role,
     pub host: String,
+    /// lmdeck picked the host (`host = "auto"`).
+    pub auto: bool,
     pub rank: usize,
     pub served_as: String,
     pub port: u16,
@@ -130,11 +137,12 @@ impl Plan {
         }
         for (i, n) in self.nodes.iter().enumerate() {
             out.push(format!(
-                "{}. {} [{}] on {} as {} (port {}), gate: {}",
+                "{}. {} [{}] on {}{} as {} (port {}), gate: {}",
                 i + 1,
                 n.name,
                 if n.role == Role::Head { "head" } else { "worker" },
                 show(&n.host),
+                if n.auto { " (auto)" } else { "" },
                 n.served_as,
                 n.port,
                 n.gate
@@ -243,7 +251,8 @@ fn ring_order_warning(shape: &Shape, ranks: &[String], show: &dyn Fn(&str) -> St
     ))
 }
 
-fn start_order(r: &Recipe) -> Vec<&NodeSpec> {
+/// The nodes in the order they start (and take their ranks).
+pub(crate) fn start_order(r: &Recipe) -> Vec<&NodeSpec> {
     let order = r.cluster.as_ref().map(|c| c.order).unwrap_or_default();
     let (heads, workers): (Vec<&NodeSpec>, Vec<&NodeSpec>) = r.nodes.iter().partition(|n| n.role == Role::Head);
     match order {
@@ -261,6 +270,9 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
     if r.nodes.is_empty() {
         bail!("{} has no [[nodes]]", r.name);
     }
+    let auto: Vec<&str> = r.nodes.iter().filter(|n| n.host == AUTO).map(|n| n.name.as_str()).collect();
+    let (resolved, fabric) = crate::pick::resolve(deck, r)?;
+    let r = resolved.as_ref();
     let node = deck.cfg.node_name();
     let key = |h: &str| if crate::remote::is_local(h, &node) { LOCAL.to_string() } else { h.to_string() };
     for n in &r.nodes {
@@ -279,10 +291,12 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         keys.push(h.host.clone());
     }
     let multi_host = r.nodes.iter().any(|n| key(&n.host) != head_key);
-    let graph = if multi_host || home.as_ref().is_some_and(|h| keys.iter().any(|k| *k != h.host)) {
-        crate::topology::graph_for(&deck.paths, &deck.cfg, &keys)
-    } else {
-        crate::fabric::Graph::default()
+    let graph = match fabric {
+        Some(g) => g,
+        None if multi_host || home.as_ref().is_some_and(|h| keys.iter().any(|k| *k != h.host)) => {
+            crate::topology::graph_for(&deck.paths, &deck.cfg, &keys)
+        }
+        None => crate::fabric::Graph::default(),
     };
     let mut warnings = vec![];
     let show = |h: &str| if h == LOCAL { node.clone() } else { h.to_string() };
@@ -433,6 +447,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
             name: n.name.clone(),
             role: n.role,
             host,
+            auto: auto.contains(&n.name.as_str()),
             rank,
             served_as,
             port,
@@ -590,8 +605,11 @@ pub fn start_background(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<String> 
 pub fn stop(deck: &Deck, r: &Recipe) -> Result<String> {
     let nodes: Vec<NodeRec> = match Record::load(&deck.paths, &r.name) {
         Some(rec) => rec.nodes,
+        // Reason: an auto node only has a machine once a start recorded one, and the record
+        // is saved before any node starts, so without it no auto node can be running.
         None => start_order(r)
             .into_iter()
+            .filter(|n| n.host != AUTO)
             .map(|n| NodeRec {
                 name: n.name.clone(),
                 role: n.role,
@@ -634,14 +652,20 @@ pub fn views(paths: &Paths, r: &Recipe, node_name: &str) -> Vec<NodeView> {
     start_order(r)
         .into_iter()
         .map(|n| {
-            let host = if crate::remote::is_local(&n.host, node_name) { LOCAL.to_string() } else { n.host.clone() };
+            let host = match rec.as_ref().and_then(|x| x.host(&n.name)) {
+                Some(h) => h.to_string(),
+                None if crate::remote::is_local(&n.host, node_name) => LOCAL.to_string(),
+                None => n.host.clone(),
+            };
             let served_as = node_name_of(r, n);
             let port = rec
                 .as_ref()
                 .and_then(|x| x.nodes.iter().find(|m| m.name == n.name).map(|m| m.port))
                 .filter(|p| *p > 0)
                 .unwrap_or(r.port());
-            let status = if host == LOCAL {
+            let status = if host == AUTO {
+                "stopped".into()
+            } else if host == LOCAL {
                 if crate::runner::RunRecord::load(paths, &served_as).is_some() {
                     crate::deck::status_word(&crate::runner::status(paths, &served_as, port)).to_string()
                 } else {

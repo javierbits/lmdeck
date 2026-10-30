@@ -20,6 +20,7 @@ pub mod models;
 pub mod ops;
 pub mod paths;
 pub mod peers;
+pub mod pick;
 
 pub mod placement;
 pub mod recipe;
