@@ -210,7 +210,9 @@ pub fn wizard(paths: &Paths, cfg: &Config) -> Result<Outcome> {
     if !out.hosts.is_empty() {
         println!("\n{}", crate::ui::bold("topology"));
         let views = crate::hosts::snapshot_once(paths, true);
-        let t = crate::topology::build(paths, cfg, &views, false);
+        let mut t = crate::topology::build(paths, cfg, &views, false);
+        // The cluster is the CX7 cabling; Tailscale links aren't part of it.
+        t.links.retain(|l| l.link.kind != crate::fabric::LinkKind::Tailscale);
         for line in crate::topology::render_text(&t).lines() {
             println!("  {line}");
         }
