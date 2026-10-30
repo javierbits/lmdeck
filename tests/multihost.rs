@@ -122,11 +122,20 @@ fn code(r: Result<ureq::Response, ureq::Error>) -> u16 {
     }
 }
 
-/// A stand-in engine: answers HTTP on `{port}`.
+/// The directory a stand-in engine serves: GET /v1/models answers 200 there.
+fn www(root: &Path) -> PathBuf {
+    let dir = root.join("www");
+    fs::create_dir_all(dir.join("v1")).unwrap();
+    fs::write(dir.join("v1/models"), "{\"data\":[]}").unwrap();
+    dir
+}
+
+/// A stand-in engine: answers HTTP on `{port}`, ready once it serves /v1/models.
 fn web_recipe(name: &str, root: &Path, port: u16) -> String {
     format!(
-        "name = \"{name}\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 180\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
-        root.display()
+        "name = \"{name}\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 180\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\", \"--directory\", \"{}\"]\n",
+        root.display(),
+        www(root).display()
     )
 }
 
@@ -206,7 +215,8 @@ fn node_cmd(order: &Path, tag: &str, http: bool, fail: bool) -> String {
     let body = if fail {
         "echo worker-broke-on-purpose; exit 3".to_string()
     } else if http {
-        format!("echo up {tag} >> {o}; trap 'echo stop {tag} >> {o}; kill $P 2>/dev/null; exit 0' TERM INT; python3 -m http.server {{port}} --bind 127.0.0.1 & P=$!; wait $P")
+        let w = www(order.parent().unwrap());
+        format!("echo up {tag} >> {o}; trap 'echo stop {tag} >> {o}; kill $P 2>/dev/null; exit 0' TERM INT; python3 -m http.server {{port}} --bind 127.0.0.1 --directory {} & P=$!; wait $P", w.display())
     } else {
         format!("echo up {tag} >> {o}; trap 'echo stop {tag} >> {o}; exit 0' TERM INT; while :; do sleep 0.2; done")
     };

@@ -108,10 +108,33 @@ impl RunRecord {
         match &self.container {
             Some(c) => container_running("docker", c),
             None => {
+                // Alive while anything answers, ready or still loading.
                 self.start_exit() == Some(0)
-                    && (matches!(probe(self.port, Duration::from_millis(800)), Probe::Up(_))
+                    && (probe(self.port, Duration::from_millis(800), None) != Probe::Down
                         || self.start_exited_within(DETACHED_GRACE))
             }
+        }
+    }
+
+    /// The API key the server wants, so a probe gets past its auth: an
+    /// `--api-key` in the command (vLLM, SGLang, llama-server), else
+    /// TabbyAPI's `api_key` from `api_tokens.yml` in its working directory.
+    pub fn api_key(&self) -> Option<String> {
+        let mut args = self.argv.iter();
+        while let Some(a) = args.next() {
+            match a.strip_prefix("--api-key") {
+                Some("") => return args.next().cloned(),
+                Some(v) if v.starts_with('=') => return Some(v[1..].to_string()),
+                _ => {}
+            }
+        }
+        if self.engine != "tabbyapi" {
+            return None;
+        }
+        let text = fs::read_to_string(self.cwd.as_ref()?.join("api_tokens.yml")).ok()?;
+        match serde_yaml::from_str::<serde_yaml::Value>(&text).ok()?.get("api_key")? {
+            serde_yaml::Value::Sequence(keys) => keys.first()?.as_str().map(String::from),
+            key => key.as_str().map(String::from),
         }
     }
 
@@ -176,13 +199,17 @@ pub fn pid_alive(pid: u32) -> bool {
 pub enum Probe {
     /// Nothing is listening.
     Down,
-    /// Something answered; the served model ids when the response was readable.
+    /// Something answered with this status, not a 2xx: up, but not ready
+    /// (llama-server says 503 while it loads, a server behind a key 401).
+    NotReady(u16),
+    /// A 2xx: ready, with the served model ids when the response was readable.
     Up(Vec<String>),
 }
 
-/// Probes an OpenAI-compatible server on localhost. Any HTTP response counts
-/// as up (TabbyAPI answers 401 without a key).
-pub fn probe(port: u16, timeout: Duration) -> Probe {
+/// Probes an OpenAI-compatible server on localhost, sending `key` (as
+/// `Authorization: Bearer` and `X-Api-Key`) when it wants one. Only a 2xx
+/// means ready.
+pub fn probe(port: u16, timeout: Duration, key: Option<&str>) -> Probe {
     // Hermetic mode: tests set this so recipe statuses never depend on what
     // happens to be listening on the machine's real ports.
     if std::env::var_os("LMDECK_NO_PROBE").is_some() {
@@ -190,8 +217,12 @@ pub fn probe(port: u16, timeout: Duration) -> Probe {
     }
     let url = format!("http://127.0.0.1:{port}/v1/models");
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    match agent.get(&url).call() {
-        Ok(resp) => {
+    let mut req = agent.get(&url);
+    if let Some(k) = key {
+        req = req.set("Authorization", &format!("Bearer {k}")).set("X-Api-Key", k);
+    }
+    match req.call() {
+        Ok(resp) if (200..300).contains(&resp.status()) => {
             let ids = resp
                 .into_json::<serde_json::Value>()
                 .ok()
@@ -200,7 +231,8 @@ pub fn probe(port: u16, timeout: Duration) -> Probe {
                 .unwrap_or_default();
             Probe::Up(ids)
         }
-        Err(ureq::Error::Status(_, _)) => Probe::Up(vec![]),
+        Ok(resp) => Probe::NotReady(resp.status()),
+        Err(ureq::Error::Status(code, _)) => Probe::NotReady(code),
         Err(e) => {
             if std::env::var_os("LMDECK_DEBUG").is_some() {
                 eprintln!("lmdeck: probe {url}: {e}");
@@ -238,10 +270,16 @@ pub fn status(paths: &Paths, name: &str, port: u16) -> Status {
 
 /// Like [`status`], probing each port at most once per `cache`.
 pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u16, Probe>) -> Status {
-    let mut probe_port = |p: u16| cache.entry(p).or_insert_with(|| probe(p, Duration::from_millis(800))).clone();
+    let wait = Duration::from_millis(800);
+    let mut probe_port = |p: u16| cache.entry(p).or_insert_with(|| probe(p, wait, None)).clone();
     if let Some(rec) = RunRecord::load(paths, name) {
         if rec.alive() {
-            return match probe_port(rec.port) {
+            // A server behind a key is asked with its own key, not through the shared cache.
+            let answer = match rec.api_key() {
+                Some(k) => probe(rec.port, wait, Some(&k)),
+                None => probe_port(rec.port),
+            };
+            return match answer {
                 Probe::Up(ids) if !rec.oneshot || ids.iter().any(|i| i == name) => Status::Loaded,
                 _ if rec.oneshot => {
                     RunRecord::remove(paths, name);
@@ -255,7 +293,7 @@ pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u
     match probe_port(port) {
         Probe::Down => Status::Stopped,
         Probe::Up(ids) if ids.iter().any(|i| i == name) => Status::External,
-        Probe::Up(_) => Status::PortBusy,
+        Probe::Up(_) | Probe::NotReady(_) => Status::PortBusy,
     }
 }
 
@@ -381,7 +419,8 @@ pub fn wait_ready(rec: &RunRecord, timeout: Duration, mut tick: impl FnMut(Durat
         } else if !rec.alive() {
             return Ready::Died;
         }
-        if let Probe::Up(_) = probe(rec.port, Duration::from_secs(2)) {
+        // Only a 2xx: llama-server answers 503 until its model is loaded.
+        if let Probe::Up(_) = probe(rec.port, Duration::from_secs(2), rec.api_key().as_deref()) {
             return Ready::Ready;
         }
         let el = start.elapsed();
@@ -534,7 +573,9 @@ mod tests {
     fn detached_start_ready_and_stop_script() {
         let (d, paths) = tmp_paths();
         let work = d.path().join("checkout");
-        fs::create_dir_all(&work).unwrap();
+        // What http.server answers GET /v1/models with: a 200, so the stub is ready.
+        fs::create_dir_all(work.join("v1")).unwrap();
+        fs::write(work.join("v1/models"), "{\"data\":[]}").unwrap();
         let start_sh = "#!/bin/sh\n\
             echo \"starting on $PORT in $(pwd)\"\n\
             python3 -m http.server \"$PORT\" --bind 127.0.0.1 >server.log 2>&1 &\n\
@@ -573,7 +614,7 @@ mod tests {
         assert!(stop(&paths, "wrapped", "docker").unwrap());
         assert!(!work.join("server.pid").exists(), "stop.sh ran in the checkout");
         let t0 = Instant::now();
-        while probe(port, Duration::from_millis(300)) != Probe::Down && t0.elapsed() < Duration::from_secs(10) {
+        while probe(port, Duration::from_millis(300), None) != Probe::Down && t0.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert_eq!(status(&paths, "wrapped", port), Status::Stopped);
@@ -610,7 +651,7 @@ mod tests {
 
     #[test]
     fn probe_down_on_closed_port() {
-        assert_eq!(probe(free_port(), Duration::from_millis(300)), Probe::Down);
+        assert_eq!(probe(free_port(), Duration::from_millis(300), None), Probe::Down);
     }
 
     #[test]

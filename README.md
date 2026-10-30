@@ -42,7 +42,7 @@ lmdeck source add github:someone/recipes   # optional: more recipes
 lmdeck recipe search qwen --compatible
 lmdeck recipe add qwen3-4b-gguf
 lmdeck pull qwen3-4b-gguf     # hf download …
-lmdeck use 1                  # start deck entry #1, wait for /v1/models
+lmdeck use 1                  # start deck entry #1, wait until /v1/models answers 2xx
 lmdeck list                   # ● loaded  ○ stopped  ✓ downloaded
 lmdeck switch qwen3-4b-gguf   # stop the others, start this one
 lmdeck stop --all
@@ -441,7 +441,7 @@ column and Machine panel there still describe that VM.
 | command | what it does |
 |---|---|
 | `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache; a cache repo holding GGUFs shows as `gguf`). |
-| `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
+| `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. Then it waits until `GET /v1/models` answers 2xx: any other answer is a server still loading (llama-server says 503 until its model is in memory), and the status reads loading (◐) meanwhile. A server behind a key gets its own: an `--api-key` in the command, or TabbyAPI's `api_key` from `api_tokens.yml` in its checkout. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
 | `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`) into the Hugging Face cache, passing `--revision` and `--include` as needed; a recipe with a `[model] path` (any engine: that is where it runs from) gets them there instead (`--local-dir`). `hf download` keeps a file's place in the repo, so a llama.cpp path (the GGUF itself) must end with its first `files` entry, e.g. `…/UD-IQ4_NL/X-00001-of-00005.gguf`. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |

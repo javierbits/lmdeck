@@ -147,7 +147,7 @@ places, see below), with exactly one `role = "head"`. lmdeck:
 - starts them **in order** (`[cluster] order = "head-first"` by default),
   waiting for each node's **readiness gate** before the next: `ready_port`
   answers on TCP if set; the last node, when it is the head, serves
-  `/v1/models`; otherwise the node is still running after `ready_delay`
+  `/v1/models` (a 2xx, as for any recipe); otherwise the node is still running after `ready_delay`
   seconds (default 3);
 - stops them in **reverse** order, and if a node fails to come up, stops the
   ones already started and shows that node's log;

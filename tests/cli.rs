@@ -275,9 +275,12 @@ fn free_port() -> u16 {
 fn start_list_stop_custom_server() {
     let e = Env::new();
     let port = free_port();
+    // http.server serves this dir: GET /v1/models answers 200, which is what "ready" takes.
+    write(&e.path("www/v1"), "models", "{\"data\":[{\"id\":\"web\"}]}");
     let recipe = format!(
-        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 180\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\"]\n",
-        e.path("models").display()
+        "name = \"web\"\n[model]\nsource = \"local\"\npath = \"{}\"\n[engine]\nname = \"custom\"\nport = {port}\nready_timeout = 180\ncommand = [\"python3\", \"-u\", \"-m\", \"http.server\", \"{{port}}\", \"--bind\", \"127.0.0.1\", \"--directory\", \"{}\"]\n",
+        e.path("models").display(),
+        e.path("www").display()
     );
     let file = e.path("web.toml");
     fs::write(&file, recipe).unwrap();
@@ -527,6 +530,8 @@ fn add_wraps_a_repo_and_runs_it_detached() {
         fs::set_permissions(repo.join(f), fs::Permissions::from_mode(0o755)).unwrap();
     }
     write(&repo, ".gitignore", "server.*\n");
+    // What http.server answers GET /v1/models with from the checkout: a 200, so it reads as up.
+    write(&repo.join("v1"), "models", "{\"data\":[]}");
     git(&repo, &["init", "-q"]);
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "init"]);
