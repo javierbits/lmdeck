@@ -409,7 +409,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
         );
     }
     let port = ctx.port.unwrap_or_else(|| r.port());
-    let local = r.local_path(&ctx.models_dir);
+    let local = r.weights_path(&ctx.models_dir, &crate::vars::hf_hub(&ctx.home));
     let use_local =
         local.is_some() && (ctx.local_present || r.engine.name.needs_local_weights() || r.model.repo.is_none());
     let repo = r.model.repo.clone().unwrap_or_default();
@@ -427,7 +427,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     vars.insert("repo", repo.clone());
     vars.insert("revision", revision.clone());
     vars.insert("fabric", ctx.fabric.clone().unwrap_or_default());
-    vars.extend(crate::vars::machine_vars(&r.name, r.engine.texts(), &ctx.overrides, &ctx.home)?);
+    vars.extend(crate::vars::machine_vars(r, &ctx.models_dir, &ctx.overrides, &ctx.home)?);
     vars.extend(ctx.vars.iter().map(|(k, v)| (k.as_str(), v.clone())));
     // The working directory: a [source] checkout (a relative `dir` resolves
     // inside it), else `dir` as written.

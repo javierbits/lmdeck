@@ -241,8 +241,9 @@ pub struct EngineSpec {
     /// `{dir}` (the working directory), `{container}`, `{user}` / `{home}`
     /// (this machine's login name and home directory), what it has configured
     /// (`{hf_home}`, the `[engines]` binaries and their `_dir`s, see
-    /// [`crate::vars`]) and, with `hardware.hosts`, the peers' `{peer_addr}` /
-    /// `{peer_host}`, … (README). A placeholder nothing fills fails the plan.
+    /// [`crate::vars`]), `{model_dir}` (where its weights are on it) and, with
+    /// `hardware.hosts`, the peers' `{peer_addr}` / `{peer_host}`, … (README).
+    /// A placeholder nothing fills fails the plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Environment for the server process (or container). Values take the
@@ -433,6 +434,7 @@ impl HarnessSpec {
     }
 }
 
+mod disk;
 mod nodes;
 pub use nodes::{ClusterSpec, NodeRole, NodeSpec, StartOrder, AUTO};
 
@@ -701,9 +703,9 @@ impl Recipe {
         self.quant.as_ref().map(|q| q.short()).unwrap_or_else(|| "-".into())
     }
 
-    /// Where the weights live (or will live) on disk, if the engine loads a
-    /// local path. `None` means the engine is handed the repo id and uses the
-    /// Hugging Face cache itself (vLLM, SGLang, MLX).
+    /// Where the weights live (or will live) outside the Hugging Face cache:
+    /// `[model] path`, or llama.cpp's and TabbyAPI's place under the models dir.
+    /// `None`: the engine is handed the repo id (vLLM, SGLang, MLX).
     pub fn local_path(&self, models_dir: &Path) -> Option<PathBuf> {
         if let Some(p) = &self.model.path {
             let expanded = expand(p);

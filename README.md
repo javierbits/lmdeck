@@ -62,12 +62,13 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
 1. **This machine**: what was detected: platform, CPU, memory, GPUs, engines,
    and the ConnectX-7 / RDMA ports, then a
    "does this look right?" confirm.
-2. **Model weights**: where `lmdeck pull` downloads to, shown with the free
-   space on that filesystem (the default is `~/models`). Native engines that
-   keep their own hub cache (tensorfold, mlx, lmstudio) ignore this, so set
-   `HF_HOME` too if you want everything off the boot disk. Any time:
-   `lmdeck init --models-dir /mnt/nvme/models`, `LMDECK_MODELS_DIR`, or the
-   `models_dir` key in config.toml.
+2. **Model weights**: the models dir, shown with the free space on that
+   filesystem (the default is `~/models`). It holds local-only weights and
+   recipes with a `[model] path`; Hugging Face downloads, GGUFs included, go
+   to the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+   `~/.cache/huggingface/hub`), so set `HF_HOME` too if you want everything
+   off the boot disk. Any time: `lmdeck init --models-dir /mnt/nvme/models`,
+   `LMDECK_MODELS_DIR`, or the `models_dir` key in config.toml.
 3. **The cluster**: the wizard looks for the other Sparks over the
    ConnectX-7 links only: the neighbours on each CX7 port (a sweep of the
    subnet when the neighbour table is silent) and the subnets routed through
@@ -439,11 +440,11 @@ column and Machine panel there still describe that VM.
 
 | command | what it does |
 |---|---|
-| `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache). |
+| `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache; a cache repo holding GGUFs shows as `gguf`). |
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. `--dry-run` prints the exact command and runs nothing. |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
-| `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`), passing `--revision`, `--include` and `--local-dir` as needed. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
+| `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`) into the Hugging Face cache, passing `--revision` and `--include` as needed; a llama.cpp or TabbyAPI recipe with a `[model] path` gets them there instead (`--local-dir`). LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
 | `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
 | `lmdeck browse [words] [-t TAG]… [--sort name\|sparks\|speed] [--fits] [--refresh\|--offline] [--json]` | Lists the [recipe index](#recipe-index) with installed state, update badge, fit and the speed each repo reports. Words match name, description and tags; `-t exl3` or `-t sparks=2` filters by tag. |
 | `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
@@ -576,7 +577,7 @@ source   = "hf"                            # "hf" (default) or "local"
 repo     = "turboderp/Qwen3-30B-A3B-exl3"  # Hugging Face repo id
 revision = "4.0bpw"                        # branch / tag / commit
 files    = []                              # files or globs (GGUF: first = file to load)
-# path   = "turboderp/Qwen3-30B-A3B-exl3-4.0bpw"  # relative to models_dir, or absolute
+# path   = "turboderp/Qwen3-30B-A3B-exl3-4.0bpw"  # local weights instead of the HF cache: relative to models_dir, or absolute
 size_gb  = 16.0                            # used for memory estimates
 
 [quant]
@@ -613,7 +614,10 @@ chat = false           # not a chat model: harness sync leaves it out (default t
 ```
 
 The memory check uses `min_memory_gb` when the recipe sets it. Otherwise it
-takes the weights' size (on disk, else `size_gb`) plus 20%. A model split
+takes the weights' size (on disk, else `size_gb`) plus 20%. A recipe that
+names its GGUF counts that file (every shard of a split one), not the other
+quants its repo has on disk, and is downloaded only once that file is (on
+this machine, and in `lmdeck weights` for the others). A model split
 over several machines (`[[nodes]]`, or a wrapped recipe's `hosts`) needs its
 share on each one instead: the size divided by the number of machines. Each
 node is checked against its share, and a share that doesn't fit one machine
@@ -627,8 +631,8 @@ recipes that use `command_by_fabric`. `{user}` is the login name and `{home}`
 the home directory of the machine the command runs on (for `ssh {user}@…`
 lines and paths under home).
 
-A command can also name what its machine has configured instead of a path,
-so the recipe works on anyone's machines. Each is filled on the machine the
+A command can also name what its machine has (configured, or on disk) instead
+of a path, so the recipe works on anyone's machines. Each is filled on the machine the
 command runs on (on each node for `[[nodes]]`):
 
 | placeholder | what |
@@ -637,9 +641,11 @@ command runs on (on each node for `[[nodes]]`):
 | `{llama_server}`, `{vllm}`, `{python}`, `{lmdeploy}`, `{lms}`, `{mlx_server}`, `{tensorfold}`, `{docker}` | that binary, from `[engines]` in config.toml or found the way `lmdeck doctor` finds it (`PATH`, `~/llama.cpp/build/bin`, `~/utils/llama.cpp/build/bin`, …) |
 | `{llama_server_dir}`, `{vllm_dir}`, `{python_dir}`, … | the directory holding that binary: `{llama_server_dir}/rpc-server` is llama.cpp's RPC server next to `llama-server` |
 | `{tabbyapi_dir}` | the TabbyAPI checkout (`[engines] tabbyapi_dir`, or `~/tabbyAPI`, …) |
+| `{model_dir}` | the directory holding the recipe's first `[model] files` entry on that machine (the weights directory itself for a recipe without files, and for TabbyAPI): `[model] path` when set, else the Hugging Face cache snapshot (`<hub>/models--org--name/snapshots/<revision, else refs/main>/…`), else `<models_dir>/<repo>/…`. Siblings of the GGUF, e.g. `--mmproj {model_dir}/mmproj-F16.gguf`; `{model_dir}/../mmproj-F16.gguf` when the GGUF sits in a subfolder of the repo |
 
 Only placeholders a recipe uses are looked up. One its machine can't fill
-fails the plan, saying which `[engines]` key to set, and so does any
+fails the plan, saying which `[engines]` key to set (for `{model_dir}`: that
+the weights aren't on that machine, so pull them first), and so does any
 `{name}` lmdeck doesn't know (a typo such as `{modle}`, or `{head_addr}`
 outside `[[nodes]]`), naming where it is. Nothing reaches a command as
 `{x}`. Braces that aren't a lowercase name are left alone: a shell's
@@ -698,11 +704,11 @@ default.
 
 | engine | command (simplified) |
 |---|---|
-| `llama.cpp` | `llama-server --model <models_dir>/<repo>/<file> --alias <name> --host --port --ctx-size …`. If the GGUF isn't on disk, it uses `--hf-repo <repo> --hf-file <file>` instead. |
+| `llama.cpp` | `llama-server --model <hub>/models--org--name/snapshots/<rev>/<file> --alias <name> --host --port --ctx-size …`: `[model] path` when set, else the GGUF in the Hugging Face cache (`<rev>` from `[model] revision`, else `refs/main`), else `<models_dir>/<repo>/<file>`. If the GGUF isn't on disk, it uses `--hf-repo <repo> --hf-file <file>` instead. |
 | `vllm` | Native: `vllm serve <repo or path> --served-model-name <name> --host --port --max-model-len [--revision]`. With `image`, it runs `docker run --rm --name lmdeck-<name> --gpus all --network host --ipc host` with the HF home (`$HF_HOME`, else `~/.cache/huggingface`) mounted. `HF_TOKEN` is forwarded by name only. |
 | `sglang` | `python3 -m sglang.launch_server --model-path … --served-model-name … --context-length …`, natively or in Docker. |
 | `lmdeploy` | `lmdeploy serve api_server <repo or path> --model-name <name> --server-name --server-port --session-len [--revision]` (default port 23333). With `image` (e.g. `openmmlab/lmdeploy:latest`) it runs in Docker like vLLM, with `lmdeploy serve api_server` after the image. Aliases: `lm-deploy`, `turbomind`. Set `engines.lmdeploy` if the binary isn't on `PATH`; `doctor` also accepts the `lmdeploy` Python module. |
-| `tabbyapi` | `python3 main.py --model-dir … --model-name … --backend exllamav3 --max-seq-len …`, run in the TabbyAPI checkout. Weights must be local: `lmdeck pull` puts EXL3 branches in `<models_dir>/<repo>-<revision>`. |
+| `tabbyapi` | `python3 main.py --model-dir … --model-name … --backend exllamav3 --max-seq-len …`, run in the TabbyAPI checkout. Weights must be on disk: `lmdeck pull` puts an EXL3 branch in the Hugging Face cache, and TabbyAPI loads that snapshot (`[model] path` when set; `<models_dir>/<repo>-<revision>` when the cache doesn't have it). |
 | `lmstudio` | `lms server start`, then `lms load <model> --identifier <name>`. `stop` runs `lms unload`. |
 | `mlx` | `mlx_lm.server --model <repo or path> --host --port`. |
 | `tensorfold` | `tensorfold serve <repo or checkpoint dir> --name <name> --host --port [--context <ctx>]`. See [TensorFold](#tensorfold) below. |
@@ -881,7 +887,7 @@ timeout_secs = 5      # per ls-remote, 1-120
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
 | harness configs | written into each harness's own file: `~/.config/opencode/opencode.json`, `~/.omp/agent/models.yml`, `~/.grok/config.toml`, `~/.pi/agent/models.json`, `~/.hermes/config.yaml` (see [Harness sync](#harness-sync)) |
-| model weights | `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) plus the Hugging Face cache |
+| model weights | the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull` downloads, GGUFs included; `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) for local-only weights and `[model] path` |
 
 Set `LMDECK_HOME=/some/dir` to put all of lmdeck's files under one directory.
 The tests use this. macOS uses the same XDG layout.

@@ -243,9 +243,9 @@ pub fn run_wizard(
     // Where the weights land, before the machines that will run them.
     let mut models_dir = cfg.models_dir.clone();
     println!("\n{}", crate::ui::bold("model weights"));
-    println!("{}", crate::ui::dim("lmdeck pull downloads here; recipes read `<models_dir>/<repo>/<file>`."));
-    println!("{}", crate::ui::dim("engines that keep their own hub cache (tensorfold, mlx, lmstudio) ignore this:"));
-    println!("{}", crate::ui::dim("  set HF_HOME too, for those"));
+    println!("{}", crate::ui::dim("local-only weights, and recipes with a [model] path, live here."));
+    println!("{}", crate::ui::dim("lmdeck pull puts Hugging Face weights (GGUFs too) in its cache: $HF_HOME/hub,"));
+    println!("{}", crate::ui::dim("  else ~/.cache/huggingface/hub; set HF_HOME to move that one"));
     disk_check(&crate::paths::expand(&models_dir));
     loop {
         let hint = space_hint(&models_dir);

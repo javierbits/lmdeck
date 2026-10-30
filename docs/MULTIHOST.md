@@ -88,8 +88,9 @@ Tokens are never written to the repo or logs.
 
 
 Every `serve` indexes its own weights (Hugging Face cache snapshots and files
-under `models_dir`) and reports them at `GET /api/weights`. The controller
-merges them (cached 60 s):
+under `models_dir`) and reports them at `GET /api/weights`, a cache repo's
+GGUF files by name (`ggufs`), so a recipe is found only where its own quant
+is. The controller merges them (cached 60 s):
 
 ```sh
 lmdeck weights [--refresh] [--json]
@@ -183,10 +184,15 @@ places, see below), with exactly one `role = "head"`. lmdeck:
   each node runs on, with the engine placeholders (`{model}`, `{port}`, …)
   and what that machine has configured: `{hf_home}`, the `[engines]`
   binaries (`{llama_server}`, `{python}`, `{docker}`, …) and their
-  directories (`{llama_server_dir}/rpc-server`), `{tabbyapi_dir}` (README,
-  "Recipe format"). A node whose machine lacks one fails to start, saying
-  which `[engines]` key to set there; a placeholder nothing fills fails the
-  plan on the controller, `--dry-run` included;
+  directories (`{llama_server_dir}/rpc-server`), `{tabbyapi_dir}`, and
+  `{model_dir}`: the directory holding `[model]`'s first file on that
+  machine, its Hugging Face cache snapshot first (README, "Recipe format").
+  With `files = ["UD-IQ4_NL/X-00001-of-00005.gguf"]` a llama.cpp head
+  writes `--model {model_dir}/X-00001-of-00005.gguf` and reaches the repo's
+  `mmproj-F16.gguf` as `{model_dir}/../mmproj-F16.gguf`. A node whose
+  machine lacks one fails to start, saying which `[engines]` key to set
+  there or that the weights aren't on it; a placeholder nothing fills fails
+  the plan on the controller, `--dry-run` included;
 - is **engine-agnostic**: the commands decide what runs (Ray + vLLM, SGLang,
   anything).
 

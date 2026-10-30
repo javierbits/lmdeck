@@ -1,11 +1,12 @@
 //! What is on disk: the Hugging Face cache and the models directory.
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::paths::{expand, home_dir};
-use crate::recipe::Recipe;
+use crate::paths::home_dir;
+use crate::recipe::{Engine, Recipe};
 use crate::util::path_size;
 
 /// A model found on disk.
@@ -17,19 +18,17 @@ pub struct Downloaded {
     pub location: String,
     pub path: PathBuf,
     pub size: u64,
-    /// `gguf`, `safetensors`, or `hf` for cache snapshots.
+    /// `gguf`, `safetensors`, or `hf` for cache snapshots without GGUFs.
     pub kind: String,
+    /// A cache repo's GGUF model files, relative to their snapshot, each sized
+    /// with every shard (see [`snapshot_ggufs`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ggufs: Vec<(String, u64)>,
 }
 
 /// The Hugging Face hub cache: `$HF_HUB_CACHE`, `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
 pub fn hf_cache_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("HF_HUB_CACHE").filter(|v| !v.is_empty()) {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("HF_HOME").filter(|v| !v.is_empty()) {
-        return expand(&v.to_string_lossy()).join("hub");
-    }
-    home_dir().join(".cache/huggingface/hub")
+    crate::vars::hf_hub(&home_dir())
 }
 
 /// `models--org--name` → `org/name`.
@@ -39,7 +38,8 @@ pub fn repo_from_cache_dir(dir_name: &str) -> Option<String> {
     Some(format!("{org}/{name}"))
 }
 
-/// Size of a repo's cache entry if it has any snapshot files.
+/// Size of a repo's cache entry if it has any snapshot files: its blobs and
+/// any files placed in its snapshots directly, each file once.
 pub fn hf_cached_size(cache: &Path, repo: &str) -> Option<u64> {
     let dir = cache.join(format!("models--{}", repo.replace('/', "--")));
     let snaps = dir.join("snapshots");
@@ -47,7 +47,46 @@ pub fn hf_cached_size(cache: &Path, repo: &str) -> Option<u64> {
         .ok()?
         .flatten()
         .any(|s| fs::read_dir(s.path()).map(|mut it| it.next().is_some()).unwrap_or(false));
-    has_files.then(|| path_size(&dir.join("blobs")))
+    has_files.then(|| unique_size(&[dir.join("blobs"), snaps]))
+}
+
+/// The size of the files under `dirs`, links followed, each file (inode)
+/// counted once: a snapshot's links lead to blobs counted already, while
+/// weights moved into a snapshot by hand are plain files with no blob.
+fn unique_size(dirs: &[PathBuf]) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fn walk(dir: &Path, depth: usize, seen: &mut HashSet<(u64, u64)>, total: &mut u64) {
+        let Ok(rd) = fs::read_dir(dir).map(|rd| rd.flatten()) else { return };
+        for e in rd {
+            let Ok(md) = fs::metadata(e.path()) else { continue };
+            if md.is_file() && seen.insert((md.dev(), md.ino())) {
+                *total += md.len();
+            } else if md.is_dir() && depth < 8 && e.file_type().is_ok_and(|t| !t.is_symlink()) {
+                walk(&e.path(), depth + 1, seen, total);
+            }
+        }
+    }
+    let (mut seen, mut total) = (HashSet::new(), 0);
+    for d in dirs {
+        walk(d, 0, &mut seen, &mut total);
+    }
+    total
+}
+
+/// The GGUF model files in a cache repo's snapshots (no `mmproj`; a split
+/// model by its first shard, sized with every shard), relative to their
+/// snapshot, sorted.
+pub fn snapshot_ggufs(repo_dir: &Path) -> Vec<(String, u64)> {
+    let Ok(rd) = fs::read_dir(repo_dir.join("snapshots")) else { return vec![] };
+    let mut out: Vec<(String, u64)> = rd
+        .flatten()
+        .flat_map(|s| scan_models_dir(&s.path()))
+        .filter(|d| d.kind == "gguf")
+        .map(|d| (d.id, d.size))
+        .collect();
+    out.sort();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
 }
 
 pub fn scan_hf_cache(cache: &Path) -> Vec<Downloaded> {
@@ -57,7 +96,16 @@ pub fn scan_hf_cache(cache: &Path) -> Vec<Downloaded> {
         let name = e.file_name().to_string_lossy().into_owned();
         if let Some(repo) = repo_from_cache_dir(&name) {
             if let Some(size) = hf_cached_size(cache, &repo) {
-                out.push(Downloaded { id: repo, location: "hf-cache".into(), path: e.path(), size, kind: "hf".into() });
+                let ggufs = snapshot_ggufs(&e.path());
+                let kind = if ggufs.is_empty() { "hf" } else { "gguf" };
+                out.push(Downloaded {
+                    id: repo,
+                    location: "hf-cache".into(),
+                    path: e.path(),
+                    size,
+                    kind: kind.into(),
+                    ggufs,
+                });
             }
         }
     }
@@ -92,7 +140,8 @@ pub fn gguf_size(path: &Path) -> u64 {
                             let n = e.file_name().to_string_lossy().into_owned();
                             n.starts_with(&prefix) && n.ends_with(&suffix)
                         })
-                        .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                        // Through the link: a cached shard is a symlink to its blob.
+                        .map(|e| fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0))
                         .sum()
                 })
                 .unwrap_or(0)
@@ -119,6 +168,7 @@ pub fn scan_models_dir(root: &Path) -> Vec<Downloaded> {
                 path: dir.to_path_buf(),
                 size: path_size(dir),
                 kind: "safetensors".into(),
+                ggufs: vec![],
             });
             return;
         }
@@ -140,6 +190,7 @@ pub fn scan_models_dir(root: &Path) -> Vec<Downloaded> {
                     path: p.clone(),
                     size: gguf_size(&p),
                     kind: "gguf".into(),
+                    ggufs: vec![],
                 });
             }
         }
@@ -152,9 +203,9 @@ pub fn scan_models_dir(root: &Path) -> Vec<Downloaded> {
 /// Whether a recipe's weights are present, and their size on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Presence {
-    /// The recipe's own local path exists.
+    /// What the engine loads ([`Recipe::weights_path`]) is on disk.
     pub local: bool,
-    /// The repo is in the Hugging Face cache.
+    /// The weights are in the Hugging Face cache.
     pub cached: bool,
     pub size: u64,
 }
@@ -165,24 +216,36 @@ impl Presence {
     }
 }
 
+/// A weights file, or a directory with something in it.
+pub fn on_disk(p: &Path) -> bool {
+    p.is_file() || fs::read_dir(p).is_ok_and(|mut d| d.next().is_some())
+}
+
+/// Whether `r`'s weights are on this machine (the models dir `models_dir`, the
+/// hub `hf_cache`), and their size: what the engine loads
+/// ([`Recipe::weights_path`]), else the repo in the cache for an engine handed
+/// the repo id. A recipe naming its GGUF needs that file, not the repo's other quants.
 pub fn presence(r: &Recipe, models_dir: &Path, hf_cache: &Path) -> Presence {
-    if let Some(p) = r.local_path(models_dir) {
-        let local = if p.extension().is_some_and(|e| e == "gguf") {
-            p.is_file()
-        } else {
-            p.is_dir() && fs::read_dir(&p).map(|mut d| d.next().is_some()).unwrap_or(false)
-        };
-        if local {
-            let size = if p.is_file() { gguf_size(&p) } else { path_size(&p) };
-            return Presence { local: true, cached: false, size };
-        }
+    let found = |p: PathBuf, local| Presence {
+        local,
+        cached: p.starts_with(hf_cache),
+        size: if p.is_file() { gguf_size(&p) } else { path_size(&p) },
+    };
+    if let Some(p) = r.weights_path(models_dir, hf_cache).filter(|p| on_disk(p)) {
+        return found(p, true);
     }
-    if let Some(repo) = &r.model.repo {
-        if let Some(size) = hf_cached_size(hf_cache, repo) {
-            return Presence { local: false, cached: true, size };
-        }
+    let absent = Presence { local: false, cached: false, size: 0 };
+    // Reason: llama.cpp and TabbyAPI load only their own file or branch, which isn't here.
+    if matches!(r.engine.name, Engine::LlamaCpp | Engine::TabbyApi) {
+        return absent;
     }
-    Presence { local: false, cached: false, size: 0 }
+    match (r.first_gguf(), &r.model.repo) {
+        (Some(_), _) => r.cached_weights(hf_cache).map_or(absent, |p| found(p, false)),
+        (None, Some(repo)) => {
+            hf_cached_size(hf_cache, repo).map_or(absent, |size| Presence { local: false, cached: true, size })
+        }
+        (None, None) => absent,
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +288,7 @@ mod tests {
         fs::create_dir_all(repo.join("snapshots/abc")).unwrap();
         fs::create_dir_all(repo.join("blobs")).unwrap();
         fs::write(repo.join("blobs/x"), vec![0u8; 42]).unwrap();
-        fs::write(repo.join("snapshots/abc/model.safetensors"), b"link").unwrap();
+        std::os::unix::fs::symlink(repo.join("blobs/x"), repo.join("snapshots/abc/model.safetensors")).unwrap();
         let found = scan_hf_cache(d.path());
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].id.as_str(), found[0].size), ("mlx-community/Qwen3-4B-4bit", 42));

@@ -46,6 +46,21 @@ pub struct Item {
     /// HF snapshots on disk: commit hashes, with the refs pointing at them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revisions: Vec<Revision>,
+    /// A cache repo's GGUF model files (relative to their snapshot) and their
+    /// sizes, so a recipe matches only the quant it names. Older hosts send none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ggufs: Vec<(String, u64)>,
+}
+
+impl Item {
+    /// The size of `r`'s weights in this entry: its GGUF's when the entry lists
+    /// them (`None` when that quant isn't among them), else the whole entry.
+    pub fn holds(&self, r: &Recipe) -> Option<u64> {
+        match r.first_gguf() {
+            Some(f) if !self.ggufs.is_empty() => self.ggufs.iter().find(|(p, _)| p == f).map(|(_, s)| *s),
+            _ => Some(self.size),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,6 +119,7 @@ pub fn local(cfg: &Config) -> Inventory {
             kind: d.kind,
             path: d.path.display().to_string(),
             size: d.size,
+            ggufs: d.ggufs,
         })
         .collect();
     items.extend(models::scan_models_dir(&cfg.models_dir()).into_iter().map(|d| Item {
@@ -113,6 +129,7 @@ pub fn local(cfg: &Config) -> Inventory {
         path: d.path.display().to_string(),
         size: d.size,
         revisions: vec![],
+        ggufs: vec![],
     }));
     Inventory {
         host: cfg.node_name(),
@@ -332,7 +349,8 @@ impl Index {
         for (host, hw) in &self.hosts {
             let Some(inv) = &hw.inventory else { continue };
             if let Some(it) = find(inv, r) {
-                out.push(Loc { host: host.clone(), path: it.path.clone(), size: it.size, kind: it.kind.clone() });
+                let size = it.holds(r).unwrap_or(it.size);
+                out.push(Loc { host: host.clone(), path: it.path.clone(), size, kind: it.kind.clone() });
             }
         }
         out.sort_by_key(|l| l.host != LOCAL);
@@ -354,7 +372,8 @@ impl Index {
 pub fn find<'a>(inv: &'a Inventory, r: &Recipe) -> Option<&'a Item> {
     if r.model.path.is_none() {
         if let Some(repo) = &r.model.repo {
-            if let Some(it) = inv.items.iter().find(|i| i.location == "hf-cache" && i.id == *repo) {
+            let cached = |i: &&Item| i.location == "hf-cache" && i.id == *repo && i.holds(r).is_some();
+            if let Some(it) = inv.items.iter().find(cached) {
                 return Some(it);
             }
         }
@@ -388,6 +407,7 @@ fn demo(paths: &Paths, cfg: &Config) -> Index {
             path: format!("/home/demo/.cache/huggingface/hub/models--{}", repo.replace('/', "--")),
             size,
             revisions: vec![Revision { commit: format!("demo{host}{i:04}"), refs: vec!["main".into()] }],
+            ggufs: vec![],
         };
         if i % 3 != 2 {
             per.entry(hosts[i % 2]).or_default().push(item(hosts[i % 2]));
@@ -508,6 +528,7 @@ mod tests {
                     path: format!("/hf/{id}"),
                     size: 7,
                     revisions: vec![],
+                    ggufs: vec![],
                 })
                 .collect(),
             ..Default::default()

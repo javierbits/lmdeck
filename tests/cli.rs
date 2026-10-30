@@ -184,8 +184,10 @@ fn local_source_with_toml_recipes() {
         plan.contains(&format!("--port {port}")) && plan.contains("--n-gpu-layers 99") && plan.contains("-fit off"),
         "{plan}"
     );
+    // Into the Hugging Face cache: no --local-dir.
     let pull = e.run(&["pull", "qwen3-4b", "--dry-run"]);
-    assert!(pull.contains("download unsloth/Qwen3-4B-GGUF --include Qwen3-4B-Q4_K_M.gguf --local-dir"), "{pull}");
+    assert!(pull.contains("download unsloth/Qwen3-4B-GGUF --include Qwen3-4B-Q4_K_M.gguf"), "{pull}");
+    assert!(!pull.contains("--local-dir"), "{pull}");
 
     // Once the GGUF is on disk, the plan points at the file.
     write(&e.path("models/unsloth/Qwen3-4B-GGUF"), "Qwen3-4B-Q4_K_M.gguf", "GGUF");

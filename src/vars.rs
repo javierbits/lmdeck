@@ -13,14 +13,16 @@ use std::time::Duration;
 
 use crate::config::EngineOverrides;
 use crate::hardware::which;
+use crate::recipe::Recipe;
 
 /// The placeholders the engine plan fills for every recipe on its machine.
 pub const ENGINE: [&str; 11] =
     ["name", "port", "ctx", "model", "models_dir", "host", "repo", "revision", "fabric", "dir", "container"];
 
-/// What the machine itself has: `{home}`, `{user}`, `{hf_home}` and the
-/// TabbyAPI checkout (`{tabbyapi_dir}`), see [`machine`].
-pub const MACHINE: [&str; 4] = ["home", "user", "hf_home", "tabbyapi_dir"];
+/// What the machine itself has: `{home}`, `{user}`, `{hf_home}`, the
+/// TabbyAPI checkout (`{tabbyapi_dir}`), see [`machine`], and where the
+/// recipe's weights are on it (`{model_dir}`, see [`machine_vars`]).
+pub const MACHINE: [&str; 5] = ["home", "user", "hf_home", "tabbyapi_dir", "model_dir"];
 
 /// The `[engines]` binaries a command can name, by their config keys; each
 /// also has a `_dir` form, the directory holding it.
@@ -84,6 +86,13 @@ pub fn hf_home(home: &Path) -> PathBuf {
     set.map(|v| crate::paths::expand(&v)).unwrap_or_else(|| home.join(".cache/huggingface"))
 }
 
+/// The Hugging Face hub cache weights resolve in (and `hf download` fills):
+/// `$HF_HUB_CACHE`, else `hub` under [`hf_home`].
+pub fn hf_hub(home: &Path) -> PathBuf {
+    let set = std::env::var_os("HF_HUB_CACHE").filter(|v| !v.is_empty());
+    set.map(PathBuf::from).unwrap_or_else(|| hf_home(home).join("hub"))
+}
+
 /// Whether the machine a command runs on fills `name`: the engine plan's own
 /// placeholders ([`ENGINE`]) and the machine's ([`machine`]).
 pub fn on_machine(name: &str) -> bool {
@@ -121,19 +130,24 @@ pub fn machine(name: &str, o: &EngineOverrides, home: &Path) -> Option<std::resu
     )
 }
 
-/// The machine placeholders `texts` use, as this machine has them; fails on
+/// The machine placeholders `r`'s engine texts use, as this machine has them
+/// (`{model_dir}` from its weights under `models_dir` or the hub); fails on
 /// the first one it lacks, saying what to set.
 pub fn machine_vars<'a>(
-    recipe: &str,
-    texts: impl IntoIterator<Item = &'a str>,
+    r: &'a Recipe,
+    models_dir: &Path,
     o: &EngineOverrides,
     home: &Path,
 ) -> Result<Vec<(&'a str, String)>> {
     let mut out = vec![];
-    for name in texts.into_iter().flat_map(names) {
-        match machine(name, o, home) {
+    for name in r.engine.texts().flat_map(names) {
+        let value = match name {
+            "model_dir" => Some(r.model_dir(models_dir, &hf_hub(home)).map(|p| p.display().to_string())),
+            _ => machine(name, o, home).map(|v| v.map_err(anyhow::Error::msg)),
+        };
+        match value {
             Some(Ok(v)) => out.push((name, v)),
-            Some(Err(why)) => bail!("{recipe}: {{{name}}} can't be filled: {why}"),
+            Some(Err(why)) => bail!("{}: {{{name}}} can't be filled: {why:#}", r.name),
             None => {}
         }
     }
