@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0fbc4ae6b5650b4d81ed07ed90922440b9d9e8ed0f9c671b6193102ce9a732f4 # shrinks to org = "a", name = "a-GGUF", commit = "a0a0a0", sub = None, file = "a", size = 1, other = 0
+cc 7230bff68889c55500ebe8e3b7e9e2f978992f19924264faef585aa257e5918c # shrinks to subs = ["0"], file = "A", root = "a"

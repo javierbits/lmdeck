@@ -38,6 +38,22 @@ impl Recipe {
         on_disk(&p).then_some(p)
     }
 
+    /// The `--local-dir` that puts a llama.cpp recipe's GGUF at its `[model]
+    /// path` `gguf`: `hf download` keeps the file's place in the repo
+    /// (`UD-IQ4_NL/…`), so that place comes off the end of the path. Fails
+    /// when the path doesn't end with it: the download would land elsewhere.
+    pub fn gguf_download_dir(&self, gguf: &Path) -> Result<PathBuf> {
+        let place = Path::new(self.first_file().unwrap_or_default());
+        match gguf.ancestors().nth(place.components().count().max(1)) {
+            Some(dir) if place.as_os_str().is_empty() || gguf.ends_with(place) => Ok(dir.to_path_buf()),
+            _ => bail!(
+                "[model] path {} must end with {} (where `hf download` puts the file under --local-dir)",
+                gguf.display(),
+                place.display()
+            ),
+        }
+    }
+
     /// What the engine loads: llama.cpp and TabbyAPI take the Hugging Face
     /// cache's copy when it is there and the recipe has no `[model] path`;
     /// every engine falls back to [`Recipe::local_path`].

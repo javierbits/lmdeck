@@ -268,6 +268,45 @@ fn model_dir_without_the_weights_on_this_machine_fails_the_plan() {
     assert!(err.contains("`lmdeck pull` downloads it"), "{err}");
 }
 
+/// The `--local-dir` of `pull --dry-run` for the deck recipe `name`, if any.
+fn local_dir(e: &Env, name: &str) -> Option<PathBuf> {
+    let argv = shlex::split(e.run(&["pull", name, "--dry-run"]).trim()).unwrap_or_default();
+    argv.windows(2).find(|w| w[0] == "--local-dir").map(|w| PathBuf::from(&w[1]))
+}
+
+/// A llama.cpp recipe loading `repo`'s `first` file from its `[model] path` `path`.
+fn at_path(repo: &str, first: &str, path: &str) -> String {
+    llama(repo, &[first], "").replace("[engine]", &format!("path = \"{path}\"\n[engine]"))
+}
+
+#[test]
+fn a_gguf_in_a_repo_subfolder_downloads_to_its_path_without_nesting() {
+    let e = Env::new();
+    let repo = "unsloth/Qwen3.5-397B-A17B-GGUF";
+    let first = "UD-IQ4_NL/Qwen3.5-397B-A17B-UD-IQ4_NL-00001-of-00005.gguf";
+    let path = format!("{repo}/{first}");
+    e.recipe("dual", &at_path(repo, first, &path));
+    let dir = local_dir(&e, "dual").expect("a [model] path downloads into the models dir");
+    // `hf download` keeps the file's place in the repo (UD-IQ4_NL/…) under --local-dir.
+    assert_eq!(dir.join(first), e.path("models").join(&path), "--local-dir {}", dir.display());
+    // Where the download lands is what the run loads.
+    put(&dir.join(first), b"GGUF");
+    let plan = e.run(&["use", "dual", "--dry-run"]);
+    assert!(plan.contains(&format!("--model {}", e.path("models").join(&path).display())), "{plan}");
+}
+
+#[test]
+fn a_gguf_path_at_the_repo_root_or_named_apart_from_its_file() {
+    let e = Env::new();
+    // At the repo's root: the GGUF's own directory, as before.
+    e.recipe("root", &at_path("o/R-GGUF", "R-Q4.gguf", "mine/R-GGUF/R-Q4.gguf"));
+    assert_eq!(local_dir(&e, "root"), Some(e.path("models/mine/R-GGUF")));
+    // A path that doesn't end where `hf download` puts the file would never be found.
+    e.recipe("off", &at_path("o/R-GGUF", "UD-Q2/R-00001-of-00002.gguf", "mine/R.gguf"));
+    let err = e.fail(&["pull", "off", "--dry-run"]);
+    assert!(err.contains("mine/R.gguf") && err.contains("UD-Q2/R-00001-of-00002.gguf"), "{err}");
+}
+
 /// Free TCP ports for the nodes, never the same twice in this process.
 fn free_port() -> u16 {
     static USED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(vec![]);
@@ -370,6 +409,21 @@ fn a_directory_path_holds_the_repo_files_for_model_dir() {
 }
 
 proptest! {
+    /// With a `[model] path`, a llama.cpp GGUF lands at that path wherever it sits in its repo.
+    #[test]
+    fn a_gguf_downloads_to_its_path(
+        subs in prop::collection::vec("[A-Za-z0-9_]{1,6}", 0..4),
+        file in "[A-Za-z][A-Za-z0-9_.]{0,16}",
+        root in "[a-z]{1,8}",
+    ) {
+        let first = subs.iter().map(|s| format!("{s}/")).collect::<String>() + &file + ".gguf";
+        let path = format!("/srv/{root}/{first}");
+        let r = Recipe::parse(&at_path("o/R-GGUF", &first, &path), "p").unwrap();
+        let argv = lmdeck::deck::pull_argv(&lmdeck::config::Config::default(), &r).unwrap();
+        let dir = argv.windows(2).find(|w| w[0] == "--local-dir").map(|w| PathBuf::from(&w[1]));
+        prop_assert_eq!(dir.map(|d| d.join(&first)), Some(PathBuf::from(&path)));
+    }
+
     /// `{model_dir}` is the directory holding the first file wherever it sits in
     /// the snapshot the revision names, for any engine; llama.cpp loads that file.
     #[test]
