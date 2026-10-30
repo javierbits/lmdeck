@@ -54,6 +54,35 @@ table instead, and can type a row number to toggle that recipe on or off.
 
 ![lmdeck TUI, deck tab](docs/screenshots/tui-deck.png)
 
+## First run
+
+The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
+`use`, `switch`, `list`, `init`), a short setup runs before anything else:
+
+1. **This machine** — what was detected: platform, CPU, memory, GPUs, engines,
+   and the network ports that matter (ConnectX-7 / RDMA, Tailscale), then a
+   "does this look right?" confirm.
+2. **Model weights** — where `lmdeck pull` downloads to, shown with the free
+   space on that filesystem (the default is `~/models`). Native engines that
+   keep their own hub cache (tensorfold, mlx, lmstudio) ignore this, so set
+   `HF_HOME` too if you want everything off the boot disk. Any time:
+   `lmdeck init --models-dir /mnt/nvme/models`, `LMDECK_MODELS_DIR`, or the
+   `models_dir` key in config.toml.
+3. **The cluster** — the wizard probes the neighbours on your CX7 ports (and
+   sweeps those subnets when the neighbour table is silent), plus your
+   Tailscale peers, for an `lmdeck serve` on port 7979, and offers to add each
+   one to `hosts.toml` with a name and token. The other machines must run
+   `lmdeck serve`; without it they can't be driven or measured (see
+   [docs/MULTIHOST.md](docs/MULTIHOST.md)).
+4. **Recipe sources** — repos to `lmdeck add <name>` from
+   (`github:owner/repo`, `hf:owner/repo`, a URL, a local directory). There is
+   no default source; the built-in recipes are always there.
+
+Answers are saved to `~/.config/lmdeck/` (`hosts.toml`, `config.toml`) and
+`[setup] done = true` keeps the wizard from asking again. `LMDECK_NO_SYNC=1`
+skips all first-run prompts; `lmdeck host add` and `lmdeck source add` do the
+same jobs any time.
+
 ## TUI
 
 `lmdeck` (or `lmdeck tui`) opens a full-screen dashboard. Its look borrows from

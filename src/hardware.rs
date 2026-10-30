@@ -9,6 +9,27 @@ use crate::util::run_with_timeout;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
+/// Free space in GB for the filesystem `dir` lands on. Walks up to the nearest
+/// existing ancestor, so a models directory that has not been created yet
+/// reports the filesystem it would be made on. `None` when nothing exists
+/// (`/` always does) or the command is missing.
+pub fn free_gb(dir: &Path) -> Option<f64> {
+    let mut at = dir.to_path_buf();
+    loop {
+        if at.exists() {
+            break;
+        }
+        if !at.pop() {
+            return None;
+        }
+    }
+    // `df -Pk` prints 1024-byte blocks; the 4th field is available.
+    let out = run_with_timeout(Command::new("df").arg("-Pk").arg(&at), Duration::from_secs(4))?;
+    let line = out.lines().nth(1)?;
+    let kb: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    Some(kb as f64 * 1024.0 / GIB)
+}
+
 /// One GPU as reported by the driver.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gpu {

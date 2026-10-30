@@ -50,6 +50,23 @@ pub struct Config {
     /// lmdeck points at served models.
     #[serde(default, skip_serializing_if = "HarnessConfig::is_default")]
     pub harness: HarnessConfig,
+    /// `[setup]`: first-run wizard bookkeeping.
+    #[serde(default, skip_serializing_if = "SetupConfig::is_default")]
+    pub setup: SetupConfig,
+}
+
+/// `[setup]` in config.toml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SetupConfig {
+    /// Set once the first-run setup wizard has run, so it doesn't ask again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done: bool,
+}
+
+impl SetupConfig {
+    pub fn is_default(&self) -> bool {
+        !self.done
+    }
 }
 
 /// `[index]` in config.toml.
@@ -279,6 +296,7 @@ impl Default for Config {
             sources: vec![],
             updates: UpdateChecks::default(),
             node: NodeConfig::default(),
+            setup: SetupConfig::default(),
             serve: ServeConfig::default(),
             weights: WeightsConfig::default(),
             index: IndexConfig::default(),
@@ -349,49 +367,67 @@ impl Config {
     /// Saves `[harness]` (replacing any existing one) without touching the
     /// rest of the file: comments and other settings stay as they are.
     pub fn save_harness(paths: &Paths, harness: &HarnessConfig) -> Result<PathBuf> {
-        let file = paths.config_file();
-        let body = match fs::read_to_string(&file) {
-            Ok(text) => {
-                let mut out = String::new();
-                let mut skipping = false;
-                for line in text.lines() {
-                    if line.trim() == "[harness]" {
-                        skipping = true;
-                        continue;
-                    }
-                    if skipping {
-                        if line.trim_start().starts_with('[') {
-                            skipping = false;
-                        } else {
-                            continue;
-                        }
-                    }
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                let trimmed = out.trim_end_matches('\n');
-                if trimmed.is_empty() {
-                    String::new()
-                } else {
-                    format!("{trimmed}\n\n")
-                }
-            }
-            Err(_) => String::new(),
-        };
-        let mut out = body;
-        out.push_str("[harness]\n");
-        out.push_str(&format!("asked = {}\n", harness.asked));
+        let mut body = format!("asked = {}\n", harness.asked);
         if let Some(hosts) = &harness.hosts {
             let list: Vec<String> = hosts.iter().map(|s| format!("\"{s}\"")).collect();
-            out.push_str(&format!("hosts = [{}]\n", list.join(", ")));
+            body.push_str(&format!("hosts = [{}]\n", list.join(", ")));
         }
         if harness.opencode_export {
-            out.push_str("opencode_export = true\n");
+            body.push_str("opencode_export = true\n");
         }
         if !harness.sync.is_empty() {
             let list: Vec<String> = harness.sync.iter().map(|s| format!("\"{s}\"")).collect();
-            out.push_str(&format!("sync = [{}]\n", list.join(", ")));
+            body.push_str(&format!("sync = [{}]\n", list.join(", ")));
         }
+        Self::save_table(paths, "harness", &body)
+    }
+
+    /// Saves `[setup]` (replacing any existing one) without touching the rest
+    /// of the file: comments and other settings stay as they are.
+    pub fn save_setup(paths: &Paths, done: bool) -> Result<PathBuf> {
+        Self::save_table(paths, "setup", &format!("done = {done}\n"))
+    }
+
+    /// Replaces the `[name]` table in config.toml with `body`, leaving the
+    /// rest of the file (comments, other tables) as it is.
+    ///
+    /// Refuses to write when the file declares a newer schema: a
+    /// `[name]`-only rewrite ignores tables a newer lmdeck added, so writing
+    /// would drop them. Skip-and-warn beats silently losing data.
+    fn save_table(paths: &Paths, name: &str, body: &str) -> Result<PathBuf> {
+        let file = paths.config_file();
+        let text = fs::read_to_string(&file).unwrap_or_default();
+        let newer = toml::from_str::<toml::Value>(&text)
+            .ok()
+            .and_then(|v| crate::schema::declared(&v).ok())
+            .is_some_and(|n| n > crate::schema::CURRENT);
+        if newer {
+            anyhow::bail!("updated config would not parse: {}", Config::load(paths)?.skipped.unwrap_or_default());
+        }
+        let mut kept = String::new();
+        let mut skipping = false;
+        for line in text.lines() {
+            if line.trim() == format!("[{name}]") {
+                skipping = true;
+                continue;
+            }
+            if skipping {
+                if line.trim_start().starts_with('[') {
+                    skipping = false;
+                } else {
+                    continue;
+                }
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        let trimmed = kept.trim_end_matches('\n');
+        let mut out = if trimmed.is_empty() {
+            "# lmdeck configuration — https://github.com/jvr0x/lmdeck\n".to_string()
+        } else {
+            format!("{trimmed}\n\n")
+        };
+        out.push_str(&format!("[{name}]\n{body}"));
         fs::create_dir_all(&paths.config_dir)?;
         let tmp = file.with_extension("toml.tmp");
         fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
@@ -503,6 +539,26 @@ mod tests {
         assert!(c.harness.asked);
         assert_eq!(c.engines.tabbyapi_dir.as_deref(), Some("~/t"));
     }
+    #[test]
+    fn table_writes_refuse_a_newer_schema() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths { config_dir: d.path().into(), cache_dir: d.path().join("c"), state_dir: d.path().join("s") };
+        let future =
+            "schema = 4\nmin_lmdeck = \"3.0.0\"\nmodels_dir = \"/x\"\n\n[telemetry]\nendpoint = \"http://t\"\n";
+        fs::write(paths.config_file(), future).unwrap();
+        let e = Config::save_setup(&paths, true).unwrap_err().to_string();
+        assert!(e.contains("needs lmdeck >= 3.0.0 / schema 4"), "{e}");
+        assert_eq!(
+            fs::read_to_string(paths.config_file()).unwrap(),
+            future,
+            "the table a newer lmdeck owns is not dropped"
+        );
+        // A malformed file is not a schema problem: the write still lands.
+        fs::write(paths.config_file(), "models_dir = \"/m\"\n").unwrap();
+        Config::save_setup(&paths, true).unwrap();
+        assert!(Config::load(&paths).unwrap().setup.done);
+    }
+
     #[test]
     fn rejects_garbage() {
         assert!(Config::parse("models_dir = [").is_err());

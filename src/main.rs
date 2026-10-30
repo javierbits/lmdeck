@@ -510,9 +510,32 @@ fn run(cli: Cli) -> Result<()> {
 
 // ───────────────────────────── harnesses ─────────────────────────────
 
-/// The once-only first-run prompt: asks which agent harnesses lmdeck should
-/// point at served models, and saves the answer to config.toml.
+/// The once-only first-run prompts: the setup wizard (machine, cluster,
+/// sources) on first use, then which agent harnesses lmdeck should point at
+/// served models. Both save their answers to config.toml.
 fn first_run(ctx: &mut Ctx) {
+    if lmdeck::setup::should_run(&ctx.cfg) {
+        match lmdeck::setup::wizard(&ctx.paths, &ctx.cfg) {
+            Ok(outcome) => {
+                if let Some(dir) = &outcome.models_dir {
+                    ctx.cfg.models_dir = dir.clone();
+                }
+                for (name, spec) in &outcome.sources {
+                    let Ok(parsed) = lmdeck::sources::SourceSpec::parse(spec) else { continue };
+                    if let Err(e) = fetch_source(ctx, name, &parsed) {
+                        eprintln!("{} source {name}: {e:#}", yellow("!"));
+                    }
+                    ctx.cfg.sources.push(SourceEntry { name: name.clone(), spec: spec.clone() });
+                }
+                if !outcome.sources.is_empty() || outcome.models_dir.is_some() {
+                    if let Err(e) = ctx.cfg.save(&ctx.paths) {
+                        eprintln!("{} {e:#}", yellow("warning:"));
+                    }
+                }
+            }
+            Err(e) => eprintln!("{} setup: {e:#}", yellow("warning:")),
+        }
+    }
     if !lmdeck::harness::should_ask(&ctx.cfg) {
         return;
     }
