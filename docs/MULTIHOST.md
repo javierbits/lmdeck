@@ -151,6 +151,12 @@ places, see below), with exactly one `role = "head"`. lmdeck:
 - stops them in **reverse** order, and if a node fails to come up, stops the
   ones already started and shows that node's log;
 - reports one aggregate status and per-node status; `lmdeck logs <recipe> --node w1` reads one node's log;
+- mounts the weights (`[model]`) only on the nodes whose command or env
+  uses `{weights_mount}` or `{weights_volume}`: the weights home bind-mounts
+  its own cache, every other such node gets the NFS export, docker volume
+  and preflight below. A node that takes no mount (llama.cpp's
+  `rpc-server`, which gets its layers from the head) gets none of it, and
+  `--dry-run` says `weights: not mounted`;
 - checks each node's memory against **its share** of the weights: the size
   (on the weights home's disk, else `size_gb`) divided by the number of
   nodes, or `[hardware] min_memory_gb` when the recipe sets it, which counts

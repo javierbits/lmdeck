@@ -609,3 +609,49 @@ fn ray_example_dry_run() {
     let worker = plan.find("worker").unwrap();
     assert!(head < worker, "head starts first:\n{plan}");
 }
+
+/// A node whose command doesn't mount the weights (llama.cpp's rpc-server
+/// gets its layers from the head over the link) needs no NFS export, docker
+/// volume or preflight, `[model]` or not; a node that mounts them gets them.
+#[test]
+fn only_nodes_that_mount_the_weights_get_the_nfs_volume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let repo = "lmdeck-test/rpc-model";
+    let c = Host::new(root, "ctl", "");
+    fake_hf(&c.dir.join("hf"), repo, "2222222222222222222222222222222222222222", &[("config.json", 2)]);
+    let s2 = serve(Host::new(root, "spark2", "[serve]\naccept_recipes = true\n"), &[]);
+    fs::write(
+        c.dir.join("home/config/hosts.toml"),
+        format!(
+            "[[host]]\nname = \"spark2\"\nurl = \"{}\"\n\n[[link]]\na = \"local\"\nb = \"spark2\"\na_addr = \"10.100.224.2\"\nb_addr = \"10.100.224.1\"\nkind = \"cx7\"\n",
+            s2.url
+        ),
+    )
+    .unwrap();
+    let recipe = |name: &str, worker: &str| {
+        format!(
+            "name = \"{name}\"\n[model]\nrepo = \"{repo}\"\n[engine]\nname = \"custom\"\nimage = \"lmdeck-test/img:1\"\nport = {}\n\
+             [cluster]\norder = \"workers-first\"\n\
+             [[nodes]]\nname = \"rpc\"\nrole = \"worker\"\nhost = \"spark2\"\nready_port = 50052\ncommand = [{worker}]\n\
+             [[nodes]]\nname = \"head\"\nrole = \"head\"\nhost = \"local\"\ncommand = [\"llama-server\", \"--rpc\", \"{{peer_addr}}:50052\"]\n",
+            free_port()
+        )
+    };
+    c.add_recipe("rpc", &recipe("rpc", "\"rpc-server\", \"-H\", \"0.0.0.0\", \"-p\", \"50052\""));
+    let plan = c.run(&["use", "rpc", "--dry-run"]);
+    for never in ["export on", "volume:", "preflight:", "exportfs"] {
+        assert!(!plan.contains(never), "{never:?} in\n{plan}");
+    }
+    assert!(plan.contains("weights: not mounted"), "{plan}");
+    assert!(plan.contains("llama-server --rpc 10.100.224.1:50052"), "{plan}");
+    // Mounting the volume by name needs it as much as {weights_mount} does.
+    let docker = "\"docker\", \"run\", \"-v\", \"{weights_volume}:{weights_at}:ro\", \"{image}\"";
+    c.add_recipe("vol", &recipe("vol", docker));
+    let plan = c.run(&["use", "vol", "--dry-run"]);
+    for want in
+        ["export on", "volume: docker volume create", "preflight:", "-v lmdeck-hf-ctl:/root/.cache/huggingface/hub:ro"]
+    {
+        assert!(plan.contains(want), "missing {want:?} in\n{plan}");
+    }
+}

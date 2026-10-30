@@ -390,6 +390,9 @@ Design:
   **[docs/MULTIHOST.md](docs/MULTIHOST.md)**. A `[[nodes]]` worker with
   `host = "auto"` gets its machine from the head's CX7 fabric (on a ring,
   the head's cable neighbours first), so a recipe needn't name your hosts.
+  A node gets the weights' NFS volume only when its command mounts them
+  (`{weights_mount}` / `{weights_volume}`), so `[model]` costs nothing on a
+  node such as llama.cpp's `rpc-server`.
 - **`hosts.toml`** lives in the config dir (`~/.config/lmdeck/hosts.toml`):
   `[[host]] name / url / token` (or `token_env = "VAR"`, or
   `LMDECK_HOST_TOKEN_<NAME>` in the environment), optional `link_addr`, and

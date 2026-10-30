@@ -353,16 +353,12 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
             Role::Head => n.port.unwrap_or(r.port()),
             Role::Worker => n.port.or(n.ready_port).unwrap_or(r.port() + rank as u16),
         };
-        // Weights: the home bind-mounts its own cache; others mount its NFS export.
+        // Weights: the home bind-mounts its own cache; others mount its NFS export, when
+        // their command mounts the weights at all (llama.cpp's rpc-server never does).
+        let mounts = n.texts().flat_map(crate::vars::names).any(|v| matches!(v, "weights_mount" | "weights_volume"));
         let mut nfs = None;
         let weights = match &home {
-            None => {
-                vars.insert("weights_volume".into(), String::new());
-                vars.insert("weights_at".into(), String::new());
-                vars.insert("weights_mount".into(), String::new());
-                "none".to_string()
-            }
-            Some(h) => {
+            Some(h) if h.host == host || mounts => {
                 let inv = idx.inventory(&h.host).cloned().unwrap_or_default();
                 if h.host == host {
                     vars.insert("weights_volume".into(), inv.export_path.clone());
@@ -411,6 +407,15 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
                     vars.insert("weights_at".into(), inv.mount_at.clone());
                     vars.insert("weights_mount".into(), format!("{volume}:{}:ro", inv.mount_at));
                     format!("nfs from {} via {} (read-only, no copy)", h.host, l.label())
+                }
+            }
+            _ => {
+                for k in ["weights_volume", "weights_at", "weights_mount"] {
+                    vars.insert(k.into(), String::new());
+                }
+                match home {
+                    Some(_) => "not mounted (its command uses neither {weights_mount} nor {weights_volume})".into(),
+                    None => "none".to_string(),
                 }
             }
         };
