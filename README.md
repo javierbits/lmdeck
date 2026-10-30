@@ -81,9 +81,11 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    driven or measured (see [docs/MULTIHOST.md](docs/MULTIHOST.md)). For each
    one that doesn't answer on 7979, the wizard offers to set it up over SSH
    on the CX7 address:
-   - log in with keys only (`BatchMode`); if the key isn't accepted it offers
-     `ssh-copy-id` (your SSH password, typed into ssh itself) and makes a key
-     first if you have none;
+   - log in with keys only (`BatchMode`, which can't type a passphrase): when
+     ssh's own choice is refused it tries each of your keys without a
+     passphrase and keeps the one that works. If none is accepted it offers
+     `ssh-copy-id -i` for the first one (your SSH password, typed into ssh
+     itself), and makes a key first if you have none;
    - copy this lmdeck binary when the OS and CPU match, otherwise
      `cargo install --git https://github.com/javierbits/lmdeck` there;
    - write a new token to `~/.config/lmdeck/serve.env` there (mode 600, sent

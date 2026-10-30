@@ -202,7 +202,7 @@ pub struct Net<'a> {
 /// When hosts were added, shows the topology they make.
 pub fn wizard(paths: &Paths, cfg: &Config) -> Result<Outcome> {
     let fab = fabric::detect();
-    let mut ssh = crate::ssh::System;
+    let mut ssh = crate::ssh::System::default();
     let mut find = |ssh: &mut dyn Ssh| scan(&fab, SERVE_PORT, ssh);
     let mut health = |ip: &str, port: u16| probe_one(ip, port).0;
     let mut net = Net { ssh: &mut ssh, port: SERVE_PORT, find: &mut find, health: &mut health };
@@ -758,7 +758,7 @@ pub fn identify(
         let mut name: Option<String> = None;
         let mut named_by = "";
         for a in members.iter().filter(|a| a.ssh) {
-            let out = ssh.run(&a.candidate.ip, "hostname", None);
+            let out = ssh.login(&a.candidate.ip, "hostname", None);
             login = Login::from_out(&out);
             if login == Login::Ok {
                 name = out.stdout.lines().next().map(short_name).filter(|s| !s.is_empty());
@@ -899,6 +899,7 @@ pub(crate) mod tests {
     use crate::fabric::Nic;
     use crate::ssh::Out;
     use std::collections::{HashMap, VecDeque};
+    use std::path::{Path, PathBuf};
 
     fn nic(name: &str, kind: NicKind, state: &str, ipv4: &[(&str, u8)]) -> Nic {
         Nic {
@@ -927,9 +928,17 @@ pub(crate) mod tests {
         /// `(address, command substring)` → reply; the first match wins.
         pub replies: Vec<(String, String, Out)>,
         pub calls: Vec<(String, String, Option<String>)>,
-        pub copied: Vec<String>,
+        /// The key each of `calls` named (`use_key`), if any.
+        pub named: Vec<Option<PathBuf>>,
+        /// Every `copy_id`: the address and the key.
+        pub copied: Vec<(String, PathBuf)>,
         pub copy_ok: bool,
-        pub key_exists: bool,
+        /// This user's passphrase-free keys, as `keys` reports them.
+        pub usable: Vec<PathBuf>,
+        /// The keys the peers accept when named; a copy that works adds one.
+        pub authorized: Vec<PathBuf>,
+        /// The key named per address (`use_key`).
+        pub using: HashMap<String, PathBuf>,
     }
 
     impl MockSsh {
@@ -939,9 +948,15 @@ pub(crate) mod tests {
     }
 
     impl Ssh for MockSsh {
-        /// The first matching reply; it is used up when a later one also matches.
+        /// The first matching reply; it is used up when a later one also
+        /// matches. A named key that isn't authorized is refused instead.
         fn run(&mut self, addr: &str, cmd: &str, stdin: Option<&[u8]>) -> Out {
             self.calls.push((addr.into(), cmd.into(), stdin.map(|s| String::from_utf8_lossy(s).into_owned())));
+            let key = self.using.get(addr).cloned();
+            self.named.push(key.clone());
+            if key.is_some_and(|k| !self.authorized.contains(&k)) {
+                return Out::fail(&format!("jvr0x@{addr}: Permission denied (publickey)."));
+            }
             let hits: Vec<usize> = (0..self.replies.len())
                 .filter(|&i| self.replies[i].0 == addr && cmd.contains(self.replies[i].1.as_str()))
                 .collect();
@@ -954,12 +969,28 @@ pub(crate) mod tests {
         fn host_key(&mut self, addr: &str) -> Option<String> {
             self.keys.get(addr).cloned()
         }
-        fn copy_id(&mut self, addr: &str) -> bool {
-            self.copied.push(addr.into());
+        /// Records the copy, and authorizes the key when it works.
+        fn copy_id(&mut self, addr: &str, key: &Path) -> bool {
+            self.copied.push((addr.into(), key.to_path_buf()));
+            if self.copy_ok {
+                self.authorized.push(key.to_path_buf());
+            }
             self.copy_ok
         }
-        fn has_key(&mut self, create: bool) -> bool {
-            self.key_exists || create
+        /// Returns the scripted usable keys.
+        fn keys(&mut self, _addr: &str) -> Vec<PathBuf> {
+            self.usable.clone()
+        }
+        /// Makes `id_ed25519`, as ssh-keygen would.
+        fn make_key(&mut self) -> Option<PathBuf> {
+            Some(PathBuf::from("id_ed25519"))
+        }
+        /// Names `key` for `addr` from now on, or goes back to ssh's own choice.
+        fn use_key(&mut self, addr: &str, key: Option<&Path>) {
+            match key {
+                Some(k) => self.using.insert(addr.into(), k.to_path_buf()),
+                None => self.using.remove(addr),
+            };
         }
     }
 
@@ -1263,7 +1294,7 @@ pub(crate) mod tests {
     fn wizard_sets_up_a_silent_peer_and_adds_it_by_its_hostname() {
         let (_d, paths) = tmp("wizard-boot");
         let ip = "10.100.136.1";
-        let mut ssh = MockSsh { key_exists: true, copy_ok: true, ..Default::default() };
+        let mut ssh = MockSsh { usable: vec!["id_ed25519".into()], copy_ok: true, ..Default::default() };
         ssh.reply(ip, crate::peers::FACTS_CMD, Out::fail("Permission denied (publickey,password)."));
         let facts = format!(
             "host=faraday\narch={}\nos={}\nuser=jvr0x\nhome=/home/jvr0x\nlmdeck=\nsystemd=yes\nlinger=yes\n",
@@ -1283,7 +1314,7 @@ pub(crate) mod tests {
             "", // no sources
         ]);
         let out = wiz(&paths, &mut p, &mut ssh, peers);
-        assert_eq!(ssh.copied, vec![ip.to_string()]);
+        assert_eq!(ssh.copied, vec![(ip.to_string(), PathBuf::from("id_ed25519"))]);
         assert_eq!(out.hosts, vec!["faraday"]);
         let hosts = HostsFile::load(&paths).unwrap();
         let e = hosts.get("faraday").unwrap();

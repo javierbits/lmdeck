@@ -15,6 +15,7 @@
 use crate::setup::{ask_yes, Peer, Prompt};
 use crate::ssh::{Login, Ssh};
 use crate::ui::{bold, dim, green, yellow};
+use std::path::Path;
 use std::time::Duration;
 
 /// Where `cargo install` builds lmdeck from when the binary can't be copied.
@@ -176,42 +177,62 @@ pub fn bootstrap(
     Some(Ready { name, ip, token, answering })
 }
 
-/// Logs in with the key; when the key is refused, offers to make one and
-/// copy it with `ssh-copy-id`, then tries once more.
+/// Logs in with a key ([`Ssh::login`]); when every key is refused, offers to
+/// copy the first usable one with `ssh-copy-id` (making one when there is
+/// none), then tries once more with it.
 fn login(p: &mut dyn Prompt, ssh: &mut dyn Ssh, ip: &str, label: &str) -> Option<Facts> {
+    // The key copied there, as the messages name it.
+    let mut copied = String::new();
     for attempt in 0..2 {
-        let out = ssh.run(ip, FACTS_CMD, Some(FACTS.as_bytes()));
+        let out = if attempt == 0 {
+            ssh.login(ip, FACTS_CMD, Some(FACTS.as_bytes()))
+        } else {
+            ssh.run(ip, FACTS_CMD, Some(FACTS.as_bytes()))
+        };
         match Login::from_out(&out) {
             Login::Ok => return Some(parse_facts(&out.stdout)),
             Login::Denied if attempt == 0 => {
-                println!("    {} {label} ({ip}) doesn't accept this machine's SSH key yet.", yellow("!"));
+                println!("    {} {label} ({ip}) doesn't accept an SSH key lmdeck can use yet.", yellow("!"));
                 println!(
                     "    {}",
-                    dim("lmdeck logs in with keys only (BatchMode), so it never stops to ask for a password.")
+                    dim("lmdeck needs a key without a passphrase: it logs in with BatchMode, which can't type one.")
                 );
-                if !ssh.has_key(false) {
-                    if !ask_yes(p, "    you have no SSH key here; make one (ed25519, no passphrase)?", true) {
-                        println!("    {}", dim(&format!("later: ssh-keygen -t ed25519, then ssh-copy-id {ip}")));
-                        return None;
+                let key = match ssh.keys(ip).into_iter().next() {
+                    Some(k) => k,
+                    None => {
+                        if !ask_yes(p, "    you have no SSH key without a passphrase here; make one (ed25519)?", true) {
+                            println!(
+                                "    {}",
+                                dim(&format!("later: ssh-keygen -t ed25519 -N '', then ssh-copy-id {ip}"))
+                            );
+                            return None;
+                        }
+                        let Some(k) = ssh.make_key() else {
+                            println!("    {} ssh-keygen failed", yellow("!"));
+                            return None;
+                        };
+                        k
                     }
-                    if !ssh.has_key(true) {
-                        println!("    {} ssh-keygen failed", yellow("!"));
-                        return None;
-                    }
-                }
-                let q = format!("    copy your key there with ssh-copy-id? it asks for your password on {label} once");
+                };
+                copied = shown(&key);
+                let q =
+                    format!("    copy {copied}.pub there with ssh-copy-id? it asks for your password on {label} once");
                 if !ask_yes(p, &q, true) {
-                    println!("    {}", dim(&format!("later: ssh-copy-id {ip}, then `lmdeck setup`")));
+                    println!("    {}", dim(&format!("later: ssh-copy-id -i {copied}.pub {ip}, then `lmdeck setup`")));
                     return None;
                 }
-                if !ssh.copy_id(ip) {
-                    println!("    {} ssh-copy-id didn't finish; try it by hand: ssh-copy-id {ip}", yellow("!"));
+                if !ssh.copy_id(ip, &key) {
+                    println!(
+                        "    {} ssh-copy-id didn't finish; try it by hand: ssh-copy-id -i {copied}.pub {ip}",
+                        yellow("!")
+                    );
                     return None;
                 }
+                ssh.use_key(ip, Some(&key));
             }
             Login::Denied => {
                 println!(
-                    "    {} {label} ({ip}) still refuses the key; check ~/.ssh/authorized_keys there",
+                    "    {} {label} ({ip}) still refuses {copied}; check ~/.ssh/authorized_keys there",
                     yellow("!")
                 );
                 return None;
@@ -355,12 +376,22 @@ fn first_line(s: &str) -> String {
     s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
+/// Returns `key` as the wizard prints it: `~/.ssh/id_ed25519` for one under
+/// the home directory.
+fn shown(key: &Path) -> String {
+    match key.strip_prefix(crate::paths::home_dir()) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => key.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::setup::tests::{MockSsh, Script};
     use crate::setup::{Candidate, Via};
     use crate::ssh::Out;
+    use std::path::PathBuf;
 
     const IP: &str = "10.100.136.1";
 
@@ -392,7 +423,7 @@ mod tests {
 
     #[test]
     fn copies_the_key_installs_starts_a_service_and_keeps_the_password_out_of_sight() {
-        let mut ssh = MockSsh { key_exists: true, copy_ok: true, ..Default::default() };
+        let mut ssh = MockSsh { usable: vec!["id_ed25519".into()], copy_ok: true, ..Default::default() };
         ssh.reply(IP, FACTS_CMD, Out::fail("jvr0x@10.100.136.1: Permission denied (publickey,password)."));
         ssh.reply(IP, FACTS_CMD, Out::ok(&facts(std::env::consts::ARCH, "systemd=yes\n")));
         ssh.reply(IP, "lmdeck.new", Out::ok("lmdeck 0.1.0\n"));
@@ -412,7 +443,7 @@ mod tests {
         assert_eq!(r.ip, IP);
         assert!(r.answering);
         assert_eq!(asked, vec![format!("{IP}:7979")]);
-        assert_eq!(ssh.copied, vec![IP.to_string()]);
+        assert_eq!(ssh.copied, vec![(IP.to_string(), PathBuf::from("id_ed25519"))]);
         let unit = ssh.calls.iter().find(|(_, c, _)| c.contains("lmdeck-serve.service")).unwrap().2.clone().unwrap();
         assert!(
             unit.contains(&format!("ExecStart=/home/jvr0x/.local/bin/lmdeck serve --host {IP} --port 7979")),
@@ -471,11 +502,43 @@ mod tests {
         assert_eq!(bootstrap(&mut Script::new(&[]), &mut ssh, &peer(), 7979, &mut |_, _| true), None);
         assert!(ssh.copied.is_empty());
 
-        let mut ssh = MockSsh { key_exists: true, ..Default::default() };
+        let mut ssh = MockSsh { usable: vec!["id_ed25519".into()], ..Default::default() };
         ssh.reply(IP, FACTS_CMD, Out::fail("Permission denied (publickey)."));
         assert_eq!(bootstrap(&mut Script::new(&["n"]), &mut ssh, &peer(), 7979, &mut |_, _| true), None);
         assert!(ssh.copied.is_empty());
-        assert_eq!(ssh.calls.len(), 1);
+        assert_eq!(ssh.calls.len(), 2, "ssh's own choice and the one key, nothing else");
+    }
+
+    #[test]
+    fn nothing_accepted_copies_the_first_usable_key_and_logs_in_with_it() {
+        let (id, spark0) = (PathBuf::from("/home/jvr0x/.ssh/id_ed25519"), PathBuf::from("/home/jvr0x/.ssh/spark0"));
+        let mut ssh = MockSsh { usable: vec![id.clone(), spark0.clone()], copy_ok: true, ..Default::default() };
+        ssh.reply(IP, FACTS_CMD, Out::fail("jvr0x@10.100.136.1: Permission denied (publickey,password)."));
+        ssh.reply(IP, FACTS_CMD, Out::ok(&facts("aarch64", "")));
+        let f = login(&mut Script::new(&[""]), &mut ssh, IP, "faraday").expect("logs in after the copy"); // copy: yes
+        assert_eq!(f.host, "faraday");
+        assert_eq!(ssh.copied, vec![(IP.to_string(), id.clone())], "the first usable key");
+        assert_eq!(
+            ssh.named,
+            vec![None, Some(id.clone()), Some(spark0), Some(id)],
+            "ssh's own choice, each key, then the copied one"
+        );
+    }
+
+    #[test]
+    fn a_key_already_on_the_peer_needs_no_ssh_copy_id() {
+        let cluster = PathBuf::from("/home/jvr0x/.ssh/id_ed25519_cluster");
+        let mut ssh = MockSsh {
+            usable: vec!["/home/jvr0x/.ssh/id_ed25519".into(), cluster.clone()],
+            authorized: vec![cluster.clone()],
+            ..Default::default()
+        };
+        ssh.reply(IP, FACTS_CMD, Out::fail("jvr0x@10.100.136.1: Permission denied (publickey,password)."));
+        ssh.reply(IP, FACTS_CMD, Out::ok(&facts("aarch64", "")));
+        let f = login(&mut Script::new(&[]), &mut ssh, IP, "faraday").expect("logs in with the key already there");
+        assert_eq!(f.host, "faraday");
+        assert!(ssh.copied.is_empty(), "no ssh-copy-id");
+        assert_eq!(ssh.using.get(IP), Some(&cluster), "later commands name it");
     }
 
     #[test]
