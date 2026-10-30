@@ -253,7 +253,7 @@ pub struct RecipeView {
     /// Hosts whose disk holds the weights (`[node] name` for this machine),
     /// from the controller's weights index.
     pub weights_on: Vec<String>,
-    /// Wrapped recipes: the `[source]` repo and ref (Browse matches index entries on them).
+    /// Wrapped recipes: the `[source]` repo and ref (`lmdeck browse` matches index entries on them).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

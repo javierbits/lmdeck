@@ -209,8 +209,6 @@ fn tabs_help_theme_and_quit() {
     a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Sources);
     a.on_key(code(KeyCode::Tab));
-    assert_eq!(a.tab, Tab::Browse);
-    a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Deck);
     a.on_key(key('?'));
     assert_eq!(a.mode, Mode::Help);
@@ -267,8 +265,7 @@ fn renders_every_tab_and_overlay() {
     for (w, h) in [(20, 5), (60, 10), (1, 1)] {
         let mut b = app();
         render(&b, w, h);
-        b.index = Some(browse_index());
-        for k in ['2', '3', '4', '6'] {
+        for k in ['2', '3', '4', '5'] {
             b.on_key(key(k));
             render(&b, w, h);
         }
@@ -820,81 +817,4 @@ fn details_and_list_show_weights_home_nodes_and_placement() {
     ] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
-}
-
-fn browse_index() -> crate::index::Loaded {
-    let index = crate::index::Index::parse(
-        r#"
-[[entry]]
-name = "qwen3-4b-gguf"
-repo = "https://github.com/o/qwen"
-description = "already in the deck"
-tags = { engine = "llama.cpp", quant = "gguf", sparks = 1 }
-speed = { tok_s = 80.0, note = "fixture" }
-[[entry]]
-name = "big-exl3-two"
-repo = "https://github.com/o/big"
-description = "two sparks"
-size_gb = 176.0
-tags = { engine = "tensorfold", quant = "exl3", sparks = 2 }
-speed = { tok_s = 60.0, note = "fixture" }
-[[entry]]
-name = "mid-exl3"
-repo = "https://github.com/o/mid"
-description = "one spark"
-size_gb = 60.0
-tags = { engine = "tensorfold", quant = "exl3", sparks = 1 }
-"#,
-    )
-    .unwrap();
-    crate::index::Loaded { index, url: "https://example.invalid/index.toml".into(), ..Default::default() }
-}
-
-#[test]
-fn browse_tab_searches_sorts_and_installs() {
-    let mut a = app();
-    a.index = Some(browse_index());
-    a.on_key(key('6'));
-    assert_eq!(a.tab, Tab::Browse);
-    let names = |a: &App| a.browse_visible().into_iter().map(|r| r.entry.name).collect::<Vec<_>>();
-    assert_eq!(names(&a), ["big-exl3-two", "mid-exl3", "qwen3-4b-gguf"]);
-    // The deck recipe with the same name shows as installed.
-    let q = a.browse_visible().into_iter().find(|r| r.entry.name == "qwen3-4b-gguf").unwrap();
-    assert_eq!(q.installed, "deck");
-    // Sort cycles name → sparks → speed.
-    a.on_key(key('S'));
-    a.on_key(key('S'));
-    assert_eq!(a.browse_sort, crate::browse::Sort::Speed);
-    assert_eq!(names(&a), ["qwen3-4b-gguf", "big-exl3-two", "mid-exl3"]);
-    // `/` searches Browse's own box; tag: filters.
-    a.on_key(key('/'));
-    assert_eq!(a.tab, Tab::Browse);
-    for c in "tag:exl3".chars() {
-        a.on_key(key(c));
-    }
-    a.on_key(code(KeyCode::Enter));
-    assert!(a.query.is_empty());
-    assert_eq!(names(&a), ["big-exl3-two", "mid-exl3"]);
-    // One machine: the two-Spark entry doesn't fit; f hides it.
-    a.on_key(key('f'));
-    assert_eq!(names(&a), ["mid-exl3"]);
-    assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Install("mid-exl3".into()));
-    assert!(a.busy.contains(&"mid-exl3".to_string()));
-    assert_eq!(a.on_key(code(KeyCode::Enter)), Action::None, "no double install");
-    // Esc clears the search; an installed entry doesn't reinstall.
-    a.on_key(code(KeyCode::Esc));
-    a.on_key(key('f'));
-    a.browse_cursor = 0;
-    assert_eq!(a.browse_selected().unwrap().entry.name, "qwen3-4b-gguf");
-    assert_eq!(a.on_key(key('i')), Action::None);
-    assert_eq!(a.on_key(key('r')), Action::RefreshIndex);
-    assert_eq!(a.on_key(key('r')), Action::None, "one fetch at a time");
-    let text = buffer_text(&render(&a, 140, 36));
-    for want in ["Recipe index", "qwen3-4b-gguf", "×2", "60.0 t/s", "no fit", "already in your deck", "S sort"] {
-        assert!(text.contains(want), "missing {want:?} in\n{text}");
-    }
-    assert_eq!(
-        super::app::split_tags("qwen #exl3 tag:sparks=2"),
-        ("qwen".into(), vec!["exl3".into(), "sparks=2".into()])
-    );
 }

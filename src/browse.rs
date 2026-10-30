@@ -1,5 +1,5 @@
-//! Browse: the recipe index joined with what this machine has. Shared by
-//! `lmdeck browse`, the TUI Browse tab and the web Browse view.
+//! Browse: the recipe index joined with what this machine has, for
+//! `lmdeck browse`.
 
 use serde::Serialize;
 
@@ -173,32 +173,6 @@ pub fn filter<'a>(rows: &'a [Row], query: &str, tags: &[String], sort: Sort) -> 
         by.then(q).then_with(|| a.entry.name.cmp(&b.entry.name))
     });
     v.into_iter().map(|(_, r)| r).collect()
-}
-
-/// `lmdeck add <name>` in a child process (the TUI and `serve` use the same
-/// code path as the CLI). Never prompts: no stdin, no git credential prompt.
-pub fn install(name: &str) -> anyhow::Result<String> {
-    use anyhow::{bail, Context};
-    if !crate::recipe::valid_name(name) {
-        bail!("invalid index name '{name}'");
-    }
-    let exe = std::env::current_exe().context("finding the lmdeck binary")?;
-    let out = std::process::Command::new(exe)
-        .args(["add", name])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("running lmdeck add")?;
-    let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
-    if !out.status.success() {
-        let err = text(&out.stderr);
-        bail!("{}", err.strip_prefix("error: ").unwrap_or(&err));
-    }
-    let stdout = text(&out.stdout);
-    let line = stdout.lines().find(|l| l.contains("added")).unwrap_or("added").trim_start_matches(['✓', ' ']);
-    Ok(line.to_string())
 }
 
 /// Every query word appears in the entry's text (name, description, repo,

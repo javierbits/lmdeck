@@ -1,5 +1,5 @@
-# The lmdeck recipe index: repos you can browse (`lmdeck browse`, the Browse
-# tab) and install by name (`lmdeck add <name>`).
+# The lmdeck recipe index: repos you can browse (`lmdeck browse`) and install
+# by name (`lmdeck add <name>`).
 #
 # Only real, published repos go here. Every number is the repo's own (its
 # README), with `note` saying where it comes from; lmdeck never measured them.

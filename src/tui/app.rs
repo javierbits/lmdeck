@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::browse::{Row as BrowseRow, Sort};
 use crate::compat::Level;
 use crate::deck::{RecipeView, Snapshot};
 use crate::hosts::HostView;
@@ -18,11 +17,10 @@ pub enum Tab {
     Topology,
     Machine,
     Sources,
-    Browse,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Deck, Tab::Hosts, Tab::Topology, Tab::Machine, Tab::Sources, Tab::Browse];
+    pub const ALL: [Tab; 5] = [Tab::Deck, Tab::Hosts, Tab::Topology, Tab::Machine, Tab::Sources];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -31,7 +29,6 @@ impl Tab {
             Tab::Topology => "Topology",
             Tab::Machine => "Machine",
             Tab::Sources => "Sources",
-            Tab::Browse => "Browse",
         }
     }
 
@@ -109,10 +106,6 @@ pub enum Action {
     },
     /// Persist this theme (a slug) as the config's `theme`.
     SaveTheme(String),
-    /// `lmdeck add <name>` for a recipe-index entry.
-    Install(String),
-    /// Fetch the recipe index now.
-    RefreshIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -159,14 +152,6 @@ pub struct App {
     pub model_cursor: usize,
     /// The log pane shows this (host, server) instead of the selected recipe's.
     pub remote_log: Option<(String, String)>,
-    /// The recipe index (from the cache; refreshed off-thread).
-    pub index: Option<crate::index::Loaded>,
-    pub index_busy: bool,
-    /// Browse tab: search (`tag:x` words filter by tag), cursor, sort, fits only.
-    pub browse_query: String,
-    pub browse_cursor: usize,
-    pub browse_sort: Sort,
-    pub browse_fit: bool,
 }
 
 impl Default for App {
@@ -197,12 +182,6 @@ impl Default for App {
             run_on: None,
             model_cursor: 0,
             remote_log: None,
-            index: None,
-            index_busy: false,
-            browse_query: String::new(),
-            browse_cursor: 0,
-            browse_sort: Sort::Name,
-            browse_fit: false,
         }
     }
 }
@@ -241,81 +220,6 @@ impl App {
             v.sort_by_key(|x| std::cmp::Reverse(x.0));
         }
         v.into_iter().map(|(_, r)| r).collect()
-    }
-
-    /// Index entries joined with this machine, before filters.
-    pub fn browse_all(&self) -> Vec<BrowseRow> {
-        let Some(l) = &self.index else { return vec![] };
-        crate::browse::rows(&l.index, self.snap.as_ref(), self.hosts.len().max(1) as u32)
-    }
-
-    /// The Browse list after search, `tag:` filters, fits and sort.
-    pub fn browse_visible(&self) -> Vec<BrowseRow> {
-        let all = self.browse_all();
-        let (q, tags) = split_tags(&self.browse_query);
-        crate::browse::filter(&all, &q, &tags, self.browse_sort)
-            .into_iter()
-            .filter(|r| !self.browse_fit || r.fit != Level::Fail)
-            .cloned()
-            .collect()
-    }
-
-    pub fn browse_selected(&self) -> Option<BrowseRow> {
-        self.browse_visible().into_iter().nth(self.browse_cursor)
-    }
-
-    pub fn set_index(&mut self, l: crate::index::Loaded) {
-        let keep = self.browse_selected().map(|r| r.entry.name);
-        self.index = Some(l);
-        if let Some(i) = keep.and_then(|n| self.browse_visible().iter().position(|r| r.entry.name == n)) {
-            self.browse_cursor = i;
-        }
-        self.clamp();
-    }
-
-    fn browse_key(&mut self, k: KeyEvent) -> Option<Action> {
-        let action = match k.code {
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('i') => {
-                let Some(r) = self.browse_selected() else { return Some(Action::None) };
-                if r.installed == "deck" && r.update.is_none() {
-                    self.notify(format!("{} is already in your deck", r.entry.name), Level::Ok);
-                    return Some(Action::None);
-                }
-                if r.update.is_some() && r.installed == "deck" {
-                    self.notify(r.update.clone().unwrap_or_default(), Level::Warn);
-                    return Some(Action::None);
-                }
-                if self.busy.contains(&r.entry.name) {
-                    return Some(Action::None);
-                }
-                self.busy.push(r.entry.name.clone());
-                Action::Install(r.entry.name)
-            }
-            KeyCode::Char('S') => {
-                self.browse_sort = self.browse_sort.next();
-                self.notify(format!("sort: {}", self.browse_sort.as_str()), Level::Ok);
-                Action::None
-            }
-            KeyCode::Char('f') => {
-                self.browse_fit = !self.browse_fit;
-                self.notify(
-                    if self.browse_fit { "showing entries that fit" } else { "showing every entry" },
-                    Level::Ok,
-                );
-                Action::None
-            }
-            KeyCode::Char('r') => {
-                if self.index_busy {
-                    return Some(Action::None);
-                }
-                self.index_busy = true;
-                self.notify("fetching the recipe index…", Level::Ok);
-                Action::RefreshIndex
-            }
-            _ => return None,
-        };
-        self.clamp();
-        Some(action)
     }
 
     pub fn selected(&self) -> Option<&RecipeView> {
@@ -400,19 +304,10 @@ impl App {
     fn clamp(&mut self) {
         let n = self.visible().len();
         self.cursor = if n == 0 { 0 } else { self.cursor.min(n - 1) };
-        if self.tab == Tab::Browse {
-            let n = self.browse_visible().len();
-            self.browse_cursor = if n == 0 { 0 } else { self.browse_cursor.min(n - 1) };
-        }
     }
 
-    /// The search box being edited: Browse has its own.
     fn query_mut(&mut self) -> &mut String {
-        if self.tab == Tab::Browse {
-            &mut self.browse_query
-        } else {
-            &mut self.query
-        }
+        &mut self.query
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -425,11 +320,6 @@ impl App {
             let n = self.hosts.len().max(1) as isize;
             self.host_cursor = (self.host_cursor as isize + delta).clamp(0, n - 1) as usize;
             self.model_cursor = 0;
-            return;
-        }
-        if self.tab == Tab::Browse {
-            let n = self.browse_visible().len().max(1) as isize;
-            self.browse_cursor = (self.browse_cursor as isize + delta).clamp(0, n - 1) as usize;
             return;
         }
         let n = self.visible().len();
@@ -614,19 +504,16 @@ impl App {
             KeyCode::Backspace => {
                 self.query_mut().pop();
                 self.cursor = 0;
-                self.browse_cursor = 0;
             }
             KeyCode::Char('u') if ctrl => {
                 self.query_mut().clear();
                 self.cursor = 0;
-                self.browse_cursor = 0;
             }
             KeyCode::Up => self.move_by(-1),
             KeyCode::Down => self.move_by(1),
             KeyCode::Char(c) => {
                 self.query_mut().push(c);
                 self.cursor = 0;
-                self.browse_cursor = 0;
             }
             _ => {}
         }
@@ -637,11 +524,6 @@ impl App {
     fn normal_key(&mut self, k: KeyEvent) -> Action {
         if self.tab == Tab::Hosts && !self.logs_max {
             if let Some(a) = self.hosts_key(k) {
-                return a;
-            }
-        }
-        if self.tab == Tab::Browse && !self.logs_max {
-            if let Some(a) = self.browse_key(k) {
                 return a;
             }
         }
@@ -711,9 +593,7 @@ impl App {
                 return Action::PlanRunOn(reference);
             }
             KeyCode::Char('/') => {
-                if self.tab != Tab::Browse {
-                    self.tab = Tab::Deck;
-                }
+                self.tab = Tab::Deck;
                 self.mode = Mode::Search;
             }
             KeyCode::Char('f') => {
@@ -738,26 +618,12 @@ impl App {
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => self.tab = Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],
             KeyCode::BackTab => self.tab = Tab::ALL[(self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
-            KeyCode::Char(c @ '1'..='6') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
+            KeyCode::Char(c @ '1'..='5') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
             _ => {}
         }
         self.clamp();
         Action::None
     }
-}
-
-/// `tag:exl3 qwen` → (`qwen`, [`exl3`]); `#exl3` works too.
-pub fn split_tags(q: &str) -> (String, Vec<String>) {
-    let mut words = vec![];
-    let mut tags = vec![];
-    for w in q.split_whitespace() {
-        match w.strip_prefix("tag:").or_else(|| w.strip_prefix('#')) {
-            Some(t) if !t.is_empty() => tags.push(t.to_string()),
-            Some(_) => {}
-            None => words.push(w),
-        }
-    }
-    (words.join(" "), tags)
 }
 
 /// Subsequence fuzzy match; every whitespace-separated word of `query` has to

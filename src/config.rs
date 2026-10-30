@@ -43,7 +43,7 @@ pub struct Config {
     /// `[weights]`: sharing this machine's weights with peers over NFS.
     #[serde(default, skip_serializing_if = "WeightsConfig::is_default")]
     pub weights: WeightsConfig,
-    /// `[index]`: the recipe index Browse and `lmdeck add <name>` read.
+    /// `[index]`: the recipe index that `lmdeck browse` and `lmdeck add <name>` read.
     #[serde(default, skip_serializing_if = "IndexConfig::is_default")]
     pub index: IndexConfig,
     /// `[harness]`: which agent harnesses (opencode, omp, grok, pi, hermes)

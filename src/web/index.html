@@ -64,12 +64,6 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:12p
 @media (max-width:1000px){main{grid-template-columns:1fr}}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;align-content:start}
 .maincol{min-width:0}
-.browsebar{margin-bottom:14px;display:flex;flex-direction:column;gap:8px}
-.bstat{font-size:12px;color:var(--muted)} .bstat .warn{color:var(--warn)} .bstat code{font-family:var(--mono,monospace);color:var(--fg)}
-.btags{display:flex;flex-wrap:wrap;gap:6px;align-items:center} .btags .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-left:6px}
-.btags .chipbtn{padding:3px 10px;font-size:12px}
-.sortsel{font-size:13px;color:var(--muted);display:inline-flex;gap:6px;align-items:center}
-.sortsel select{background:var(--card);color:var(--fg);border:1px solid var(--line2);border-radius:8px;padding:4px 8px}
 .card .st-deck{color:var(--ok)} .card .st-builtin{color:var(--cyan)} .card .st-no{color:var(--dim)}
 .card .why{font-size:12px;color:var(--muted)} .card .why.fail{color:var(--err)} .card .why.warn{color:var(--warn)}
 .card .speed{font-family:var(--mono,monospace);font-size:12px;color:var(--fg)} .card .speed small{color:var(--dim)}
@@ -287,20 +281,17 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
     <input id="q" placeholder="Search recipes, engines, quants…" autocomplete="off" spellcheck="false">
     <span class="kbd">/</span>
   </label>
-  <div class="toggle" id="scope"><button data-v="deck" class="on">Deck</button><button data-v="all">All</button><button data-v="browse" title="the recipe index: search, filter by tag, install">Browse</button></div>
+  <div class="toggle" id="scope"><button data-v="deck" class="on">Deck</button><button data-v="all">All</button></div>
   <button class="chipbtn" data-f="fits">Fits this machine</button>
   <button class="chipbtn deckonly" data-f="running">Running</button>
   <button class="chipbtn deckonly" data-f="disk">On disk</button>
   <button class="chipbtn deckonly" id="groupbtn" title="group the cards by model family (Qwen, GLM, …)">Group families</button>
-  <label class="sortsel browseonly hidden">sort <select id="bsort"><option value="name">name</option><option value="sparks">sparks</option><option value="speed">speed</option></select></label>
-  <button class="chipbtn browseonly hidden" id="brefresh" title="fetch the index now">↻ Refresh index</button>
   <div class="grow"></div>
   <span class="live" id="live"><i></i><span>live</span></span>
 </section>
 
 <main>
   <div class="maincol">
-  <div class="browsebar hidden" id="browsebar"><div class="bstat" id="bstat"></div><div class="btags" id="btags"></div></div>
   <div class="grid" id="grid"></div>
   </div>
   <div class="side">
@@ -335,7 +326,7 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const st = {hosts:null, snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null, index:null, bsort:"name", btags:new Set(), group:localStorage.getItem("lmdeck-group") !== "0"};
+const st = {hosts:null, snap:null, scope:"deck", f:new Set(), q:"", busy:new Set(), open:new Set(), es:null, logRef:null, group:localStorage.getItem("lmdeck-group") !== "0"};
 
 // token: #token=… in the URL, else remembered
 (function(){ const m = location.hash.match(/token=([^&]+)/); if (m) { localStorage.setItem("lmdeck-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); } })();
@@ -456,73 +447,6 @@ function card(r){
   </article>`;
 }
 
-// ---- browse (the recipe index) ----
-function splitTags(q){ const tags = [], words = []; for (const w of q.split(/\s+/).filter(Boolean)) { const m = w.match(/^(?:tag:|#)(.+)$/); m ? tags.push(m[1]) : words.push(w); } return [words.join(" "), tags]; }
-function hasTag(e, f){
-  const pairs = Object.entries(e.tags || {}).filter(([k, v]) => k !== "other" && v != null).map(([k, v]) => [k, String(v)]).concat((e.tags?.other || []).map(v => ["", v]));
-  const m = f.match(/^([^=:]+)[=:](.+)$/); f = f.toLowerCase();
-  return m ? pairs.some(([k, v]) => k === m[1].toLowerCase() && v.toLowerCase() === m[2].toLowerCase()) : pairs.some(([, v]) => v.toLowerCase() === f);
-}
-const sparksOf = e => e.tags?.sparks || 1;
-function browseVisible(){
-  if (!st.index) return [];
-  const [q, qtags] = splitTags(st.q); const tags = qtags.concat([...st.btags]);
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const text = e => [e.name, e.description, e.repo, ...Object.values(e.tags || {}).flat()].join(" ").toLowerCase();
-  let v = st.index.entries.filter(e => tags.every(t => hasTag(e, t)) && (!st.f.has("fits") || e.fit !== "fail") &&
-    (!words.length || words.every(w => text(e).includes(w)) || fuzzy(q, e.name)));
-  const by = {name:(a, b) => 0, sparks:(a, b) => sparksOf(a) - sparksOf(b), speed:(a, b) => (b.speed?.tok_s ?? -1) - (a.speed?.tok_s ?? -1)}[st.bsort];
-  return v.sort((a, b) => by(a, b) || a.name.localeCompare(b.name));
-}
-function browseCard(e){
-  const busy = st.busy.has("add:" + e.name);
-  const fit = {ok:["ok","fits"], warn:["warn","tight"], fail:["fail","doesn't fit"]}[e.fit];
-  const state = {deck:["st-deck","● in your deck"], builtin:["st-builtin","◆ ships with lmdeck"], no:["st-no","○ not installed"]}[e.installed];
-  const t = e.tags || {};
-  const tags = [t.engine ? `<span class="tag eng">${esc(t.engine)}</span>` : "", t.quant ? `<span class="tag q">${esc(t.quant)}</span>` : "",
-    t.family ? `<span class="tag">${esc(t.family)}</span>` : "", `<span class="tag on">×${sparksOf(e)} Spark${sparksOf(e) > 1 ? "s" : ""}</span>`,
-    e.size_gb ? `<span class="tag">~${gb(e.size_gb)}</span>` : "", e.update ? `<span class="tag upd" title="${esc(e.update)}">⬆ update</span>` : "",
-    ...(t.other || []).map(x => `<span class="tag">${esc(x)}</span>`)].join("");
-  const speed = e.speed ? `<div class="speed">${fmt(e.speed.tok_s, 1)} tok/s <small>· ${esc(e.speed.note)}</small></div>` : "";
-  const btn = e.installed === "deck"
-    ? `<button class="btn" data-bact="deck" data-name="${esc(e.installed_as || e.name)}">▤ In deck</button>`
-    : `<button class="btn primary" data-bact="add" data-name="${esc(e.name)}" title="lmdeck add ${esc(e.name)}" ${busy ? "disabled" : ""}>${busy ? '<span class="spin"></span> adding…' : "＋ Install"}</button>`;
-  return `<article class="card ${e.fit === "fail" ? "nofit" : ""}">
-    <div class="r1"><span class="${state[0]}">${state[1]}</span><span class="fit ${fit[0]}">${fit[1]}</span><span class="grow"></span>${e.git_ref || e.ref ? `<span class="port" title="pinned ref">@${esc(String(e.ref || e.git_ref).slice(0, 7))}</span>` : ""}</div>
-    <h3>${esc(e.name)}</h3>
-    <div class="sub">${esc(t.model || "")} <span class="dim">· ${esc(e.repo.replace(/^https:\/\/github.com\//, ""))}</span></div>
-    ${e.description ? `<p class="desc">${esc(e.description)}</p>` : ""}
-    <div class="tags">${tags}</div>
-    ${speed}
-    <div class="why ${e.fit}">${esc(e.fit_reason)}</div>
-    ${e.update ? `<div class="why warn">${esc(e.update)}</div>` : ""}
-    <div class="actions">${btn}<a class="rd" href="${esc(e.readme)}" target="_blank" rel="noopener noreferrer">README ↗</a>
-      <button class="btn icon" data-act="copy" data-url="lmdeck add ${esc(e.name)}" title="copy: lmdeck add ${esc(e.name)}">copy cmd</button></div>
-  </article>`;
-}
-function renderBrowse(){
-  const ix = st.index;
-  if (!ix) { $("#grid").innerHTML = `<div class="empty">Loading the recipe index…</div>`; return; }
-  const v = browseVisible();
-  $("#bstat").innerHTML = `<b>${v.length}</b> of ${ix.entries.length} entries · <code>${esc(ix.url)}</code> · fetched ${esc(ix.age)} · schema ${ix.schema} · fit counts ${ix.machines} machine${ix.machines > 1 ? "s" : ""}` +
-    (ix.hint ? ` · <span class="warn">! ${esc(ix.hint)}</span>` : "");
-  const groups = {}; for (const t of ix.tags) (groups[t.key] ||= []).push(t);
-  $("#btags").innerHTML = ["engine", "quant", "family", "sparks", "tag"].filter(k => groups[k]).map(k => `<span class="k">${k}</span>` +
-    groups[k].map(t => { const f = k === "tag" ? t.value : `${k}=${t.value}`; return `<button class="chipbtn ${st.btags.has(f) ? "on" : ""}" data-btag="${esc(f)}">${k === "sparks" ? "×" : ""}${esc(t.value)} <span class="dim">${t.count}</span></button>`; }).join("")).join("");
-  $("#grid").innerHTML = v.length ? v.map(browseCard).join("") :
-    `<div class="empty">${ix.entries.length ? "Nothing in the index matches." : "The index is empty or hasn't been fetched yet."}<br><span class="dim">${ix.entries.length ? "Clear the search or tag filters." : "Refresh index fetches it."}</span></div>`;
-}
-async function refreshIndex(force){
-  try { st.index = force ? await api("index/refresh", {method:"POST"}) : await api("index"); if (st.scope === "browse") render(); if (force) toast(st.index.hint || `index: ${st.index.entries.length} entries`); }
-  catch (e) { if (force) toast(e.message, false); }
-}
-async function install(name){
-  st.busy.add("add:" + name); render();
-  try { const j = await api("add/" + encodeURIComponent(name), {method:"POST"}); toast(j.message || "added " + name); }
-  catch (e) { toast(e.message, false); }
-  st.busy.delete("add:" + name); await refresh(); await refreshIndex(false);
-}
-
 function render(){
   const s = st.snap; if (!s) return;
   const hw = s.hardware;
@@ -539,15 +463,10 @@ function render(){
   $("#heldtxt").textContent = "~" + gb(held);
   $("#heldbar").querySelector("i").style.width = Math.min(100, held / total * 100).toFixed(1) + "%";
 
-  const browsing = st.scope === "browse";
-  $("#browsebar").classList.toggle("hidden", !browsing);
-  document.querySelectorAll(".browseonly").forEach(x => x.classList.toggle("hidden", !browsing));
-  document.querySelectorAll(".deckonly").forEach(x => x.classList.toggle("hidden", browsing));
-  $("#q").placeholder = browsing ? "Search the index… (tag:exl3, #sparks=2)" : "Search recipes, engines, quants…";
-  if (browsing) renderBrowse();
+  $("#q").placeholder = "Search recipes, engines, quants…";
   const v = visible();
   if (document.activeElement?.matches?.("select.runon")) return; // don't close an open picker
-  if (!browsing) $("#grid").innerHTML = deckGrid(v);
+  $("#grid").innerHTML = deckGrid(v);
 
   const gpus = (hw.gpus||[]).map(g => `${esc(g.vendor)} ${esc(g.name)}${g.memory_gb ? " · " + gb(g.memory_gb) : ""}`).join("<br>") || "none";
   $("#mach").innerHTML = [["host",hw.hostname],["platform",hw.platform],["cpu",`${hw.cpu} (${hw.cores})`],["memory",gb(total) + (hw.unified_memory ? " unified" : "")]]
@@ -1138,13 +1057,7 @@ $("#grid").addEventListener("click", e => {
 });
 $("#grid").addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details.checks")) { d.open ? st.open.add(d.dataset.ref) : st.open.delete(d.dataset.ref); } }, true);
 $("#q").addEventListener("input", e => { st.q = e.target.value.trim(); render(); });
-$("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; st.scope = b.dataset.v; [...$("#scope").children].forEach(x => x.classList.toggle("on", x === b)); if (st.scope === "browse") refreshIndex(false); render(); });
-$("#bsort").onchange = e => { st.bsort = e.target.value; render(); };
-$("#brefresh").onclick = () => refreshIndex(true);
-$("#btags").addEventListener("click", e => { const b = e.target.closest("[data-btag]"); if (!b) return; const f = b.dataset.btag; st.btags.has(f) ? st.btags.delete(f) : st.btags.add(f); render(); });
-$("#grid").addEventListener("click", e => { const b = e.target.closest("[data-bact]"); if (!b) return; e.stopPropagation();
-  if (b.dataset.bact === "add") install(b.dataset.name);
-  else { $("#scope [data-v=deck]").click(); $("#q").value = b.dataset.name; st.q = b.dataset.name; render(); } }, true);
+$("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; st.scope = b.dataset.v; [...$("#scope").children].forEach(x => x.classList.toggle("on", x === b)); render(); });
 document.querySelectorAll(".chipbtn").forEach(b => b.onclick = () => { const f = b.dataset.f; st.f.has(f) ? st.f.delete(f) : st.f.add(f); b.classList.toggle("on"); render(); });
 $("#groupbtn").onclick = () => { st.group = !st.group; localStorage.setItem("lmdeck-group", st.group ? "1" : "0"); $("#groupbtn").classList.toggle("on", st.group); render(); };
 $("#groupbtn").classList.toggle("on", st.group);
@@ -1206,7 +1119,6 @@ document.addEventListener("click", e => { if (!e.target.closest(".themesel")) cl
 
 const params = new URLSearchParams(location.search);
 if (params.get("scope") === "all") $("#scope [data-v=all]").click();
-if (params.get("scope") === "browse") { if (params.get("q")) { $("#q").value = params.get("q"); st.q = params.get("q"); } if (params.get("sort")) { st.bsort = params.get("sort"); $("#bsort").value = st.bsort; } $("#scope [data-v=browse]").click(); }
 if (params.get("logs")) openLogs(params.get("logs"));
 if (params.get("themes") === "open") setTimeout(() => $("#thbtn").click(), 300);
 loadThemes(); refresh(); refreshHosts(); refreshTopo();

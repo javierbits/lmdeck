@@ -41,7 +41,6 @@ pub fn draw(f: &mut Frame, app: &App) {
             Tab::Topology => crate::tui::topoview::draw_topology(f, app, body),
             Tab::Machine => draw_machine(f, app, s, body),
             Tab::Sources => draw_sources(f, app, s, body),
-            Tab::Browse => crate::tui::browseview::draw_browse(f, app, body),
         },
     }
     draw_status(f, app, status);
@@ -212,19 +211,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if app.tab == Tab::Hosts {
         let up = app.hosts.iter().filter(|h| h.online).count();
         segs.push((format!("⌁ {up}/{} up", app.hosts.len()), t.seg[3]));
-    } else if app.tab == Tab::Browse {
-        segs.push((format!("index {}", app.browse_visible().len()), t.seg[0]));
-        segs.push((format!("sort {}", app.browse_sort.as_str()), t.seg[3]));
     } else if let Some(s) = &app.snap {
         let shown = app.visible().len();
         segs.push((format!("{} {shown}", if app.show_all { "all" } else { "deck" }), t.seg[0]));
         segs.push((format!("▶ {} running", s.running()), t.seg[3]));
     }
-    if (app.tab == Tab::Browse && app.browse_fit) || (app.tab != Tab::Browse && app.only_fit) {
+    if app.only_fit {
         segs.push(("fits".into(), t.seg[1]));
     }
     let mut spans = segments(&segs, t.bar_bg, t, app.nerd);
-    let query = if app.tab == Tab::Browse { &app.browse_query } else { &app.query };
+    let query = &app.query;
     if app.mode == Mode::Search || !query.is_empty() {
         spans.push(Span::styled(" /", Style::new().fg(t.info).bold()));
         spans.push(Span::styled(query.clone(), Style::new().fg(t.fg)));
@@ -253,9 +249,6 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("l", "logs"),
             ("?", "help"),
         ],
-        _ if app.tab == Tab::Browse => {
-            vec![("/", "search"), ("↵", "install"), ("S", "sort"), ("f", "fits"), ("r", "refresh index"), ("?", "help")]
-        }
         _ if app.tab == Tab::Topology => vec![("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
         _ if app.tab == Tab::Deck => {
             let mut h = vec![("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs")];
@@ -891,10 +884,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
-    ("1-6  tab", "deck · hosts · topology · machine · sources · browse"),
-    ("browse ↵ i", "add the entry to your deck (lmdeck add)"),
-    ("browse S r", "sort name/sparks/speed · fetch the index"),
-    ("browse /", "search; tag:exl3 or #sparks=2 filter by tag"),
+    ("1-5  tab", "deck · hosts · topology · machine · sources"),
     ("t", "next theme (saved)"),
     ("T", "theme picker: live preview, ↵ saves"),
     ("r", "refresh now (re-probe engines)"),

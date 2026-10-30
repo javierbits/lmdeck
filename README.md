@@ -113,13 +113,6 @@ pills, rounded panels, and a status bar with key hints.
   recipes, per-GPU memory, and which engines and tools are installed.
 - **Sources**: the deck, the built-ins and every recipe source, with recipe
   counts and when each source was last fetched.
-- **Browse**: the [recipe index](#recipe-index). Each entry shows whether it
-  is installed (● in the deck, ◆ built-in, ○ not yet), a `⬆` badge when its
-  deck copy has an upstream update, the engine, how many Sparks it needs, the
-  speed its README reports, and whether it fits. The details pane has the
-  description, repo, README link, tags and the exact `lmdeck add` command.
-  `↵` installs, `/` searches (`tag:exl3`, `#sparks=2`), `S` sorts by name,
-  sparks or speed, `f` keeps only what fits, `r` fetches the index again.
 
 The screen refreshes every 2 s in the background. Starting, stopping and
 pulling run off the UI thread, so nothing freezes while a server loads.
@@ -138,18 +131,12 @@ Quitting leaves servers running.
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
-| `1`–`6`, `tab` | deck · hosts · topology · machine · sources · browse (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
+| `1`–`5`, `tab` | deck · hosts · topology · machine · sources (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
 | `t` | next theme (saved to config) |
 | `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
 | `F` | group the deck by model family (`── Qwen ──` sections; `Qwen`, `GLM`, `DeepSeek`, …) — on again to flatten |
-| `1`–`6`, `tab` | deck · hosts · topology · machine · sources · browse (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
 | `q`, `esc`, `ctrl-c` | quit |
-
-On Browse, `↵` / `i` installs the selected entry (`lmdeck add <name>`), `S`
-cycles the sort, `f` toggles "fits", `r` refreshes the index and `/` searches.
-
-![Browse tab: the recipe index from index.toml on this machine (x86_64, CPU only, so both entries show ✗ no fit)](docs/screenshots/tui-browse.png)
 
 If your terminal font is a Nerd Font, `--nerd` (or `LMDECK_NERD_FONT=1`)
 draws rounded powerline caps on the pills. Themes are covered [below](#themes).
@@ -447,20 +434,13 @@ lmdeck browse -t sparks=2 --sort speed
 lmdeck add glm-5.3-flash-exl3-2x-spark-tensorfold
 ```
 
-The TUI has a Browse tab and the web dashboard a **Browse** view (next to
-Deck / All) with the same search, tag chips, sort, fit filter and an Install
-button that runs `lmdeck add <name>`.
-
-![web dashboard, Browse view (real index.toml entries on an x86_64 CPU-only box, so neither fits)](docs/screenshots/web-browse.png)
-
 Fetching and auth:
 
 - The index comes from `[index] url` (default
   `https://github.com/jvr0x/lmdeck/blob/main/index.toml`; `LMDECK_INDEX_URL`
   overrides it; `file://` works too). It's cached at
-  `~/.cache/lmdeck/index.toml` and re-fetched after `ttl_hours` (6). The TUI
-  and dashboard refresh a stale cache in the background; `browse --refresh`
-  or `r` forces it, `--offline` never fetches.
+  `~/.cache/lmdeck/index.toml` and re-fetched after `ttl_hours` (6);
+  `browse --refresh` forces it, `--offline` never fetches.
 - A GitHub URL goes through the contents API with a token if one exists
   (`GITHUB_TOKEN`, `GH_TOKEN`, else `gh auth token`), so a private repo works;
   without a token it uses the raw URL. Other URLs only get a token when

@@ -5,7 +5,6 @@
 //! because a stop can wait out a 20 s grace period.
 
 pub mod app;
-pub mod browseview;
 pub mod hostsview;
 pub mod theme;
 pub mod topoview;
@@ -136,7 +135,6 @@ enum Msg {
     Topology(Box<crate::topology::Topology>),
     Plans { reference: String, rows: Vec<app::RunOnRow> },
     RemoteLogs { host: String, name: String, lines: std::result::Result<Vec<String>, String> },
-    Index { loaded: Box<crate::index::Loaded>, forced: bool },
 }
 
 enum Work {
@@ -197,15 +195,6 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
     }
 
     let mut app = initial_app(&opts, &deck)?;
-    // The recipe index: the cache now, a fetch off-thread when it is stale.
-    app.index = Some(crate::index::cached(&deck.paths, &deck.cfg.index));
-    if crate::index::stale(&deck.paths, &deck.cfg.index) {
-        let (paths, cfg, tx) = (deck.paths.clone(), deck.cfg.index.clone(), msg_tx.clone());
-        std::thread::spawn(move || {
-            let loaded = Box::new(crate::index::load(&paths, &cfg, false));
-            let _ = tx.send(Msg::Index { loaded, forced: false });
-        });
-    }
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         let mut last_log = Instant::now() - LOG_POLL;
@@ -233,17 +222,6 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                     }
                     Msg::Topology(t) => app.topology = Some(*t),
                     Msg::Plans { reference, rows } => app.set_plans(&reference, rows),
-                    Msg::Index { loaded, forced } => {
-                        if forced {
-                            app.index_busy = false;
-                            match &loaded.hint {
-                                Some(h) => app.notify(h.clone(), Level::Warn),
-                                None => app
-                                    .notify(format!("recipe index: {} entries", loaded.index.entries.len()), Level::Ok),
-                            }
-                        }
-                        app.set_index(*loaded);
-                    }
                     Msg::RemoteLogs { host, name, lines } => {
                         remote_inflight = false;
                         if app.remote_log.as_ref() == Some(&(host.clone(), name.clone())) {
@@ -311,19 +289,6 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                         let rows = plan_rows(&deck, &reference);
                         let _ = tx.send(Msg::Plans { reference, rows });
                     });
-                    continue;
-                }
-                Action::RefreshIndex => {
-                    let (paths, cfg, tx) = (deck.paths.clone(), deck.cfg.index.clone(), msg_tx.clone());
-                    std::thread::spawn(move || {
-                        let loaded = Box::new(crate::index::load(&paths, &cfg, true));
-                        let _ = tx.send(Msg::Index { loaded, forced: true });
-                    });
-                    continue;
-                }
-                Action::Install(name) => {
-                    app.notify(format!("adding {name} from the index…"), Level::Ok);
-                    spawn_job(&deck, &msg_tx, &work_tx, name.clone(), move |_| crate::browse::install(&name));
                     continue;
                 }
                 Action::LogsOn { .. } => {
@@ -396,14 +361,6 @@ pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab
     if let Some(want) = &opts.host {
         if let Some(i) = app.hosts.iter().position(|h| h.name == *want) {
             app.host_cursor = i;
-        }
-    }
-    if tab == Tab::Browse {
-        app.index = Some(crate::index::cached(&deck.paths, &deck.cfg.index));
-        if let Some(want) = &opts.select {
-            if let Some(i) = app.browse_visible().iter().position(|r| r.entry.name == *want) {
-                app.browse_cursor = i;
-            }
         }
     }
     if tab == Tab::Topology {
