@@ -39,6 +39,10 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
     ("qwen3.5-2b-tensorfold.toml", include_str!("../recipes/qwen3.5-2b-tensorfold.toml")),
     ("qwen3.6-35b-a3b-mtp-tensorfold-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-mtp-tensorfold-spark.toml")),
     ("ornith-1.5-122b-tensorfold.toml", include_str!("../recipes/ornith-1.5-122b-tensorfold.toml")),
+    (
+        "deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml",
+        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml"),
+    ),
 ];
 
 pub fn builtin() -> Vec<Found> {
@@ -236,6 +240,34 @@ mod tests {
         assert_eq!(e.logs, ["docker", "logs", "-f", "ornith-122b-tf"]);
         assert!(e.ready_timeout.unwrap() >= 3600);
         assert!(r.source.unwrap().repo.contains("MiaAI-Lab/Ornith-1.5-122B-TensorFold"));
+    }
+
+    #[test]
+    fn deepseek_v41_wrapper_is_one_local_command() {
+        let r = builtin()
+            .into_iter()
+            .find(|f| f.recipe.name == "deepseek-v4.1-flash-1017-4x-spark-tensorfold")
+            .unwrap()
+            .recipe;
+        let e = &r.engine;
+        assert_eq!(e.name, crate::recipe::Engine::Custom);
+        assert!(e.detached);
+        assert_eq!(e.container.as_deref(), Some("dsv41-1017-tf"));
+        assert_eq!(r.port(), 8888);
+        assert_eq!(e.command, ["./start.sh"]);
+        assert_eq!(e.stop, ["./stop.sh"]);
+        assert_eq!(e.logs, ["docker", "logs", "-f", "dsv41-1017-tf"]);
+        assert_eq!(e.ready_timeout, Some(43200));
+        assert_eq!(e.ctx, Some(1_048_576));
+        // Mia's start.sh ssh's the workers. Setting hardware.nodes without [[nodes]]
+        // makes `lmdeck use` refuse the recipe.
+        assert!(r.hardware.nodes.is_none());
+        assert_eq!(r.nodes(), 1);
+        assert!(r.nodes.is_empty());
+        assert_eq!(r.family(), "DeepSeek");
+        let src = r.source.unwrap();
+        assert!(src.repo.contains("MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"));
+        assert_eq!(src.git_ref.as_deref(), Some("476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"));
     }
 
     #[test]

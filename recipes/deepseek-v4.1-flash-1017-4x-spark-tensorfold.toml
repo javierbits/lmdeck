@@ -1,0 +1,58 @@
+# Wraps Mia's AI Lab repo as-is. ./start.sh (a RoCE switch) or ./start-switchless.sh (a
+# cabled ring, the path the README's numbers were measured on) builds the image, downloads
+# the ~510 GB FP8 / MXFP4 checkpoint once on spark1, writes four ~80 GB rank files, NFS-mounts
+# that cache on the workers, `docker run -d`s one rank per Spark, waits until :8888 answers,
+# smoke-tests, and exits. lmdeck applies no patches and builds nothing itself.
+#
+# This is one command on spark1. The script ssh's the other three Sparks itself, so the recipe
+# has no [[nodes]] and no [hardware] nodes. Before the first real start, copy
+# scripts/local.sh.example to scripts/local.sh in the checkout and set WORKER, WORKER2 and
+# WORKER3 (ssh targets; on a ring, in the cabled order: a folded ring cabled 1-2-4-3-1 is
+# WORKER=spark2, WORKER2=spark4, WORKER3=spark3). lmdeck detects the CX7 fabric at start and
+# runs ./start-switchless.sh on a ring, ./start.sh otherwise; `lmdeck use <name> --dry-run`
+# prints the detected shape and the worker order. Key-based ssh from spark1, Docker with the NVIDIA runtime on
+# every Spark, and a read-only NFS export of spark1's Hugging Face cache are the repo's
+# requirements, not lmdeck's.
+schema = 1
+display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
+description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on spark1, ~80 GiB resident per Spark."
+tags = ["deepseek", "fp8", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrapped"]
+
+[source]
+repo = "https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"
+# Pinned to the commit this recipe was written against; use "main" to follow the repo.
+ref = "476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"
+
+[quant]
+format = "fp8"
+label = "FP8 / MXFP4"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "dsv41-1017-tf"
+logs = ["docker", "logs", "-f", "dsv41-1017-tf"]
+port = 8888
+ctx = 1048576
+# The first run downloads ~510 GB and writes the rank files before the port opens.
+# Later starts are the script's own ~2.5 minutes, inside this same ceiling.
+ready_timeout = 43200
+
+[engine.env]
+PORT = "{port}"
+HOST = "{host}"
+CONTAINER_NAME = "{container}"
+
+# A switchless ring (four Sparks, two CX7 cables each) runs the repo's ring launcher,
+# which sets FABRIC_EXPECT=ring and checks the ranks follow the cables.
+[engine.command_by_fabric]
+ring = ["./start-switchless.sh"]
+
+[hardware]
+min_memory_gb = 100
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"

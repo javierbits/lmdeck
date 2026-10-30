@@ -34,3 +34,13 @@ description = "GLM-5.3-Flash EXL3 4 bpw on two DGX Sparks linked by ConnectX-7 (
 size_gb = 176.0  # "~176 GB" checkpoint (README)
 tags = { engine = "tensorfold", model = "GLM-5.3-Flash", family = "glm", quant = "exl3", sparks = 2 }
 speed = { tok_s = 60.4, note = "repo README: two DGX Sparks, 1 request, prose (sparkDash)" }
+
+[[entry]]
+name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold"
+repo = "https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"
+ref = "476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"
+description = "DeepSeek-V4.1-Flash-1017 (native FP8 / MXFP4, no re-quant) on four DGX Sparks, TensorFold TP4, DSpark drafts. Mia's start.sh on spark1 ssh's the other three."
+size_gb = 320.0  # four rank files, ~80 GiB each (README). The checkpoint is a separate ~510 GB on spark1's disk.
+recipe = "recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml"
+tags = { engine = "tensorfold", model = "DeepSeek-V4.1-Flash-1017", family = "deepseek", quant = "fp8", sparks = 4 }
+speed = { tok_s = 65.8, note = "repo README: four DGX Sparks, switchless ring, 1 stream, prose, thinking on, measured 2026-10-25" }

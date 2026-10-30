@@ -819,6 +819,7 @@ is empty. Every Hugging Face id below was checked against the Hub.
 | `qwen3.5-2b-tensorfold` | `mlx-community/Qwen3.5-2B-MLX-4bit` @ `93760be` | tensorfold | Apple Silicon or NVIDIA (TensorFold's quick-start model) |
 | `qwen3.6-35b-a3b-mtp-tensorfold-spark` | `TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP` @ `81169a9` | tensorfold | NVIDIA / DGX Spark (CUDA only) |
 | `ornith-1.5-122b-tensorfold` | wraps [MiaAI-Lab/Ornith-1.5-122B-TensorFold](https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold) @ `0c8fd6a` (its scripts fetch the EXL3 weights) | custom (wrapped, detached) | DGX Spark, ~100 GB |
+| `deepseek-v4.1-flash-1017-4x-spark-tensorfold` | wraps [MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) @ `476bbc7` (spark1's `start.sh` fetches the FP8 checkpoint and ssh's the other three; a switchless ring runs `start-switchless.sh`) | custom (wrapped, detached) | 4x DGX Spark, ~100 GB free each |
 
 [`examples/`](examples/) has recipes that aren't built in, such as
 `ornith-122b-awq-lmdeploy.toml` (LMDeploy in Docker; its model repo is a

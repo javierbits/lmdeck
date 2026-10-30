@@ -134,13 +134,13 @@ fn dashboard_and_read_endpoints() {
     let snap = s.get("/api/snapshot").unwrap();
     assert_eq!(snap["version"], env!("CARGO_PKG_VERSION"));
     let recipes = snap["recipes"].as_array().unwrap();
-    assert_eq!(recipes.len(), 9, "the built-ins");
+    assert_eq!(recipes.len(), 10, "the built-ins");
     assert!(recipes.iter().all(|r| r["status"] == "stopped" && r["listed"] == true));
     assert!(recipes.iter().any(|r| r["reference"] == "builtin/qwen3.5-2b-tensorfold" && r["engine"] == "tensorfold"));
     assert!(snap["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
 
-    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), 9);
-    assert_eq!(s.get("/api/status").unwrap().as_array().unwrap().len(), 9);
+    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), 10);
+    assert_eq!(s.get("/api/status").unwrap().as_array().unwrap().len(), 10);
     let doc = s.get("/api/doctor").unwrap();
     assert!(doc["inventory"]["engines"]["tensorfold"].is_object(), "{doc}");
     let sources = s.get("/api/sources").unwrap();

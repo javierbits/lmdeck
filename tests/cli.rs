@@ -130,7 +130,7 @@ fn doctor_json_reports_hardware_and_recipes() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
     assert!(v["inventory"]["engines"]["llama.cpp"].is_object());
-    assert_eq!(v["recipes"].as_array().unwrap().len(), 9);
+    assert_eq!(v["recipes"].as_array().unwrap().len(), 10);
     assert!(v["paths"]["config"].as_str().unwrap().ends_with("config/config.toml"));
     // Human output too.
     assert!(e.run(&["doctor"]).contains("engines"));
@@ -449,6 +449,39 @@ fn lmdeploy_dry_run() {
     assert!(plan.contains("openmmlab/lmdeploy:latest lmdeploy serve api_server"), "{plan}");
     assert!(plan.contains("--session-len 262144 --model-format awq"), "{plan}");
     assert_eq!(plan.matches("/root/.cache/huggingface").count(), 1, "{plan}");
+}
+
+#[test]
+fn four_spark_recipe_picks_its_launcher_from_the_fabric() {
+    let e = Env::new();
+    let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
+    let dry = |topo: Option<&str>, fabric: Option<&str>| {
+        let mut c = e.cmd();
+        if let Some(t) = topo {
+            c.env("LMDECK_DEMO", "1").env("LMDECK_DEMO_TOPO", t);
+        }
+        if let Some(f) = fabric {
+            c.env("LMDECK_FABRIC", f);
+        }
+        let out = c.args(["use", name, "--dry-run", "--force"]).assert().success().get_output().stdout.clone();
+        String::from_utf8(out).unwrap()
+    };
+    // The folded ring (rack 1-2-3-4, cabled 1-2-4-3-1): the ring launcher, workers in cabled order.
+    let plan = dry(Some("fold4"), None);
+    assert!(plan.contains("run:  ./start-switchless.sh"), "{plan}");
+    assert!(plan.contains("→ spark2 → spark4 → spark3 →"), "{plan}");
+    assert!(plan.contains("workers in cabled order: spark2, spark4, spark3"), "{plan}");
+    let plan = dry(Some("ring4"), None);
+    assert!(plan.contains("run:  ./start-switchless.sh"), "{plan}");
+    assert!(plan.contains("workers in cabled order: spark2, spark3, spark4"), "{plan}");
+    // Four of eight on a switch, and a lone machine: the default launcher.
+    let plan = dry(Some("switch8"), None);
+    assert!(plan.contains("fabric: switch") && plan.contains("run:  ./start.sh"), "{plan}");
+    let plan = dry(None, None);
+    assert!(plan.contains("run:  ./start.sh"), "{plan}");
+    // LMDECK_FABRIC sets the shape by hand.
+    let plan = dry(None, Some("ring"));
+    assert!(plan.contains("run:  ./start-switchless.sh") && plan.contains("set by LMDECK_FABRIC"), "{plan}");
 }
 
 fn git(dir: &Path, args: &[&str]) {
