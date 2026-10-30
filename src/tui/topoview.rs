@@ -35,7 +35,7 @@ enum NodeKind {
 }
 
 /// Draw the topology diagram into `area`. Returns false when a list fallback was used.
-pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme, focus: usize) -> bool {
+pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme) -> bool {
     if area.width < 20 || area.height < 8 {
         draw_list(frame, area, topo, theme);
         return false;
@@ -48,7 +48,11 @@ pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme, focus
         return false;
     }
     // Edges first (under nodes).
-    for l in &topo.links {
+    let mut links: Vec<_> = topo.links.iter().collect();
+    // Reason: where lines share a path the last one drawn shows, so the most important
+    // goes last. `sort_by_key` is stable: links of one class keep topology's order.
+    links.sort_by_key(|l| edge_rank(l.link.kind, !l.active.is_empty()));
+    for l in links {
         let a = positions.iter().find(|p| p.id == l.link.a.host);
         let b = positions.iter().find(|p| p.id == l.link.b.host);
         if let (Some(a), Some(b)) = (a, b) {
@@ -56,13 +60,11 @@ pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme, focus
             draw_edge(frame, area, a, b, color, !l.active.is_empty());
         }
     }
-    let mut host_i = 0usize;
     for p in &positions {
         match p.kind {
             NodeKind::Host => {
                 if let Some(h) = topo.host(&p.id) {
-                    draw_host(frame, area, p, h, theme, host_i == focus);
-                    host_i += 1;
+                    draw_host(frame, area, p, h, theme);
                 }
             }
             NodeKind::Switch => {
@@ -84,12 +86,25 @@ pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme, focus
 fn edge_color(t: &Theme, kind: crate::fabric::LinkKind, active: bool) -> Color {
     use crate::fabric::LinkKind::*;
     if active {
-        return t.accent;
+        return t.ok;
     }
     match kind {
-        Cx7 => t.ok,
-        Lan => t.muted,
-        Tailscale => t.warn,
+        Cx7 => t.accent,
+        Lan => t.info,
+        Tailscale => t.muted,
+    }
+}
+
+/// Returns a link's place in the draw order: Tailscale, then LAN, then CX7, and links in use last.
+fn edge_rank(kind: crate::fabric::LinkKind, active: bool) -> u8 {
+    use crate::fabric::LinkKind::*;
+    if active {
+        return 3;
+    }
+    match kind {
+        Tailscale => 0,
+        Lan => 1,
+        Cx7 => 2,
     }
 }
 
@@ -140,7 +155,7 @@ fn draw_edge(frame: &mut Frame, area: Rect, a: &Pos, b: &Pos, color: Color, thic
     }
 }
 
-fn draw_host(frame: &mut Frame, area: Rect, p: &Pos, h: &TopoHost, theme: &Theme, focused: bool) {
+fn draw_host(frame: &mut Frame, area: Rect, p: &Pos, h: &TopoHost, theme: &Theme) {
     let r = Rect {
         x: (area.x as i32 + p.x).max(area.x as i32) as u16,
         y: (area.y as i32 + p.y).max(area.y as i32) as u16,
@@ -150,13 +165,7 @@ fn draw_host(frame: &mut Frame, area: Rect, p: &Pos, h: &TopoHost, theme: &Theme
     if r.width < 8 || r.height < 4 {
         return;
     }
-    let border = if focused {
-        theme.accent
-    } else if h.online {
-        theme.ok
-    } else {
-        theme.muted
-    };
+    let border = if h.online { theme.ok } else { theme.muted };
     let title = match &h.alias {
         Some(a) if a != &h.name => format!(" {} · {a} ", truncate(&h.name, 12)),
         _ => format!(" {} ", truncate(&h.name, 16)),
@@ -164,8 +173,12 @@ fn draw_host(frame: &mut Frame, area: Rect, p: &Pos, h: &TopoHost, theme: &Theme
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(border))
-        .title(Span::styled(title, Style::new().fg(border).bold()));
+        .title(Span::styled(title, Style::new().fg(border).bold()))
+        .style(Style::new().bg(theme.panel));
     let inner = block.inner(r);
+    // Reason: a line between two other nodes may run under this card. Clear wipes it,
+    // and the block's style restores the panel background that Clear resets.
+    frame.render_widget(Clear, r);
     frame.render_widget(block, r);
     if inner.width < 4 || inner.height < 2 {
         return;
@@ -223,8 +236,12 @@ fn draw_switch(frame: &mut Frame, area: Rect, p: &Pos, name: &str, ports: usize,
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(theme.muted))
-        .title(Span::styled(format!(" {} ", truncate(name, r.width as usize - 4)), Style::new().fg(theme.muted)));
+        .title(Span::styled(format!(" {} ", truncate(name, r.width as usize - 4)), Style::new().fg(theme.muted)))
+        .style(Style::new().bg(theme.panel));
     let inner = block.inner(r);
+    // Reason: a line between two other nodes may run under this switch. Clear wipes it,
+    // and the block's style restores the panel background that Clear resets.
+    frame.render_widget(Clear, r);
     frame.render_widget(block, r);
     let braille = icons::bitmap(IconKind::Switch).braille();
     let mut lines = vec![];
@@ -541,7 +558,7 @@ pub fn draw_topology(f: &mut Frame, app: &App, area: Rect) {
     let [top, legend, bottom] =
         Layout::vertical([Constraint::Length(pic_h), Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     if pic_h > 0 {
-        draw(f, top, topo, t, 0);
+        draw(f, top, topo, t);
     } else {
         draw_list(f, top, topo, t);
     }
@@ -800,7 +817,7 @@ mod tests {
         let theme = crate::tui::theme::omp();
         let mut diagram = true;
         term.draw(|f| {
-            diagram = draw(f, f.area(), &t, theme, 0);
+            diagram = draw(f, f.area(), &t, theme);
         })
         .expect("draw");
         assert!(!diagram, "overlapping cards fall back to the list");
@@ -815,7 +832,7 @@ mod tests {
         let theme = crate::tui::theme::omp();
         let mut diagram = false;
         term.draw(|f| {
-            diagram = draw(f, f.area(), &t, theme, 0);
+            diagram = draw(f, f.area(), &t, theme);
         })
         .expect("draw");
         assert!(diagram, "four hosts on a fitted pane stay a diagram");
