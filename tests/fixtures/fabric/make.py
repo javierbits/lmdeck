@@ -217,6 +217,27 @@ out["mix-spark1"] = spark(
     hostname="spark-a.lab", dmi_product="DGX Spark",
 )
 
+def ring4(prefix, cables, net):
+    """Four Sparks cabled as a ring without a switch: one /30 per cable, each Spark's two CX7 ports to its two
+    neighbours. `cables` lists the cabled order; the hosts keep their rack order spark1..spark4."""
+    ports = {i: [] for i in range(1, 5)}
+    for c, (a, b) in enumerate(cables, start=1):
+        ports[a].append(f"10.{net}.{c}.1/30")
+        ports[b].append(f"10.{net}.{c}.2/30")
+    for i in range(1, 5):
+        out[f"{prefix}-spark{i}"] = spark(
+            f"spark{i}", i,
+            {"enp1s0f0np0": ports[i][0], "enp1s0f1np1": ports[i][1]},
+            f"192.168.1.{20 + i}/24", f"100.101.1.{i}/32", up=("enP2p1s0f0np0", "enP2p1s0f1np1"),
+            hostname=f"spark-{i:02d}.lab", dmi_product="DGX Spark",
+        )
+
+
+# A ring cabled in rack order: 1-2-3-4-1.
+ring4("ring4", [(1, 2), (2, 3), (3, 4), (4, 1)], 40)
+# The folded ring: rack order 1-2-3-4, cabled 1-2-4-3-1, so no cable spans more than two units.
+ring4("fold4", [(1, 2), (2, 4), (4, 3), (3, 1)], 41)
+
 for name, body in out.items():
     with open(os.path.join(HERE, f"{name}.json"), "w") as f:
         json.dump(body, f, indent=1, sort_keys=True)

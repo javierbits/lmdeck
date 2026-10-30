@@ -149,7 +149,12 @@ host (`host = "local"` or a hosts.toml name), with exactly one
 - reports one aggregate status and per-node status; `lmdeck logs <recipe> --node w1` reads one node's log;
 - fills fast-link facts into each node's command: `{head_addr}`,
   `{node_addr}`, `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,
-  `{image}`, `{head_port}`, `{node}`, `{rank}`, `{nodes}`;
+  `{image}`, `{head_port}`, `{node}`, `{rank}`, `{nodes}`, and the fabric:
+  `{fabric}` (`ring`, `switch`, `mesh`, `cable`, ...), `{fabric_order}` (the
+  hosts in fabric order, comma-separated) and, on a switchless ring,
+  `{ring_rank}`, `{ring_prev}`, `{ring_next}`, `{ring_prev_addr}`,
+  `{ring_next_addr}`, `{ring_prev_ifname}`, `{ring_next_ifname}` (each
+  neighbour's CX7 address on the shared cable and this node's port to it);
 - is **engine-agnostic**: the commands decide what runs (Ray + vLLM, SGLang,
   anything).
 
@@ -185,6 +190,18 @@ The controller builds an **L2 segment graph** (not a host↔host mesh):
   two hosts sit side by side. Layout is seeded and overlap-free.
 - Placement / multi-node `head_addr` / `ifname` / `hca` use
   `path_between` on the graph (shared segment preferred), not pair lookups.
+- The **fabric shape** across the hosts with CX7 ports: `single`, `cable`
+  (two Sparks), `mesh` (every pair cabled, such as a triangle), `ring`,
+  `switch` (all on one CX7 switch subnet, any count), `mixed` or `none`. A
+  `ring` is four or more Sparks without a switch, each with exactly two
+  cable neighbours, forming one cycle. Its order is the **cabled order**,
+  walked from the first host: a folded ring racked 1-2-3-4 and cabled
+  1-2-4-3-1 reads `spark1 → spark2 → spark4 → spark3 → spark1`. Multi-node
+  ranks, the TUI and web diagrams, and `lmdeck hosts topology` all follow it.
+  A `[[nodes]]` recipe whose ranks skip cables gets a warning naming the
+  cabled order to list them in. Two hosts across the ring get the CX7 path
+  through a neighbour, with a warning that the neighbour routes it (or the
+  recipe relays it, as Mia's `start-switchless.sh` does).
 
 Links are verified with a ping / TCP check unless `--no-verify`.
 
@@ -221,7 +238,8 @@ Views:
 
 `LMDECK_DEMO=1` draws simulated fabric from built-in fixtures, labelled
 **DEMO DATA**. Shape via `LMDECK_DEMO_TOPO`: `tri` (default), `duo`,
-`switch8`, `single`, `mix`.
+`switch8`, `single`, `mix`, `ring4` (four Sparks cabled 1-2-3-4-1) and
+`fold4` (the folded ring, cabled 1-2-4-3-1).
 
 ## Screenshots
 

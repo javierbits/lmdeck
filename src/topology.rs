@@ -88,6 +88,10 @@ pub struct Topology {
     /// L2 segments (cables + switches) for clients that want the classification.
     #[serde(default)]
     pub segments: Vec<fabric::Segment>,
+    /// The CX7 fabric's shape and rank order across the hosts with CX7 ports
+    /// (this machine first, then hosts.toml order). On a ring, `order` is the cabled order.
+    #[serde(default)]
+    pub fabric: fabric::Shape,
     pub notes: Vec<String>,
 }
 
@@ -166,12 +170,13 @@ fn topo_gpu_from_tel(g: &GpuTel) -> TopoGpu {
     }
 }
 
-/// `LMDECK_DEMO_TOPO`: `tri` (default), `duo`, `switch8`, `single`.
+/// `LMDECK_DEMO_TOPO`: `tri` (default), `duo`, `switch8`, `single`, `mix`,
+/// `ring4` (four Sparks cabled 1-2-3-4-1) or `fold4` (the folded ring, 1-2-4-3-1).
 pub fn demo_topo_name() -> String {
     std::env::var("LMDECK_DEMO_TOPO")
         .ok()
         .map(|s| s.to_ascii_lowercase())
-        .filter(|s| matches!(s.as_str(), "tri" | "duo" | "switch8" | "single" | "mix"))
+        .filter(|s| matches!(s.as_str(), "tri" | "duo" | "switch8" | "single" | "mix" | "ring4" | "fold4"))
         .unwrap_or_else(|| "tri".into())
 }
 
@@ -191,6 +196,8 @@ pub fn fetch_fabric(k: &str, entry: Option<&HostEntry>, online: bool, demo: bool
         let items: &[(&str, &str)] = match shape.as_str() {
             "duo" => &fabric::fixtures::DUO,
             "switch8" => &fabric::fixtures::SWITCH8,
+            "ring4" => &fabric::fixtures::RING4,
+            "fold4" => &fabric::fixtures::FOLD4,
             "mix" => &[
                 ("spark1", include_str!("../tests/fixtures/fabric/mix-spark1.json")),
                 ("spark2", fabric::fixtures::TRI[1].1),
@@ -278,6 +285,53 @@ pub fn graph_for(paths: &Paths, cfg: &Config, keys: &[String]) -> Graph {
     });
     let refs: Vec<(String, &Fabric)> = fabrics.iter().map(|(k, f)| (k.clone(), f)).collect();
     graph_from(&file, &entries, &cfg.node_name(), &refs)
+}
+
+/// Peers the demo hosts list for each `LMDECK_DEMO_TOPO` (after `local`).
+fn demo_peers() -> Vec<String> {
+    let n = match demo_topo_name().as_str() {
+        "single" => 1,
+        "duo" => 2,
+        "switch8" => 8,
+        "mix" | "ring4" | "fold4" => 4,
+        _ => 3,
+    };
+    (2..=n).map(|i| format!("spark{i}")).collect()
+}
+
+/// The CX7 fabric shape across this machine and every hosts.toml host, in
+/// rack order (this machine first, then hosts.toml order). Hosts without a
+/// CX7 link drop out; one Spark left reads `single`.
+pub fn shape_for(paths: &Paths, cfg: &Config) -> fabric::Shape {
+    let peers: Vec<String> = if crate::telemetry::demo_mode() {
+        demo_peers()
+    } else {
+        HostsFile::load(paths).map(|f| f.hosts.into_iter().map(|e| e.name).collect()).unwrap_or_default()
+    };
+    let mut keys = vec![LOCAL.to_string()];
+    keys.extend(peers);
+    let graph = graph_for(paths, cfg, &keys);
+    let on_cx7 = |h: &str| {
+        graph.segments.iter().any(|s| s.kind == LinkKind::Cx7 && s.members.iter().any(|m| m.host == h))
+            || graph.links.iter().any(|l| l.kind == LinkKind::Cx7 && l.involves(h))
+    };
+    let rack: Vec<String> = keys.into_iter().filter(|k| on_cx7(k)).collect();
+    if rack.len() <= 1 {
+        return fabric::shape(&graph, &[LOCAL.to_string()]);
+    }
+    fabric::shape(&graph, &rack)
+}
+
+/// The fabric a `command_by_fabric` recipe starts on: `LMDECK_FABRIC` when
+/// set, else [`shape_for`]. `None` for recipes without per-fabric commands.
+pub fn fabric_for(paths: &Paths, cfg: &Config, r: &crate::recipe::Recipe) -> Option<fabric::Shape> {
+    if r.engine.command_by_fabric.is_empty() {
+        return None;
+    }
+    if let Some(kind) = std::env::var("LMDECK_FABRIC").ok().and_then(|v| fabric::ShapeKind::parse(&v)) {
+        return Some(fabric::Shape { kind, order: vec![] });
+    }
+    Some(shape_for(paths, cfg))
 }
 
 /// What is using each link: NFS placements and multi-node runs that are up.
@@ -467,7 +521,19 @@ pub fn build(paths: &Paths, cfg: &Config, views: &[HostView], verify: bool) -> T
             TopoLink { link: l, active }
         })
         .collect();
+    let rack: Vec<String> =
+        hosts.iter().filter(|h| h.fabric.as_ref().is_some_and(|f| f.has_cx7())).map(|h| h.key.clone()).collect();
+    let shape = fabric::shape(&graph, &rack);
     let mut notes = vec![];
+    if shape.kind == fabric::ShapeKind::Ring {
+        let show = |k: &str| hosts.iter().find(|h| h.key == k).map(|h| h.name.clone()).unwrap_or_else(|| k.to_string());
+        notes.push(format!(
+            "switchless ring of {}: cabled order {}. Multi-node ranks follow this order; \
+             hosts across the ring reach each other through a neighbour",
+            shape.order.len(),
+            shape.describe(show)
+        ));
+    }
     if demo {
         notes.push(format!(
             "demo data (LMDECK_DEMO=1, LMDECK_DEMO_TOPO={}): simulated fabric from built-in fixtures",
@@ -497,6 +563,7 @@ pub fn build(paths: &Paths, cfg: &Config, views: &[HostView], verify: bool) -> T
         switches: graph.switches,
         links,
         segments: graph.segments,
+        fabric: shape,
         notes,
     }
 }
@@ -600,6 +667,13 @@ pub fn render_text(t: &Topology) -> String {
         for sw in &t.switches {
             s.push_str(&format!("  {:<22} {:<8} {:>2} ports  {}\n", sw.name, sw.kind.as_str(), sw.ports, sw.subnet));
         }
+    }
+    match t.fabric.kind {
+        fabric::ShapeKind::None | fabric::ShapeKind::Single => {}
+        fabric::ShapeKind::Ring => {
+            s.push_str(&format!("\nfabric: ring (switchless), cabled order {}\n", t.fabric.describe(|h| t.display(h))))
+        }
+        k => s.push_str(&format!("\nfabric: {} ({})\n", k.as_str(), t.fabric.describe(|h| t.display(h)))),
     }
     s.push_str("\nlinks\n");
     if t.links.is_empty() {

@@ -13,6 +13,7 @@ use lmdeck::compat::{self, Level, Report};
 use lmdeck::config::{Config, SourceEntry};
 use lmdeck::deck::{self, listed, memory_need_gb, resolve, status_word, Deck};
 use lmdeck::engine::{self, Inventory, PlanCtx};
+use lmdeck::fabric;
 use lmdeck::hardware::{which, Hardware};
 use lmdeck::hosts::{self, HostView, HostsFile};
 use lmdeck::models::{self, hf_cache_dir, Presence};
@@ -20,6 +21,7 @@ use lmdeck::paths::{home_dir, Paths};
 use lmdeck::recipe::{is_recipe_file, is_yaml_file, valid_name, Engine, Recipe, YAML_UNSUPPORTED};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
+use lmdeck::topology;
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
 use lmdeck::updates::{self, UpdateView};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
@@ -1292,7 +1294,13 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let p = ctx.presence(r);
     let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
     let port = deck::planned_for(&cat, &ctx.paths, &ctx.cfg, r);
-    let plan = engine::plan(r, &PlanCtx::new(&ctx.cfg, p.local).with_port(Some(port)))?;
+    let fabric = topology::fabric_for(&ctx.paths, &ctx.cfg, r);
+    let plan = engine::plan(
+        r,
+        &PlanCtx::new(&ctx.cfg, p.local)
+            .with_port(Some(port))
+            .with_fabric(fabric.as_ref().map(|f| f.kind.as_str().to_string())),
+    )?;
 
     if a.dry_run {
         println!(
@@ -1319,6 +1327,19 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
                 println!("  env:  {k}={v}");
             } else {
                 println!("  env:  {k}");
+            }
+        }
+        if let Some(f) = &fabric {
+            let node = ctx.cfg.node_name();
+            let show = |h: &str| if h == hosts::LOCAL { node.clone() } else { h.to_string() };
+            let order = if f.order.is_empty() { "set by LMDECK_FABRIC".to_string() } else { f.describe(show) };
+            println!("  fabric: {} ({order})", f.kind.as_str());
+            if f.kind == fabric::ShapeKind::Ring && f.order.len() > 1 {
+                let workers: Vec<String> = f.order[1..].iter().map(|h| show(h)).collect();
+                println!(
+                    "  ranks: workers in cabled order: {} (Mia's scripts/local.sh: WORKER, WORKER2, WORKER3, ...)",
+                    workers.join(", ")
+                );
             }
         }
         println!("  run:  {}", plan.command_line());

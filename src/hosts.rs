@@ -301,7 +301,7 @@ impl Aggregator {
 }
 
 /// Synthetic hosts for `LMDECK_DEMO=1`. Shape follows `LMDECK_DEMO_TOPO`
-/// (`tri` default, `duo`, `switch8`, `single`, `mix`).
+/// (`tri` default, `duo`, `switch8`, `single`, `mix`, `ring4`, `fold4`).
 pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostView> {
     let n = local_hist.samples.len().max(1);
     let host = |name: &str, url: &str, seed: f64, busy: bool, ms: u64| {
@@ -387,7 +387,7 @@ pub fn demo_hosts(local: &Telemetry, local_hist: &History, at: u64) -> Vec<HostV
                 out.push(h);
             }
         }
-        "mix" => {
+        "mix" | "ring4" | "fold4" => {
             out.push(host("spark2", "http://spark2:7979", 0.45, true, 4));
             out.push(host("spark3", "http://spark3:7979", 0.8, false, 6));
             out.push(host("spark4", "http://spark4:7979", 0.55, false, 5));

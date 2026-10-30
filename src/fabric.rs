@@ -1030,6 +1030,211 @@ pub fn path_as_link(graph: &Graph, a: &str, b: &str) -> Option<Link> {
     Some(Link { a: ea, b: eb, kind, subnet: None, speed_mbps: speed, manual: false, verified: None, rtt_ms: None })
 }
 
+/// The overall shape of the ConnectX-7 fabric among a set of hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShapeKind {
+    /// No CX7 links between the hosts (LAN / Tailscale only), or no hosts.
+    #[default]
+    None,
+    /// One host.
+    Single,
+    /// Two hosts on a direct cable.
+    Cable,
+    /// Three or more hosts with a direct cable between every pair (a triangle).
+    Mesh,
+    /// Four or more hosts cabled in one cycle without a switch: two neighbours each.
+    Ring,
+    /// Every host on one CX7 switch subnet.
+    Switch,
+    /// CX7 links that form none of the above (a chain, a partial ring, cables plus a switch).
+    Mixed,
+}
+
+impl ShapeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShapeKind::None => "none",
+            ShapeKind::Single => "single",
+            ShapeKind::Cable => "cable",
+            ShapeKind::Mesh => "mesh",
+            ShapeKind::Ring => "ring",
+            ShapeKind::Switch => "switch",
+            ShapeKind::Mixed => "mixed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ShapeKind> {
+        let all = [
+            ShapeKind::None,
+            ShapeKind::Single,
+            ShapeKind::Cable,
+            ShapeKind::Mesh,
+            ShapeKind::Ring,
+            ShapeKind::Switch,
+            ShapeKind::Mixed,
+        ];
+        all.into_iter().find(|k| k.as_str() == s.trim().to_ascii_lowercase())
+    }
+
+    /// Every name a recipe may key on (`[engine.command_by_fabric]`).
+    pub const NAMES: [&'static str; 7] = ["none", "single", "cable", "mesh", "ring", "switch", "mixed"];
+}
+
+/// The fabric's shape and the order NCCL ranks should follow on it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    pub kind: ShapeKind,
+    /// Hosts in fabric order. On a ring this is the cabled order, starting at the
+    /// first host of the rack order and heading to its earlier-listed neighbour,
+    /// so a folded ring (rack 1-2-3-4, cabled 1-2-4-3-1) reads `1 2 4 3`.
+    /// Otherwise it is the rack order as given.
+    pub order: Vec<String>,
+}
+
+impl Shape {
+    /// `(previous, next)` around a ring, or `None` on any other shape.
+    pub fn ring_neighbours(&self, host: &str) -> Option<(&str, &str)> {
+        if self.kind != ShapeKind::Ring {
+            return None;
+        }
+        let n = self.order.len();
+        let i = self.order.iter().position(|h| h == host)?;
+        Some((self.order[(i + n - 1) % n].as_str(), self.order[(i + 1) % n].as_str()))
+    }
+
+    /// Whether `a` and `b` sit next to each other around the ring.
+    pub fn ring_adjacent(&self, a: &str, b: &str) -> bool {
+        self.ring_neighbours(a).is_some_and(|(p, n)| p == b || n == b)
+    }
+
+    /// `spark1 → spark2 → spark4 → spark3 → spark1` on a ring, else the hosts joined by spaces.
+    pub fn describe(&self, show: impl Fn(&str) -> String) -> String {
+        let names: Vec<String> = self.order.iter().map(|h| show(h)).collect();
+        match self.kind {
+            ShapeKind::Ring if !names.is_empty() => format!("{} → {}", names.join(" → "), names[0]),
+            _ => names.join(" "),
+        }
+    }
+}
+
+/// Host↔host CX7 cable neighbours: two-member CX7 segments, plus manual CX7 edges.
+fn cable_adjacency(graph: &Graph) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut adj: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+    let mut add = |a: &str, b: &str| {
+        if a != b {
+            adj.entry(a.to_string()).or_default().insert(b.to_string());
+            adj.entry(b.to_string()).or_default().insert(a.to_string());
+        }
+    };
+    for seg in graph.segments.iter().filter(|s| s.kind == LinkKind::Cx7 && s.class == SegmentClass::Cable) {
+        if let [a, b] = seg.members.as_slice() {
+            add(&a.host, &b.host);
+        }
+    }
+    for l in graph.links.iter().filter(|l| l.kind == LinkKind::Cx7) {
+        if !l.a.host.starts_with("switch:") && !l.b.host.starts_with("switch:") {
+            add(&l.a.host, &l.b.host);
+        }
+    }
+    adj
+}
+
+/// Classifies the CX7 fabric among `rack` (hosts in their physical / hosts.toml
+/// order, the first one being the head) and works out the fabric order. Works
+/// for any host count: 1, a pair, a triangle, a ring of N (cabled in rack order
+/// or folded), N hosts on a switch.
+pub fn shape(graph: &Graph, rack: &[String]) -> Shape {
+    let mut order: Vec<String> = vec![];
+    for h in rack {
+        if !order.contains(h) {
+            order.push(h.clone());
+        }
+    }
+    let n = order.len();
+    let kind = |kind| Shape { kind, order: order.clone() };
+    match n {
+        0 => return kind(ShapeKind::None),
+        1 => return kind(ShapeKind::Single),
+        _ => {}
+    }
+    let on_switch = |all: bool| {
+        graph.segments.iter().any(|s| {
+            let inside = order.iter().filter(|h| s.members.iter().any(|m| &m.host == *h)).count();
+            s.kind == LinkKind::Cx7 && s.class == SegmentClass::Switch && if all { inside == n } else { inside >= 2 }
+        })
+    };
+    if on_switch(true) {
+        return kind(ShapeKind::Switch);
+    }
+    let full = cable_adjacency(graph);
+    let empty = std::collections::BTreeSet::new();
+    // Only cables between hosts of this set count.
+    let adj =
+        |h: &str| -> Vec<&String> { full.get(h).unwrap_or(&empty).iter().filter(|x| order.contains(x)).collect() };
+    let linked = |a: &str, b: &str| adj(a).iter().any(|x| x.as_str() == b);
+    if n == 2 && linked(&order[0], &order[1]) {
+        return kind(ShapeKind::Cable);
+    }
+    if n >= 3 && (0..n).all(|i| (i + 1..n).all(|j| linked(&order[i], &order[j]))) {
+        return kind(ShapeKind::Mesh);
+    }
+    if n >= 4 && order.iter().all(|h| adj(h).len() == 2) {
+        let rank = |h: &str| order.iter().position(|x| x == h).unwrap_or(usize::MAX);
+        let mut walk = vec![order[0].clone()];
+        loop {
+            let here = walk.last().unwrap().clone();
+            let mut next: Vec<&String> = adj(&here).into_iter().filter(|x| !walk.contains(x)).collect();
+            next.sort_by_key(|x| rank(x));
+            match next.first() {
+                Some(x) => walk.push((*x).clone()),
+                None => break,
+            }
+        }
+        // One cycle through every host (not two smaller rings).
+        if walk.len() == n && linked(&walk[n - 1], &walk[0]) {
+            return Shape { kind: ShapeKind::Ring, order: walk };
+        }
+    }
+    if on_switch(false) || order.iter().any(|h| !adj(h).is_empty()) {
+        return kind(ShapeKind::Mixed);
+    }
+    kind(ShapeKind::None)
+}
+
+/// The shortest all-cable CX7 path from `a` to `b` when they share no segment
+/// (across a ring): `a`'s end on its first cable, `b`'s end on its last, and
+/// the hosts in between. Traffic between those ends goes through the hosts in
+/// between, which have to route it (or the recipe relays, as Mia's ring does).
+pub fn cable_path(graph: &Graph, a: &str, b: &str) -> Option<(End, End, Vec<String>)> {
+    if a == b {
+        return None;
+    }
+    let adj = cable_adjacency(graph);
+    let mut prev: std::collections::BTreeMap<String, String> = Default::default();
+    let mut queue = std::collections::VecDeque::from([a.to_string()]);
+    while let Some(h) = queue.pop_front() {
+        if h == b {
+            break;
+        }
+        for x in adj.get(&h).into_iter().flatten() {
+            if x != a && !prev.contains_key(x) {
+                prev.insert(x.clone(), h.clone());
+                queue.push_back(x.clone());
+            }
+        }
+    }
+    let mut hops = vec![b.to_string()];
+    while hops.last().map(String::as_str) != Some(a) {
+        hops.push(prev.get(hops.last().unwrap())?.clone());
+    }
+    hops.reverse();
+    let (first, last) = (&hops[1], &hops[hops.len() - 2]);
+    let (end_a, _, _, _) = path_between(graph, a, first)?;
+    let (_, end_b, _, _) = path_between(graph, last, b)?;
+    Some((end_a, end_b, hops[1..hops.len() - 1].to_vec()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn link(an: &str, na: &Nic, aip: &str, bn: &str, nb: &Nic, bip: &str, kind: LinkKind, subnet: Option<String>) -> Link {
     let end = |host: &str, n: &Nic, ip: &str| End {
@@ -1117,6 +1322,21 @@ pub mod fixtures {
         ("spark6", include_str!("../tests/fixtures/fabric/sw8-spark6.json")),
         ("spark7", include_str!("../tests/fixtures/fabric/sw8-spark7.json")),
         ("spark8", include_str!("../tests/fixtures/fabric/sw8-spark8.json")),
+    ];
+
+    /// Four Sparks cabled as a ring in rack order: 1-2-3-4-1.
+    pub const RING4: [(&str, &str); 4] = [
+        ("spark1", include_str!("../tests/fixtures/fabric/ring4-spark1.json")),
+        ("spark2", include_str!("../tests/fixtures/fabric/ring4-spark2.json")),
+        ("spark3", include_str!("../tests/fixtures/fabric/ring4-spark3.json")),
+        ("spark4", include_str!("../tests/fixtures/fabric/ring4-spark4.json")),
+    ];
+    /// Four Sparks in rack order 1-2-3-4, cabled as a folded ring: 1-2-4-3-1.
+    pub const FOLD4: [(&str, &str); 4] = [
+        ("spark1", include_str!("../tests/fixtures/fabric/fold4-spark1.json")),
+        ("spark2", include_str!("../tests/fixtures/fabric/fold4-spark2.json")),
+        ("spark3", include_str!("../tests/fixtures/fabric/fold4-spark3.json")),
+        ("spark4", include_str!("../tests/fixtures/fabric/fold4-spark4.json")),
     ];
 
     pub fn load(text: &str) -> super::Fabric {
@@ -1271,6 +1491,152 @@ mod tests {
         // Triangle path still works.
         let (_, _, k, _) = path_between(&g, "spark2", "spark3").unwrap();
         assert_eq!(k, LinkKind::Cx7);
+    }
+
+    fn keys(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn shape_of_one_two_and_a_triangle() {
+        let tri = fixtures::set(&fixtures::TRI);
+        let g = build_graph(&refs(&tri), &[]);
+        assert_eq!(shape(&g, &keys(&["spark1"])).kind, ShapeKind::Single);
+        assert_eq!(shape(&g, &keys(&["spark1", "spark2"])).kind, ShapeKind::Cable);
+        let s = shape(&g, &keys(&["spark1", "spark2", "spark3"]));
+        assert_eq!(s.kind, ShapeKind::Mesh, "a triangle is every pair cabled, not a ring");
+        assert_eq!(s.order, keys(&["spark1", "spark2", "spark3"]));
+        assert!(s.ring_neighbours("spark1").is_none());
+        let duo = fixtures::set(&fixtures::DUO);
+        let g = build_graph(&refs(&duo), &[]);
+        assert_eq!(shape(&g, &keys(&["spark1", "spark2"])).kind, ShapeKind::Cable, "dual rails, one cable segment");
+        assert_eq!(shape(&Graph::default(), &[]).kind, ShapeKind::None);
+        assert_eq!(shape(&Graph::default(), &keys(&["a", "b"])).kind, ShapeKind::None, "no CX7 at all");
+    }
+
+    #[test]
+    fn ring_of_four_follows_the_cables() {
+        let f = fixtures::set(&fixtures::RING4);
+        let g = build_graph(&refs(&f), &[]);
+        assert_eq!(g.switches.iter().filter(|s| s.kind == LinkKind::Cx7).count(), 0, "a ring has no switch");
+        let rack = keys(&["spark1", "spark2", "spark3", "spark4"]);
+        let s = shape(&g, &rack);
+        assert_eq!(s.kind, ShapeKind::Ring);
+        assert_eq!(s.order, rack, "cabled in rack order");
+        assert_eq!(s.ring_neighbours("spark1"), Some(("spark4", "spark2")));
+        assert!(!s.ring_adjacent("spark1", "spark3"));
+        assert_eq!(s.describe(|h| h.to_string()), "spark1 → spark2 → spark3 → spark4 → spark1");
+        // Starting the walk at another head keeps the cycle.
+        let s = shape(&g, &keys(&["spark3", "spark1", "spark2", "spark4"]));
+        assert_eq!(s.order, keys(&["spark3", "spark2", "spark1", "spark4"]));
+        // Three of the four are a chain, not a ring.
+        assert_eq!(shape(&g, &keys(&["spark1", "spark2", "spark3"])).kind, ShapeKind::Mixed);
+    }
+
+    #[test]
+    fn folded_ring_uses_the_cabled_order_not_the_rack_order() {
+        let f = fixtures::set(&fixtures::FOLD4);
+        let g = build_graph(&refs(&f), &[]);
+        let rack = keys(&["spark1", "spark2", "spark3", "spark4"]);
+        let s = shape(&g, &rack);
+        assert_eq!(s.kind, ShapeKind::Ring);
+        assert_eq!(s.order, keys(&["spark1", "spark2", "spark4", "spark3"]));
+        assert_eq!(s.ring_neighbours("spark2"), Some(("spark1", "spark4")));
+        assert_eq!(s.ring_neighbours("spark3"), Some(("spark4", "spark1")));
+        assert!(!s.ring_adjacent("spark2", "spark3"), "2 and 3 sit next to each other in the rack only");
+        // Every node has exactly two cable neighbours.
+        let adj = cable_adjacency(&g);
+        assert!(rack.iter().all(|h| adj[h].len() == 2), "{adj:?}");
+        // The rack neighbours 2 and 3 share no cable (only the LAN): the CX7 path goes through 1 or 4.
+        assert_ne!(path_between(&g, "spark2", "spark3").map(|p| p.2), Some(LinkKind::Cx7));
+        assert_eq!(path_between(&g, "spark2", "spark4").map(|p| p.2), Some(LinkKind::Cx7));
+        let (a, b, via) = cable_path(&g, "spark2", "spark3").unwrap();
+        assert_eq!(via.len(), 1, "{via:?}");
+        assert!(via[0] == "spark1" || via[0] == "spark4");
+        assert!(a.ip.starts_with("10.41.") && b.ip.starts_with("10.41."), "{a:?} {b:?}");
+        assert_eq!(a.host, "spark2");
+        assert_eq!(b.host, "spark3");
+        // Cabled neighbours are direct.
+        let (_, _, via) = cable_path(&g, "spark2", "spark4").unwrap();
+        assert!(via.is_empty());
+    }
+
+    #[test]
+    fn eight_on_a_switch_is_a_switch() {
+        let f = fixtures::set(&fixtures::SWITCH8);
+        let g = build_graph(&refs(&f), &[]);
+        let rack: Vec<String> = (1..=8).map(|i| format!("spark{i}")).collect();
+        let s = shape(&g, &rack);
+        assert_eq!(s.kind, ShapeKind::Switch);
+        assert_eq!(s.order, rack, "a switch keeps the rack order");
+        assert!(s.ring_neighbours("spark1").is_none());
+        assert_eq!(shape(&g, &rack[..4]).kind, ShapeKind::Switch, "any subset of the switch");
+        // Triangle plus a switch with spark1 and spark4: mixed.
+        let mut m = fixtures::set(&fixtures::TRI);
+        m.push(("spark4".into(), fx("mix-spark4")));
+        m[0] = ("spark1".into(), fx("mix-spark1"));
+        let g = build_graph(&refs(&m), &[]);
+        assert_eq!(shape(&g, &keys(&["spark1", "spark2", "spark3", "spark4"])).kind, ShapeKind::Mixed);
+    }
+
+    #[test]
+    fn rings_of_any_size_and_two_rings_are_not_one() {
+        // Synthetic N-rings, folded (0, n-1, 1, n-2, ...): the walk recovers the cable order.
+        for n in 4..=12usize {
+            let cabled: Vec<usize> = (0..n).map(|i| if i % 2 == 0 { i / 2 } else { n - 1 - i / 2 }).collect();
+            let mut fabrics: Vec<(String, Fabric)> = (0..n).map(|i| (format!("h{i}"), Fabric::default())).collect();
+            for c in 0..n {
+                let (x, y) = (cabled[c], cabled[(c + 1) % n]);
+                for (k, h) in [(1, x), (2, y)] {
+                    let ifname = format!("cx{c}");
+                    fabrics[h].1.nics.push(Nic {
+                        name: ifname.clone(),
+                        kind: NicKind::Cx7,
+                        state: "up".into(),
+                        speed_mbps: Some(200_000),
+                        ipv4: vec![Addr { ip: format!("10.50.{c}.{k}"), prefix: 30 }],
+                        ..blank_nic(&ifname)
+                    });
+                }
+            }
+            let g = build_graph(&refs(&fabrics), &[]);
+            let rack: Vec<String> = (0..n).map(|i| format!("h{i}")).collect();
+            let s = shape(&g, &rack);
+            assert_eq!(s.kind, ShapeKind::Ring, "n={n}");
+            assert_eq!(s.order.len(), n);
+            for (i, h) in s.order.iter().enumerate() {
+                let next = &s.order[(i + 1) % n];
+                assert!(path_between(&g, h, next).is_some(), "n={n}: {h} and {next} are cabled");
+            }
+            // The cable cycle in either direction from h0 (the walk heads to the earlier-listed neighbour).
+            let fwd: Vec<String> = cabled.iter().map(|i| format!("h{i}")).collect();
+            let mut back = fwd.clone();
+            back[1..].reverse();
+            assert!(s.order == fwd || s.order == back, "n={n}: {:?}", s.order);
+            let far = &s.order[n / 2];
+            assert!(cable_path(&g, &s.order[0], far).is_some_and(|(_, _, via)| via.len() == n / 2 - 1), "n={n}");
+        }
+        // Two separate 4-rings among eight hosts: every host has two neighbours, but it is not one ring.
+        let mut fabrics: Vec<(String, Fabric)> = (0..8).map(|i| (format!("h{i}"), Fabric::default())).collect();
+        for r in 0..2 {
+            for c in 0..4 {
+                let (x, y) = (r * 4 + c, r * 4 + (c + 1) % 4);
+                for (k, h) in [(1, x), (2, y)] {
+                    let ifname = format!("cx{r}{c}");
+                    fabrics[h].1.nics.push(Nic {
+                        name: ifname.clone(),
+                        kind: NicKind::Cx7,
+                        state: "up".into(),
+                        ipv4: vec![Addr { ip: format!("10.60.{}.{k}", r * 4 + c), prefix: 30 }],
+                        ..blank_nic(&ifname)
+                    });
+                }
+            }
+        }
+        let g = build_graph(&refs(&fabrics), &[]);
+        let rack: Vec<String> = (0..8).map(|i| format!("h{i}")).collect();
+        assert_eq!(shape(&g, &rack).kind, ShapeKind::Mixed);
+        assert_eq!(shape(&g, &rack[..4]).kind, ShapeKind::Ring);
     }
 
     #[test]

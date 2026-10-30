@@ -564,7 +564,26 @@ nodes         = 1
 Placeholders in `args` and `command`: `{name}`, `{port}`, `{ctx}`, `{model}`,
 `{models_dir}`, `{host}`, `{repo}`, `{revision}`. `custom` recipes also get
 `{dir}` (the working directory) and `{container}`, and the placeholders work in
-`env`, `stop` and `logs` too.
+`env`, `stop` and `logs` too. `{fabric}` is the detected CX7 fabric shape for
+recipes that use `command_by_fabric`.
+
+A `custom` recipe can pick its launcher from the CX7 fabric. lmdeck detects
+the shape across this machine and `hosts.toml` when the recipe starts
+(`single`, `cable`, `mesh` for a triangle, `ring` for switchless Sparks with two
+cables each, `switch`, `mixed`, `none`), and `LMDECK_FABRIC=ring` sets it by
+hand. `command` covers every shape the table leaves out:
+
+```toml
+[engine]
+name    = "custom"
+command = ["./start.sh"]               # a RoCE switch, or anything else
+
+[engine.command_by_fabric]
+ring = ["./start-switchless.sh"]       # four Sparks cabled in a ring
+```
+
+`lmdeck use <recipe> --dry-run` prints the shape and, on a ring, the workers in
+cabled order.
 
 If `args` already sets one of lmdeck's default flags (for example
 `--n-gpu-layers` or `--gpu-memory-utilization`), lmdeck doesn't add its

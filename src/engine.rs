@@ -282,6 +282,9 @@ pub struct PlanCtx {
     /// The port to plan on, when the caller pre-computed one (`[serve]
     /// port_start` counting); `None` uses the recipe's own default.
     pub port: Option<u16>,
+    /// The CX7 fabric shape (`ring`, `switch`, ...) when the caller detected
+    /// one: picks `engine.command_by_fabric` and fills `{fabric}`.
+    pub fabric: Option<String>,
 }
 
 impl PlanCtx {
@@ -308,12 +311,18 @@ impl PlanCtx {
             bins,
             checkouts_dir: crate::paths::Paths::from_env().checkouts_dir(),
             port: None,
+            fabric: None,
         }
     }
 
     /// [`PlanCtx`] planning on a pre-computed port (see `deck::planned_ports`).
     pub fn with_port(mut self, port: Option<u16>) -> Self {
         self.port = port;
+        self
+    }
+
+    pub fn with_fabric(mut self, fabric: Option<String>) -> Self {
+        self.fabric = fabric;
         self
     }
 }
@@ -408,6 +417,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     vars.insert("host", ctx.host.clone());
     vars.insert("repo", repo.clone());
     vars.insert("revision", revision.clone());
+    vars.insert("fabric", ctx.fabric.clone().unwrap_or_default());
     // The working directory: a [source] checkout (a relative `dir` resolves
     // inside it), else `dir` as written.
     let checkout = r.source.as_ref().map(|_| checkout_dir(&ctx.checkouts_dir, &r.name));
@@ -695,7 +705,10 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
         }
         Engine::Custom => {
             // `args` are appended only when the recipe gives some.
-            let mut a: Vec<String> = r.engine.command.iter().map(|c| substitute(c, &vars)).collect();
+            // A per-fabric command (a switchless ring's own start script) wins.
+            let command =
+                ctx.fabric.as_ref().and_then(|f| r.engine.command_by_fabric.get(f)).unwrap_or(&r.engine.command);
+            let mut a: Vec<String> = command.iter().map(|c| substitute(c, &vars)).collect();
             a.extend(args);
             plan.argv = a;
             plan.cwd = work_dir;
@@ -727,7 +740,30 @@ mod tests {
             bins: BTreeMap::new(),
             checkouts_dir: PathBuf::from("/c/checkouts"),
             port: None,
+            fabric: None,
         }
+    }
+
+    #[test]
+    fn command_follows_the_fabric() {
+        let r = recipe(
+            "[engine]\nname = \"custom\"\ncommand = [\"./start.sh\", \"{fabric}\"]\ndetached = true\n\
+             [engine.command_by_fabric]\nring = [\"./start-switchless.sh\"]\n",
+        );
+        let with = |f: Option<&str>| PlanCtx { fabric: f.map(String::from), ..ctx(false) };
+        assert_eq!(plan(&r, &with(Some("ring"))).unwrap().argv, ["./start-switchless.sh"]);
+        assert_eq!(plan(&r, &with(Some("switch"))).unwrap().argv, ["./start.sh", "switch"]);
+        assert_eq!(plan(&r, &with(None)).unwrap().argv, ["./start.sh", ""]);
+        let bad = Recipe::parse(
+            "[engine]\nname = \"custom\"\ncommand = [\"x\"]\n[engine.command_by_fabric]\nloop = [\"y\"]\n",
+            "t",
+        );
+        assert!(format!("{:#}", bad.unwrap_err()).contains("unknown fabric 'loop'"));
+        let bad = Recipe::parse(
+            "[engine]\nname = \"vllm\"\n[model]\nrepo = \"a/b\"\n[engine.command_by_fabric]\nring = [\"y\"]\n",
+            "t",
+        );
+        assert!(bad.is_err(), "command_by_fabric is for custom engines");
     }
 
     fn recipe(t: &str) -> Recipe {

@@ -266,6 +266,13 @@ pub struct EngineSpec {
     /// program (`./start.sh`) is resolved against the working directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// `custom`: a different `command` per CX7 fabric shape, detected across
+    /// this machine and hosts.toml at start (`LMDECK_FABRIC` sets it by hand).
+    /// Keys: `ring`, `switch`, `mesh`, `cable`, `single`, `mixed`, `none`;
+    /// `command` covers every shape left out. Mia's 4-Spark recipe runs
+    /// `./start-switchless.sh` on a ring.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub command_by_fabric: BTreeMap<String, Vec<String>>,
     /// `custom`: argv that stops the server (`["./stop.sh"]`). Runs with the
     /// same working directory and environment as `command`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -303,6 +310,7 @@ impl EngineSpec {
             bin: None,
             dir: None,
             command: vec![],
+            command_by_fabric: BTreeMap::new(),
             stop: vec![],
             detached: false,
             container: None,
@@ -571,6 +579,7 @@ impl Recipe {
         if !custom {
             for (field, set) in [
                 ("stop", !self.engine.stop.is_empty()),
+                ("command_by_fabric", !self.engine.command_by_fabric.is_empty()),
                 ("detached", self.engine.detached),
                 ("container", self.engine.container.is_some()),
                 ("logs", !self.engine.logs.is_empty()),
@@ -579,6 +588,17 @@ impl Recipe {
                 if set {
                     bail!("{field} is only for engine \"custom\" (wrapped scripts)");
                 }
+            }
+        }
+        for (k, argv) in &self.engine.command_by_fabric {
+            if crate::fabric::ShapeKind::parse(k).is_none_or(|s| s.as_str() != k) {
+                bail!(
+                    "engine.command_by_fabric: unknown fabric '{k}' (expected one of: {})",
+                    crate::fabric::ShapeKind::NAMES.join(", ")
+                );
+            }
+            if argv.is_empty() {
+                bail!("engine.command_by_fabric.{k} is empty");
             }
         }
         if !self.engine.logs.is_empty() && !self.engine.detached {

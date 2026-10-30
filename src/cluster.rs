@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::deck::Deck;
-use crate::fabric::Link;
+use crate::fabric::{Graph, Link, LinkKind, Shape, ShapeKind};
 use crate::hosts::LOCAL;
 use crate::ops::{NodeState, Target};
 use crate::paths::Paths;
@@ -112,6 +112,8 @@ pub struct Plan {
     pub recipe: String,
     /// In start order.
     pub nodes: Vec<NodePlan>,
+    /// The CX7 fabric across the nodes' hosts, in rank order.
+    pub fabric: Shape,
     pub warnings: Vec<String>,
 }
 
@@ -119,6 +121,13 @@ impl Plan {
     pub fn describe(&self, node_name: &str) -> Vec<String> {
         let show = |h: &str| if h == LOCAL { format!("{node_name} (local)") } else { h.to_string() };
         let mut out = vec![format!("{}: {} nodes, start order:", self.recipe, self.nodes.len())];
+        match self.fabric.kind {
+            ShapeKind::None | ShapeKind::Single => {}
+            ShapeKind::Ring => {
+                out.push(format!("fabric: ring (switchless), cabled order {}", self.fabric.describe(show)))
+            }
+            k => out.push(format!("fabric: {}", k.as_str())),
+        }
         for (i, n) in self.nodes.iter().enumerate() {
             out.push(format!(
                 "{}. {} [{}] on {} as {} (port {}), gate: {}",
@@ -162,6 +171,75 @@ fn subst(s: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// The best link from `a` to `b`. On a switchless ring, two hosts that share
+/// no cable get the CX7 path through their neighbours (and a warning), so the
+/// plan stays on the fabric instead of falling back to the LAN.
+fn link_for(
+    graph: &Graph,
+    shape: &Shape,
+    a: &str,
+    b: &str,
+    show: &dyn Fn(&str) -> String,
+    warnings: &mut Vec<String>,
+) -> Option<Link> {
+    let best = crate::fabric::path_as_link(graph, a, b);
+    if shape.kind != ShapeKind::Ring || best.as_ref().is_some_and(|l| l.kind.is_direct()) {
+        return best;
+    }
+    let Some((ea, eb, via)) = crate::fabric::cable_path(graph, a, b) else { return best };
+    let hops: Vec<String> = via.iter().map(|h| show(h)).collect();
+    warnings.push(format!(
+        "{} and {} share no cable on the switchless ring: their CX7 traffic goes through {}, which routes it \
+         (or the recipe relays it, as Mia's start-switchless.sh does)",
+        show(a),
+        show(b),
+        hops.join(" → ")
+    ));
+    Some(Link {
+        a: ea,
+        b: eb,
+        kind: LinkKind::Cx7,
+        subnet: None,
+        speed_mbps: None,
+        manual: false,
+        verified: None,
+        rtt_ms: None,
+    })
+}
+
+/// `{fabric}`, `{fabric_order}` and the ring neighbour placeholders for `host`.
+/// The `ring_*` values stay empty off a ring.
+fn fabric_vars(graph: &Graph, shape: &Shape, host: &str, show: &dyn Fn(&str) -> String) -> BTreeMap<String, String> {
+    let mut vars = BTreeMap::new();
+    vars.insert("fabric".into(), shape.kind.as_str().to_string());
+    vars.insert("fabric_order".into(), shape.order.iter().map(|h| show(h)).collect::<Vec<_>>().join(","));
+    let ring = shape.ring_neighbours(host);
+    let ring_rank = ring.and_then(|_| shape.order.iter().position(|h| h == host));
+    vars.insert("ring_rank".into(), ring_rank.map(|i| i.to_string()).unwrap_or_default());
+    for (side, nb) in [("prev", ring.map(|r| r.0)), ("next", ring.map(|r| r.1))] {
+        let p = nb.and_then(|nb| crate::fabric::path_between(graph, host, nb)).filter(|p| p.2.is_direct());
+        vars.insert(format!("ring_{side}"), nb.map(show).unwrap_or_default());
+        vars.insert(format!("ring_{side}_addr"), p.as_ref().map(|p| p.1.ip.clone()).unwrap_or_default());
+        vars.insert(format!("ring_{side}_ifname"), p.as_ref().and_then(|p| p.0.ifname.clone()).unwrap_or_default());
+    }
+    vars
+}
+
+/// A warning when the ranks do not walk the ring's cables. NCCL's ring (and
+/// Mia's scripts) pass data rank to rank, so rank `i` and `i + 1` need a cable.
+fn ring_order_warning(shape: &Shape, ranks: &[String], show: &dyn Fn(&str) -> String) -> Option<String> {
+    if shape.kind != ShapeKind::Ring || shape.order.as_slice() == ranks {
+        return None;
+    }
+    let listed: Vec<String> = ranks.iter().map(|h| show(h)).collect();
+    Some(format!(
+        "the ranks ({}) skip cables on the switchless ring: list the [[nodes]] in the cabled order {} \
+         so each rank's neighbours are its cable neighbours",
+        listed.join(" "),
+        shape.describe(show)
+    ))
+}
+
 fn start_order(r: &Recipe) -> Vec<&NodeSpec> {
     let order = r.cluster.as_ref().map(|c| c.order).unwrap_or_default();
     let (heads, workers): (Vec<&NodeSpec>, Vec<&NodeSpec>) = r.nodes.iter().partition(|n| n.role == Role::Head);
@@ -200,6 +278,17 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         crate::fabric::Graph::default()
     };
     let mut warnings = vec![];
+    let show = |h: &str| if h == LOCAL { node.clone() } else { h.to_string() };
+    // Each host once, in rank order: the shape and ring order follow it.
+    let mut ranks: Vec<String> = vec![];
+    for n in start_order(r) {
+        let k = key(&n.host);
+        if !ranks.contains(&k) {
+            ranks.push(k);
+        }
+    }
+    let shape = crate::fabric::shape(&graph, &ranks);
+    warnings.extend(ring_order_warning(&shape, &ranks, &show));
     let total = r.nodes.len();
     let image = r.engine.image.clone().unwrap_or_default();
     let first_other = r.nodes.iter().find(|n| key(&n.host) != head_key).map(|n| key(&n.host));
@@ -212,7 +301,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         let mut link_used = None;
         match peer {
             Some(p) if p != head_key => {
-                let best = crate::fabric::path_as_link(&graph, &head_key, &p);
+                let best = link_for(&graph, &shape, &head_key, &p, &show, &mut warnings);
                 let (l, warn) = crate::placement::require_link(best.as_ref(), &head_key, &p, opts.allow_slow_link)?;
                 warnings.extend(warn);
                 let (h_end, p_end) = l.sides(&head_key).ok_or_else(|| anyhow!("link sides"))?;
@@ -254,7 +343,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
                     vars.insert("weights_mount".into(), format!("{}:{}", inv.export_path, inv.mount_at));
                     "home (local disk)".to_string()
                 } else {
-                    let best = crate::fabric::path_as_link(&graph, &h.host, &host);
+                    let best = link_for(&graph, &shape, &h.host, &host, &show, &mut warnings);
                     let (l, warn) =
                         crate::placement::require_link(best.as_ref(), &h.host, &host, opts.allow_slow_link)?;
                     warnings.extend(warn);
@@ -305,6 +394,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         vars.insert("role".into(), if n.role == Role::Head { "head".into() } else { "worker".into() });
         vars.insert("image".into(), image.clone());
         vars.insert("head_port".into(), r.port().to_string());
+        vars.extend(fabric_vars(&graph, &shape, &host, &show));
         let mut d = r.clone();
         d.name = served_as.clone();
         d.nodes = vec![];
@@ -347,7 +437,9 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
             command_line,
         });
     }
-    Ok(Plan { recipe: r.name.clone(), nodes: out, warnings })
+    let mut seen = std::collections::BTreeSet::new();
+    warnings.retain(|w| seen.insert(w.clone()));
+    Ok(Plan { recipe: r.name.clone(), nodes: out, fabric: shape, warnings })
 }
 
 fn gate(deck: &Deck, t: &Target, n: &NodePlan, spec: &NodeSpec, timeout: Duration) -> Result<()> {
@@ -568,4 +660,98 @@ pub fn views(paths: &Paths, r: &Recipe, node_name: &str) -> Vec<NodeView> {
 
 fn node_name_of(r: &Recipe, n: &NodeSpec) -> String {
     node_name(r, n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fabric::{build_graph, fixtures};
+
+    fn graph(set: &[(&str, &str)]) -> Graph {
+        let f = fixtures::set(set);
+        let refs: Vec<(String, &crate::fabric::Fabric)> = f.iter().map(|(k, f)| (k.clone(), f)).collect();
+        build_graph(&refs, &[])
+    }
+
+    fn hosts(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn show(h: &str) -> String {
+        h.to_string()
+    }
+
+    #[test]
+    fn folded_ring_ranks_neighbours_and_cross_links() {
+        let g = graph(&fixtures::FOLD4);
+        let cabled = hosts(&["spark1", "spark2", "spark4", "spark3"]);
+        let shape = crate::fabric::shape(&g, &cabled);
+        assert_eq!(shape.kind, ShapeKind::Ring);
+        assert!(ring_order_warning(&shape, &cabled, &show).is_none());
+        // Ranks in rack order skip cables.
+        let rack = hosts(&["spark1", "spark2", "spark3", "spark4"]);
+        let w = ring_order_warning(&crate::fabric::shape(&g, &rack), &rack, &show).unwrap();
+        assert!(w.contains("spark1 → spark2 → spark4 → spark3 → spark1"), "{w}");
+
+        let v = fabric_vars(&g, &shape, "spark2", &show);
+        assert_eq!(v["fabric"], "ring");
+        assert_eq!(v["fabric_order"], "spark1,spark2,spark4,spark3");
+        assert_eq!(v["ring_rank"], "1");
+        assert_eq!(v["ring_prev"], "spark1");
+        assert_eq!(v["ring_next"], "spark4");
+        assert!(v["ring_prev_addr"].starts_with("10.41.") && v["ring_next_addr"].starts_with("10.41."), "{v:?}");
+        assert!(!v["ring_next_ifname"].is_empty());
+
+        // spark1 to spark4 sits across the ring: CX7 through spark2 or spark3, with a warning.
+        let mut warnings = vec![];
+        let l = link_for(&g, &shape, "spark1", "spark4", &show, &mut warnings).unwrap();
+        assert_eq!(l.kind, LinkKind::Cx7);
+        assert!(l.a.ip.starts_with("10.41.") && l.b.ip.starts_with("10.41."));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("share no cable"), "{}", warnings[0]);
+        // Cable neighbours: direct, no warning.
+        let mut warnings = vec![];
+        let l = link_for(&g, &shape, "spark1", "spark3", &show, &mut warnings).unwrap();
+        assert_eq!(l.kind, LinkKind::Cx7);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn plain_ring_triangle_pair_single_and_switch_vars() {
+        let g = graph(&fixtures::RING4);
+        let rack = hosts(&["spark1", "spark2", "spark3", "spark4"]);
+        let shape = crate::fabric::shape(&g, &rack);
+        assert!(ring_order_warning(&shape, &rack, &show).is_none());
+        let v = fabric_vars(&g, &shape, "spark1", &show);
+        assert_eq!((v["ring_prev"].as_str(), v["ring_next"].as_str()), ("spark4", "spark2"));
+
+        let g = graph(&fixtures::TRI);
+        let shape = crate::fabric::shape(&g, &hosts(&["spark1", "spark2", "spark3"]));
+        let v = fabric_vars(&g, &shape, "spark1", &show);
+        assert_eq!(v["fabric"], "mesh");
+        assert_eq!(v["ring_prev"], "");
+        let mut warnings = vec![];
+        assert!(link_for(&g, &shape, "spark1", "spark3", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
+
+        let g = graph(&fixtures::DUO);
+        let shape = crate::fabric::shape(&g, &hosts(&["spark1", "spark2"]));
+        assert_eq!(fabric_vars(&g, &shape, "spark2", &show)["fabric"], "cable");
+
+        let shape = crate::fabric::shape(&Graph::default(), &hosts(&["local"]));
+        let v = fabric_vars(&Graph::default(), &shape, "local", &show);
+        assert_eq!(
+            (v["fabric"].as_str(), v["fabric_order"].as_str(), v["ring_rank"].as_str()),
+            ("single", "local", "")
+        );
+
+        let g = graph(&fixtures::SWITCH8);
+        let all: Vec<String> = (1..=8).map(|i| format!("spark{i}")).collect();
+        let shape = crate::fabric::shape(&g, &all);
+        let v = fabric_vars(&g, &shape, "spark8", &show);
+        assert_eq!(v["fabric"], "switch");
+        assert_eq!(v["fabric_order"].split(',').count(), 8);
+        let mut warnings = vec![];
+        assert!(link_for(&g, &shape, "spark1", "spark8", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
+        assert!(warnings.is_empty());
+    }
 }

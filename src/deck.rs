@@ -538,7 +538,8 @@ impl Deck {
         let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
         let cat = self.catalog();
         let port = planned_for(&cat, &self.paths, &self.cfg, r);
-        let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(Some(port)))?;
+        let fabric = crate::topology::fabric_for(&self.paths, &self.cfg, r).map(|f| f.kind.as_str().to_string());
+        let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric))?;
         match runner::status(&self.paths, &r.name, plan.port) {
             Status::Loaded | Status::External => return Ok(format!("{} is already up on :{}", r.name, plan.port)),
             Status::Loading => return Ok(format!("{} is still loading", r.name)),

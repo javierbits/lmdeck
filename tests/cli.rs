@@ -32,6 +32,8 @@ impl Env {
             .env("NO_COLOR", "1")
             .env_remove("HF_TOKEN")
             .env_remove("LMDECK_DEMO")
+            .env_remove("LMDECK_DEMO_TOPO")
+            .env_remove("LMDECK_FABRIC")
             .env_remove("LMDECK_THEME");
         c
     }
