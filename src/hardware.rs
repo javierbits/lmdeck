@@ -262,11 +262,52 @@ pub fn parse_vm_stat(text: &str) -> Option<f64> {
     (total > 0.0).then_some(total * page / GIB)
 }
 
+/// The CPU's name from `/proc/cpuinfo`. Arm Linux has no `model name`, so the
+/// cores are named from their `CPU part` ids instead, grouped by kind
+/// (a GB10 reads `10× Cortex-X925 + 10× Cortex-A725`).
 pub fn parse_cpuinfo(text: &str) -> Option<String> {
-    text.lines()
+    let value = |l: &str| l.split_once(':').map(|(_, v)| v.trim().to_string());
+    if let Some(name) = text
+        .lines()
         .find(|l| l.starts_with("model name") || l.starts_with("Model"))
-        .and_then(|l| l.split(':').nth(1))
-        .map(|s| s.trim().to_string())
+        .and_then(value)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(name);
+    }
+    let mut kinds: Vec<(String, u32)> = Vec::new();
+    for part in text.lines().filter(|l| l.starts_with("CPU part")).filter_map(value) {
+        let name = arm_core(&part).map(str::to_string).unwrap_or_else(|| format!("Arm core {part}"));
+        match kinds.iter_mut().find(|(k, _)| *k == name) {
+            Some((_, n)) => *n += 1,
+            None => kinds.push((name, 1)),
+        }
+    }
+    (!kinds.is_empty()).then(|| kinds.iter().map(|(k, n)| format!("{n}× {k}")).collect::<Vec<_>>().join(" + "))
+}
+
+/// Arm Ltd. (`CPU implementer 0x41`) core names by `CPU part` id.
+fn arm_core(part: &str) -> Option<&'static str> {
+    Some(match part.to_ascii_lowercase().as_str() {
+        "0xd03" => "Cortex-A53",
+        "0xd05" => "Cortex-A55",
+        "0xd08" => "Cortex-A72",
+        "0xd0b" => "Cortex-A76",
+        "0xd0c" => "Neoverse N1",
+        "0xd40" => "Neoverse V1",
+        "0xd41" => "Cortex-A78",
+        "0xd44" => "Cortex-X1",
+        "0xd49" => "Neoverse N2",
+        "0xd4f" => "Neoverse V2",
+        "0xd80" => "Cortex-A520",
+        "0xd81" => "Cortex-A720",
+        "0xd82" => "Cortex-X4",
+        "0xd84" => "Neoverse V3",
+        "0xd85" => "Cortex-X925",
+        "0xd87" => "Cortex-A725",
+        "0xd8e" => "Neoverse N3",
+        _ => return None,
+    })
 }
 
 /// Parses `nvidia-smi --query-gpu=name,memory.total,compute_cap,driver_version
@@ -377,6 +418,21 @@ mod tests {
         assert!((hw.model_memory_gb() - 47.98).abs() < 0.01);
         assert_eq!(hw.platform, "2x NVIDIA GeForce RTX 4090");
         assert_eq!(hw.compute_capability().as_deref(), Some("8.9"));
+    }
+
+    #[test]
+    fn arm_cores_are_named_from_their_part_ids() {
+        let mut gb10 = String::new();
+        for part in ["0xd85", "0xd87"].iter().flat_map(|p| std::iter::repeat_n(*p, 10)) {
+            gb10.push_str(&format!("processor\t: 0\nCPU implementer\t: 0x41\nCPU part\t: {part}\n\n"));
+        }
+        assert_eq!(parse_cpuinfo(&gb10).as_deref(), Some("10× Cortex-X925 + 10× Cortex-A725"));
+        assert_eq!(parse_cpuinfo("CPU part\t: 0xabc\n").as_deref(), Some("1× Arm core 0xabc"));
+        assert_eq!(
+            parse_cpuinfo("model name\t: AMD Ryzen 9 7950X\nCPU part\t: 0xd85\n").as_deref(),
+            Some("AMD Ryzen 9 7950X")
+        );
+        assert_eq!(parse_cpuinfo("flags\t: fpu\n"), None);
     }
 
     #[test]
