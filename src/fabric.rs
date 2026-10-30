@@ -780,6 +780,10 @@ pub fn build_graph(hosts: &[(String, &Fabric)], overrides: &[LinkOverride]) -> G
     for p in ports {
         groups.entry((p.net, p.prefix)).or_default().push(p);
     }
+    // Every host's key and machine hostname, short and lowercase (`Faraday.lan` → `faraday`).
+    let short = |s: &str| s.split('.').next().unwrap_or(s).to_ascii_lowercase();
+    let own: std::collections::BTreeSet<String> =
+        hosts.iter().flat_map(|(n, f)| [short(n), short(&f.hostname)]).collect();
     for ((net, prefix), group) in groups {
         let subnet = subnet_str(net, prefix);
         // Unique hosts on this subnet.
@@ -837,7 +841,11 @@ pub fn build_graph(hosts: &[(String, &Fabric)], overrides: &[LinkOverride]) -> G
             if let Some((_, f)) = hosts.iter().find(|(n, _)| n == host) {
                 for p in &ordered {
                     for nb in f.lldp.iter().filter(|n| n.ifname == p.nic.name && n.is_bridge) {
-                        if lldp_bridge.is_none() {
+                        // Reason: lldpd on every Spark announces Bridge (Docker's bridges), and a
+                        // Spark hears itself on the twin netdev of the same QSFP port, so a
+                        // neighbour that is one of the hosts is never the switch.
+                        let is_own = nb.chassis.as_deref().is_some_and(|c| own.contains(&short(c)));
+                        if lldp_bridge.is_none() && !is_own {
                             lldp_bridge = nb.chassis.clone();
                         }
                     }

@@ -183,8 +183,9 @@ The controller builds an **L2 segment graph** (not a host↔host mesh):
 - **Two hosts** on a point-to-point segment (`/30`/`/31`, or exactly two
   members with no LLDP bridge) → a direct **cable**.
 - **Three or more** members, or an LLDP neighbour advertising Bridge /
-  a switch-like chassis name → a synthetic **switch** node with star edges
-  to each host. No phantom pairwise CX7 edges through the switch.
+  a switch-like chassis name (the cluster's own hosts don't count: Sparks
+  running lldpd announce Bridge) → a synthetic **switch** node with star
+  edges to each host. No phantom pairwise CX7 edges through the switch.
 - Any number of hosts (1…32+), switches, rails, and mixed CX7 / LAN /
   Tailscale. Single-host view is a centred node with a hint to add peers;
   two hosts sit side by side. Layout is seeded and overlap-free.
