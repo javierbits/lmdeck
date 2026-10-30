@@ -182,25 +182,25 @@ fn subst(s: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// The best link from `a` to `b`. On a switchless ring, two hosts that share
-/// no cable get the CX7 path through their neighbours (and a warning), so the
-/// plan stays on the fabric instead of falling back to the LAN.
-fn link_for(
+/// The best link from `a` to `b`. Two hosts that share no CX7 segment (across
+/// a switchless ring, or two workers on either side of the head) get the CX7
+/// path through the hosts cabled between them (and a warning), so the plan
+/// stays on the fabric instead of falling back to the LAN.
+pub(crate) fn link_for(
     graph: &Graph,
-    shape: &Shape,
     a: &str,
     b: &str,
     show: &dyn Fn(&str) -> String,
     warnings: &mut Vec<String>,
 ) -> Option<Link> {
     let best = crate::fabric::path_as_link(graph, a, b);
-    if shape.kind != ShapeKind::Ring || best.as_ref().is_some_and(|l| l.kind.is_direct()) {
+    if best.as_ref().is_some_and(|l| l.kind.is_direct()) {
         return best;
     }
     let Some((ea, eb, via)) = crate::fabric::cable_path(graph, a, b) else { return best };
     let hops: Vec<String> = via.iter().map(|h| show(h)).collect();
     warnings.push(format!(
-        "{} and {} share no cable on the switchless ring: their CX7 traffic goes through {}, which routes it \
+        "{} and {} share no cable: their CX7 traffic goes through {}, which routes it \
          (or the recipe relays it, as Mia's start-switchless.sh does)",
         show(a),
         show(b),
@@ -322,7 +322,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         let mut link_used = None;
         match peer {
             Some(p) if p != head_key => {
-                let best = link_for(&graph, &shape, &head_key, &p, &show, &mut warnings);
+                let best = link_for(&graph, &head_key, &p, &show, &mut warnings);
                 let (l, warn) = crate::placement::require_link(best.as_ref(), &head_key, &p, opts.allow_slow_link)?;
                 warnings.extend(warn);
                 let (h_end, p_end) = l.sides(&head_key).ok_or_else(|| anyhow!("link sides"))?;
@@ -364,7 +364,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
                     vars.insert("weights_mount".into(), format!("{}:{}", inv.export_path, inv.mount_at));
                     "home (local disk)".to_string()
                 } else {
-                    let best = link_for(&graph, &shape, &h.host, &host, &show, &mut warnings);
+                    let best = link_for(&graph, &h.host, &host, &show, &mut warnings);
                     let (l, warn) =
                         crate::placement::require_link(best.as_ref(), &h.host, &host, opts.allow_slow_link)?;
                     warnings.extend(warn);
@@ -416,6 +416,31 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         vars.insert("image".into(), image.clone());
         vars.insert("head_port".into(), r.port().to_string());
         vars.extend(fabric_vars(&graph, &shape, &host, &show));
+        if let Some(p) = crate::vars::peer_past(n.texts(), total - 1) {
+            bail!(
+                "{}: [[nodes]] {}: {{{p}}} names a peer past the {} peer(s) each node of this {total}-node recipe has",
+                r.name,
+                n.name,
+                total - 1
+            );
+        }
+        if crate::vars::peer_past(n.texts(), 0).is_some() {
+            // The other nodes in listing order, each as this node reaches it.
+            let mut peers = vec![];
+            for p in r.nodes.iter().filter(|p| p.name != n.name) {
+                let at = key(&p.host);
+                let addr = if at == host {
+                    "127.0.0.1".to_string()
+                } else {
+                    let best = link_for(&graph, &host, &at, &show, &mut warnings);
+                    let (l, warn) = crate::placement::require_link(best.as_ref(), &host, &at, opts.allow_slow_link)?;
+                    warnings.extend(warn);
+                    l.sides(&host).map(|(_, far)| far.ip.clone()).ok_or_else(|| anyhow!("link sides"))?
+                };
+                peers.push((show(&at), addr));
+            }
+            vars.extend(crate::vars::peer_vars(&peers));
+        }
         let mut d = r.clone();
         d.name = served_as.clone();
         d.nodes = vec![];
@@ -736,14 +761,14 @@ mod tests {
 
         // spark1 to spark4 sits across the ring: CX7 through spark2 or spark3, with a warning.
         let mut warnings = vec![];
-        let l = link_for(&g, &shape, "spark1", "spark4", &show, &mut warnings).unwrap();
+        let l = link_for(&g, "spark1", "spark4", &show, &mut warnings).unwrap();
         assert_eq!(l.kind, LinkKind::Cx7);
         assert!(l.a.ip.starts_with("10.41.") && l.b.ip.starts_with("10.41."));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("share no cable"), "{}", warnings[0]);
         // Cable neighbours: direct, no warning.
         let mut warnings = vec![];
-        let l = link_for(&g, &shape, "spark1", "spark3", &show, &mut warnings).unwrap();
+        let l = link_for(&g, "spark1", "spark3", &show, &mut warnings).unwrap();
         assert_eq!(l.kind, LinkKind::Cx7);
         assert!(warnings.is_empty());
     }
@@ -763,7 +788,7 @@ mod tests {
         assert_eq!(v["fabric"], "mesh");
         assert_eq!(v["ring_prev"], "");
         let mut warnings = vec![];
-        assert!(link_for(&g, &shape, "spark1", "spark3", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
+        assert!(link_for(&g, "spark1", "spark3", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
 
         let g = graph(&fixtures::DUO);
         let shape = crate::fabric::shape(&g, &hosts(&["spark1", "spark2"]));
@@ -783,7 +808,7 @@ mod tests {
         assert_eq!(v["fabric"], "switch");
         assert_eq!(v["fabric_order"].split(',').count(), 8);
         let mut warnings = vec![];
-        assert!(link_for(&g, &shape, "spark1", "spark8", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
+        assert!(link_for(&g, "spark1", "spark8", &show, &mut warnings).is_some_and(|l| l.kind.is_direct()));
         assert!(warnings.is_empty());
     }
 }

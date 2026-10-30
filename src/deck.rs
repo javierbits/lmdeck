@@ -543,7 +543,9 @@ impl Deck {
 
         let port = planned_for(&cat, &self.paths, &self.cfg, r);
         let fabric = crate::topology::fabric_for(&self.paths, &self.cfg, r).map(|f| f.kind.as_str().to_string());
-        let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric))?;
+        let peers = crate::pick::peers(&self.paths, &self.cfg, r)?;
+        let ctx = PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric);
+        let plan = engine::plan(r, &ctx.with_vars(crate::vars::peer_vars(&peers.hosts)))?;
         match runner::status(&self.paths, &r.name, plan.port) {
             Status::Loaded | Status::External => return Ok(format!("{} is already up on :{}", r.name, plan.port)),
             Status::Loading => return Ok(format!("{} is still loading", r.name)),

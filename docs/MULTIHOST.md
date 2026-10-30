@@ -160,6 +160,17 @@ places, see below), with exactly one `role = "head"`. lmdeck:
   `{ring_rank}`, `{ring_prev}`, `{ring_next}`, `{ring_prev_addr}`,
   `{ring_next_addr}`, `{ring_prev_ifname}`, `{ring_next_ifname}` (each
   neighbour's CX7 address on the shared cable and this node's port to it);
+- tells each node about the others, in `[[nodes]]` order with itself left
+  out: `{peer_addr}` / `{peer_host}` for the first other node,
+  `{peer2_addr}` / `{peer2_host}` for the second, and so on (no `peer1`).
+  `{peer…_addr}` is that node's CX7 address on the link from this node
+  (through the hosts cabled between them when they share no cable, with a
+  warning; `127.0.0.1` when both run on one machine), `{peer…_host}` its
+  hosts.toml name (this machine's `[node] name` for `local`). A llama.cpp
+  RPC head writes `--rpc {peer_addr}:50052` instead of a worker address. A
+  peer past the node count fails the plan;
+- fills `{user}` (login name) and `{home}` (home directory) on the machine
+  each node runs on, with the engine placeholders (`{model}`, `{port}`, …);
 - is **engine-agnostic**: the commands decide what runs (Ray + vLLM, SGLang,
   anything).
 

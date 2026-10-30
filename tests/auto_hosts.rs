@@ -3,9 +3,14 @@
 //! then previous), then goes on around the ring, and ranks its picks in
 //! cabled order; on a cable it takes the peer; on a switch or a mesh, every
 //! machine with a CX7 link in rack order (this machine, then hosts.toml).
+//!
+//! The peers' addresses then reach the commands as placeholders, so no
+//! recipe names another machine: `{peer_addr}` / `{peer_host}`,
+//! `{peer2_addr}` / `{peer2_host}`, … in node commands, and in a wrapped
+//! recipe whose own scripts drive `[hardware] hosts` Sparks.
 
 use lmdeck::fabric::{build_graph, fixtures, shape, Addr, Fabric, Graph, Nic, NicKind};
-use lmdeck::pick;
+use lmdeck::{pick, vars};
 use proptest::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -198,6 +203,7 @@ impl Demo {
             .env("LMDECK_NO_SYNC", "1")
             .env("LMDECK_NO_UPDATE_CHECK", "1")
             .env("NO_COLOR", "1")
+            .env("USER", "tester")
             .env_remove("HF_HOME")
             .env_remove("LMDECK_FABRIC")
             .output()
@@ -297,4 +303,94 @@ fn auto_skips_named_hosts_and_needs_enough_machines() {
     let head_auto = nodes_recipe("bad", &["local"], "x").replacen("host = \"local\"", "host = \"auto\"", 1);
     let err = d.add("bad", &head_auto).unwrap_err();
     assert!(err.contains("the head needs a host"), "{err}");
+}
+
+#[test]
+fn placeholders_leave_shell_and_json_braces_alone() {
+    assert_eq!(vars::names("--port={port} --rpc {peer2_addr}:50052"), ["port", "peer2_addr"]);
+    assert!(vars::names("${HOME}/b ${WORKER_IP:?set it} {\"method\":\"mtp\"} {Upper} {a b} {}").is_empty());
+    assert_eq!(vars::names("{{model}}"), ["model"]);
+    assert_eq!(vars::peer_index("peer_addr"), Some(1));
+    assert_eq!(vars::peer_index("peer3_host"), Some(3));
+    for not in ["peer1_addr", "peer_ip", "peers_addr", "peer2"] {
+        assert_eq!(vars::peer_index(not), None, "{not}");
+    }
+    let v = vars::peer_vars(&[("gigabyte".into(), "10.0.0.2".into()), ("ember".into(), "10.0.1.2".into())]);
+    let want =
+        [("peer2_addr", "10.0.1.2"), ("peer2_host", "ember"), ("peer_addr", "10.0.0.2"), ("peer_host", "gigabyte")];
+    assert_eq!(v.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(), want);
+}
+
+proptest! {
+    /// Every `{name}` in a text is a placeholder unless a shell owns it (`${…}`).
+    #[test]
+    fn placeholders_are_found_unless_a_shell_owns_them(
+        parts in prop::collection::vec(("[a-z][a-z0-9_]{0,12}", "[ -#%-z|~]{0,8}", any::<bool>()), 0..6)
+    ) {
+        let text: String = parts
+            .iter()
+            .map(|(name, filler, shell)| format!("{filler}{}{{{name}}}", if *shell { "$" } else { "" }))
+            .collect();
+        let want: Vec<&str> = parts.iter().filter(|(_, _, shell)| !shell).map(|(n, _, _)| n.as_str()).collect();
+        prop_assert_eq!(vars::names(&text), want);
+    }
+}
+
+#[test]
+fn nodes_get_their_peers_in_node_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = Demo::new(tmp.path(), "ring4", 4);
+    let body = "{peer_host}={peer_addr} {peer2_host}={peer2_addr}";
+    d.add("peers", &nodes_recipe("peers", &["auto", "auto"], body)).unwrap();
+    let plan = d.run(&["use", "peers", "--dry-run"]);
+    // The head on spark1 reaches w1 (spark2) and w2 (spark4) on their cables.
+    assert!(plan.contains("echo head spark2=10.40.1.2 spark4=10.40.4.1"), "{plan}");
+    // w1 on spark2: the head, then w2 across the ring (through spark1).
+    assert!(plan.contains("echo w1 spark1=10.40.1.1 spark4=10.40.4.1"), "{plan}");
+    // w2 on spark4: the head, then w1.
+    assert!(plan.contains("echo w2 spark1=10.40.4.2 spark2=10.40.1.2"), "{plan}");
+
+    // A 2-node recipe has one peer per node.
+    d.add("pair", &nodes_recipe("pair", &["auto"], "{peer2_addr}")).unwrap();
+    let err = d.fail(&["use", "pair", "--dry-run"]);
+    assert!(err.contains("{peer2_addr}") && err.contains("1 peer"), "{err}");
+}
+
+/// A wrapped recipe (`./start.sh` drives the other Sparks itself) with
+/// environment lines `env` and, when given, `[hardware] hosts`.
+fn wrapped(name: &str, hosts: Option<u32>, env: &str) -> String {
+    let hw = hosts.map(|h| format!("[hardware]\nhosts = {h}\n")).unwrap_or_default();
+    format!("name = \"{name}\"\n[engine]\nname = \"custom\"\ncommand = [\"./start.sh\"]\nport = 8890\n[engine.env]\n{env}\n{hw}")
+}
+
+#[test]
+fn wrapped_scripts_get_the_sparks_lmdeck_picks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = Demo::new(tmp.path(), "ring4", 4);
+    let env = "WORKER = \"{user}@{peer_addr}\"\nWORKER2 = \"{user}@{peer2_addr}\"\nFABRIC_PEER = \"{peer_addr}\"\n\
+               NAMES = \"{peer_host},{peer2_host}\"\nAT = \"{home}/cache\"";
+    d.add("tf3", &wrapped("tf3", Some(3), env)).unwrap();
+    let plan = d.run(&["use", "tf3", "--dry-run"]);
+    let home = tmp.path().join("home");
+    for want in [
+        "env:  WORKER=tester@10.40.1.2".to_string(),
+        "env:  WORKER2=tester@10.40.4.1".to_string(),
+        "env:  FABRIC_PEER=10.40.1.2".to_string(),
+        "env:  NAMES=spark2,spark4".to_string(),
+        format!("env:  AT={}/cache", home.display()),
+    ] {
+        assert!(plan.contains(&want), "missing {want:?} in\n{plan}");
+    }
+
+    // Peers need the Spark count, and only that many exist.
+    d.add("nohosts", &wrapped("nohosts", None, "WORKER = \"{peer_addr}\"")).unwrap();
+    let err = d.fail(&["use", "nohosts", "--dry-run"]);
+    assert!(err.contains("{peer_addr}") && err.contains("hosts"), "{err}");
+    d.add("toofar", &wrapped("toofar", Some(3), "W3 = \"{peer3_addr}\"")).unwrap();
+    let err = d.fail(&["use", "toofar", "--dry-run"]);
+    assert!(err.contains("{peer3_addr}") && err.contains("2 peer"), "{err}");
+    // More Sparks than the fabric has.
+    d.add("six", &wrapped("six", Some(6), "W = \"{peer_addr}\"")).unwrap();
+    let err = d.fail(&["use", "six", "--dry-run"]);
+    assert!(err.contains("only 3") && err.contains("hosts = 6"), "{err}");
 }

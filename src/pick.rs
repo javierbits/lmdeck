@@ -1,4 +1,6 @@
-//! Picking machines on the ConnectX-7 fabric for `host = "auto"` in `[[nodes]]`.
+//! Picking machines on the ConnectX-7 fabric: workers for `host = "auto"` in
+//! `[[nodes]]`, and the peers a wrapped recipe's own scripts drive
+//! (`[hardware] hosts`).
 //!
 //! The candidates for a head are the machines with a CX7 path to it, best
 //! first. On a switchless ring: its cable neighbours (next, then previous in
@@ -13,9 +15,11 @@
 use anyhow::{anyhow, bail, Result};
 use std::borrow::Cow;
 
+use crate::config::Config;
 use crate::deck::Deck;
 use crate::fabric::{Graph, LinkKind, ShapeKind};
 use crate::hosts::{HostsFile, LOCAL};
+use crate::paths::Paths;
 use crate::recipe::{NodeRole, Recipe, AUTO};
 
 /// Whether `host` has a CX7 port on `graph`: a member of a CX7 segment, or an
@@ -26,10 +30,10 @@ pub fn on_cx7(graph: &Graph, host: &str) -> bool {
 }
 
 /// This machine (`local`), then every hosts.toml host: the rack order.
-pub fn rack(deck: &Deck) -> Vec<String> {
-    let node = deck.cfg.node_name();
+pub fn rack(paths: &Paths, cfg: &Config) -> Vec<String> {
+    let node = cfg.node_name();
     let mut keys = vec![LOCAL.to_string()];
-    for e in HostsFile::load(&deck.paths).map(|f| f.hosts).unwrap_or_default() {
+    for e in HostsFile::load(paths).map(|f| f.hosts).unwrap_or_default() {
         let k = if crate::remote::is_local(&e.name, &node) { LOCAL.to_string() } else { e.name };
         if !keys.contains(&k) {
             keys.push(k);
@@ -111,7 +115,7 @@ pub fn resolve<'a>(deck: &Deck, r: &'a Recipe) -> Result<(Cow<'a, Recipe>, Optio
     let head =
         r.nodes.iter().find(|n| n.role == NodeRole::Head).map(|n| key(&n.host)).ok_or_else(|| anyhow!("no head"))?;
     let used: Vec<String> = r.nodes.iter().filter(|n| n.host != AUTO).map(|n| key(&n.host)).collect();
-    let rack = rack(deck);
+    let rack = rack(&deck.paths, &deck.cfg);
     let graph = crate::topology::graph_for(&deck.paths, &deck.cfg, &rack);
     let picked = choose(&graph, &rack, &head, &used, auto.len(), &show).map_err(|e| {
         anyhow!(
@@ -127,4 +131,45 @@ pub fn resolve<'a>(deck: &Deck, r: &'a Recipe) -> Result<(Cow<'a, Recipe>, Optio
         }
     }
     Ok((Cow::Owned(out), Some(graph)))
+}
+
+/// The Sparks a wrapped recipe's scripts drive, as [`peers`] picked them.
+#[derive(Debug, Default)]
+pub struct Peers {
+    /// Each one's name and the CX7 address this machine reaches it on, in rank order.
+    pub hosts: Vec<(String, String)>,
+    /// Planning notes (a peer reached through another Spark).
+    pub warnings: Vec<String>,
+}
+
+/// The peers of a wrapped recipe whose own scripts drive `[hardware] hosts`
+/// Sparks: the other machines, picked around this one the way `host =
+/// "auto"` picks workers. None, without asking the fabric, when the recipe
+/// uses no peer placeholder.
+pub fn peers(paths: &Paths, cfg: &Config, r: &Recipe) -> Result<Peers> {
+    if crate::vars::peer_past(r.engine.texts(), 0).is_none() {
+        return Ok(Peers::default());
+    }
+    let hosts = r.hardware.hosts.unwrap_or(1) as usize;
+    if let Some(p) = crate::vars::peer_past(r.engine.texts(), hosts - 1) {
+        bail!(
+            "{}: {{{p}}} names a peer past the {} peer(s) that [hardware] hosts = {hosts} gives (hosts counts the Sparks its scripts drive, this one included)",
+            r.name,
+            hosts - 1
+        );
+    }
+    let node = cfg.node_name();
+    let show = |h: &str| if h == LOCAL { node.clone() } else { h.to_string() };
+    let rack = rack(paths, cfg);
+    let graph = crate::topology::graph_for(paths, cfg, &rack);
+    let picked = choose(&graph, &rack, LOCAL, &[LOCAL.to_string()], hosts - 1, &show).map_err(|e| {
+        anyhow!("{}: [hardware] hosts = {hosts} needs {} more Spark(s) for its peers but {e:#}", r.name, hosts - 1)
+    })?;
+    let mut out = Peers::default();
+    for p in &picked {
+        let link = crate::cluster::link_for(&graph, LOCAL, p, &show, &mut out.warnings);
+        let addr = link.as_ref().and_then(|l| l.sides(LOCAL)).map(|(_, far)| far.ip.clone());
+        out.hosts.push((show(p), addr.ok_or_else(|| anyhow!("{}: no CX7 path to {}", r.name, show(p)))?));
+    }
+    Ok(out)
 }

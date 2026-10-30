@@ -38,6 +38,7 @@ pub mod tui;
 pub mod ui;
 pub mod updates;
 pub mod util;
+pub mod vars;
 pub mod web;
 pub mod weights;
 pub mod wrap;

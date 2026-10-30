@@ -4,7 +4,7 @@
 //! lmdeck would run, which is what `recipe show` and `--dry-run` print and
 //! what the unit tests pin.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -285,6 +285,8 @@ pub struct PlanCtx {
     /// The CX7 fabric shape (`ring`, `switch`, ...) when the caller detected
     /// one: picks `engine.command_by_fabric` and fills `{fabric}`.
     pub fabric: Option<String>,
+    /// More placeholder values the caller planned (a wrapped recipe's peers).
+    pub vars: BTreeMap<String, String>,
 }
 
 impl PlanCtx {
@@ -312,7 +314,14 @@ impl PlanCtx {
             checkouts_dir: crate::paths::Paths::from_env().checkouts_dir(),
             port: None,
             fabric: None,
+            vars: BTreeMap::new(),
         }
+    }
+
+    /// [`PlanCtx`] that also fills `vars` (see [`crate::pick::peers`]).
+    pub fn with_vars(mut self, vars: BTreeMap<String, String>) -> Self {
+        self.vars = vars;
+        self
     }
 
     /// [`PlanCtx`] planning on a pre-computed port (see `deck::planned_ports`).
@@ -418,6 +427,13 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     vars.insert("repo", repo.clone());
     vars.insert("revision", revision.clone());
     vars.insert("fabric", ctx.fabric.clone().unwrap_or_default());
+    vars.insert("home", ctx.home.display().to_string());
+    if r.engine.texts().any(|t| t.contains("{user}")) {
+        let user =
+            crate::vars::login().ok_or_else(|| anyhow!("{}: {{user}} needs this machine's login name", r.name))?;
+        vars.insert("user", user);
+    }
+    vars.extend(ctx.vars.iter().map(|(k, v)| (k.as_str(), v.clone())));
     // The working directory: a [source] checkout (a relative `dir` resolves
     // inside it), else `dir` as written.
     let checkout = r.source.as_ref().map(|_| checkout_dir(&ctx.checkouts_dir, &r.name));
@@ -741,6 +757,7 @@ mod tests {
             checkouts_dir: PathBuf::from("/c/checkouts"),
             port: None,
             fabric: None,
+            vars: BTreeMap::new(),
         }
     }
 

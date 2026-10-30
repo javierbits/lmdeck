@@ -604,7 +604,35 @@ Placeholders in `args` and `command`: `{name}`, `{port}`, `{ctx}`, `{model}`,
 `{models_dir}`, `{host}`, `{repo}`, `{revision}`. `custom` recipes also get
 `{dir}` (the working directory) and `{container}`, and the placeholders work in
 `env`, `stop` and `logs` too. `{fabric}` is the detected CX7 fabric shape for
-recipes that use `command_by_fabric`.
+recipes that use `command_by_fabric`. `{user}` is the login name and `{home}`
+the home directory of the machine the command runs on (for `ssh {user}@…`
+lines and paths under home).
+
+A wrapped recipe whose own scripts drive several Sparks (`[hardware] hosts =
+N`) gets the other Sparks as placeholders, so it needn't name your machines:
+`{peer_addr}` and `{peer_host}` for the first, `{peer2_addr}` /
+`{peer2_host}` for the second, and so on up to N-1 (there is no `peer1`).
+lmdeck picks the N-1 Sparks around this one the way a `[[nodes]]` worker's
+`host = "auto"` does (on a ring: the cable neighbours, next then previous,
+then onward), in rank order. `{peer…_addr}` is that Spark's ConnectX-7
+address as this machine reaches it, `{peer…_host}` its hosts.toml name. A
+placeholder past N-1, or fewer Sparks on the fabric than N-1, fails the plan
+with a message saying which. A recipe without peer placeholders doesn't ask
+the fabric at all.
+
+```toml
+[hardware]
+hosts = 3                      # this Spark and two more
+
+[engine.env]
+WORKER       = "{user}@{peer_addr}"
+FABRIC_PEER  = "{peer_addr}"
+WORKER2      = "{user}@{peer2_addr}"
+FABRIC_PEER2 = "{peer2_addr}"
+```
+
+`--dry-run` lists the picks (`peers: 1. gigabyte 10.100.128.1, 2. ember 10.100.132.2`)
+and shows the filled `env`.
 
 A `custom` recipe can pick its launcher from the CX7 fabric. lmdeck detects
 the shape across this machine and `hosts.toml` when the recipe starts

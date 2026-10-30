@@ -105,6 +105,19 @@ fn an_explicit_minimum_is_what_each_node_needs() {
     assert!(plan.nodes.iter().all(|n| n.recipe.hardware.min_memory_gb.is_none()));
 }
 
+#[test]
+fn nodes_sharing_a_machine_reach_each_other_on_loopback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut r = split(3, 30.0, "");
+    for n in r.nodes.iter_mut() {
+        n.command = vec!["echo".into(), "{peer_host}@{peer_addr}".into(), "{peer2_host}@{peer2_addr}".into()];
+    }
+    let plan = cluster::plan(&deck(tmp.path()), &r, &Opts::default()).unwrap();
+    for n in &plan.nodes {
+        assert_eq!(n.command_line, "echo ctl@127.0.0.1 ctl@127.0.0.1", "{}", n.name);
+    }
+}
+
 proptest! {
     /// Split over N machines, a model needs size / N on each, which fits a
     /// Spark exactly when the share does.

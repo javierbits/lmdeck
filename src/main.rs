@@ -1321,11 +1321,13 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         .with_fleet(r, || lmdeck::hosts::fleet(&ctx.paths, &hw.platform));
     let port = deck::planned_for(&cat, &ctx.paths, &ctx.cfg, r);
     let fabric = topology::fabric_for(&ctx.paths, &ctx.cfg, r);
+    let peers = lmdeck::pick::peers(&ctx.paths, &ctx.cfg, r)?;
     let plan = engine::plan(
         r,
         &PlanCtx::new(&ctx.cfg, p.local)
             .with_port(Some(port))
-            .with_fabric(fabric.as_ref().map(|f| f.kind.as_str().to_string())),
+            .with_fabric(fabric.as_ref().map(|f| f.kind.as_str().to_string()))
+            .with_vars(lmdeck::vars::peer_vars(&peers.hosts)),
     )?;
 
     if a.dry_run {
@@ -1367,6 +1369,14 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
                     workers.join(", ")
                 );
             }
+        }
+        if !peers.hosts.is_empty() {
+            let list: Vec<String> =
+                peers.hosts.iter().enumerate().map(|(i, (h, a))| format!("{}. {h} {a}", i + 1)).collect();
+            println!("  peers: {}", list.join(", "));
+        }
+        for w in &peers.warnings {
+            println!("  warning: {w}");
         }
         println!("  run:  {}", plan.command_line());
         if plan.detached {
