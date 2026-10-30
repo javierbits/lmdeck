@@ -794,10 +794,17 @@ pub fn run(deck: Deck, opts: WebOptions) -> Result<()> {
         addr.port()
     );
     println!("◆ lmdeck dashboard on {url}");
-    if let Some(t) = &token {
-        println!("  open: {url}#token={t}");
-        println!("  api:  curl -H 'Authorization: Bearer {t}' {url}api/status");
+    match &token {
+        // Only a generated token is shown: a supplied one stays out of logs
+        // and the journal (a service on a peer runs with LMDECK_TOKEN).
+        Some(t) if generated => {
+            println!("  open: {url}#token={t}");
+            println!("  api:  curl -H 'Authorization: Bearer {t}' {url}api/status");
+        }
+        Some(_) => println!("  token required (the one passed with --token / LMDECK_TOKEN)"),
+        None => {}
     }
+
     if !loopback {
         eprintln!(
             "warning: listening on {} exposes start/stop controls to your network{}",
