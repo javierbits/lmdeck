@@ -218,15 +218,20 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
         ) {
             continue;
         }
-        let recipe = cat.entries.iter().find(|f| f.recipe.name == rec.name).map(|f| &f.recipe);
+        // A multi-node recipe's head serves as the recipe; its workers serve no API.
+        let (name, recipe) = match crate::cluster::node_of(cat.entries.iter().map(|f| &f.recipe), &rec.name) {
+            Some((r, crate::cluster::Role::Head)) => (r.name.clone(), Some(r)),
+            Some(_) => continue,
+            None => (rec.name.clone(), cat.entries.iter().find(|f| f.recipe.name == rec.name).map(|f| &f.recipe)),
+        };
         // Every running lane is managed, catalog or not (its hermes entry is
         // rewritten, never preserved as foreign).
-        managed.insert(rec.name.clone());
-        let display = recipe.and_then(|r| r.display_name.clone()).unwrap_or_else(|| rec.name.clone());
+        managed.insert(name.clone());
+        let display = recipe.and_then(|r| r.display_name.clone()).unwrap_or_else(|| name.clone());
         lanes.push(Lane {
-            vision: looks_vision(&rec.name) || looks_vision(&display),
+            vision: looks_vision(&name) || looks_vision(&display),
             ctx: recipe.and_then(|r| r.engine.ctx).unwrap_or(65_536),
-            name: rec.name.clone(),
+            name,
             display,
             host: host.clone(),
             port: rec.port,
@@ -235,6 +240,14 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
     }
     let wanted = cfg.harness.hosts.as_deref();
     for mut lane in remote_lanes(paths, wanted, &cfg.node_name()) {
+        match crate::cluster::node_of(cat.entries.iter().map(|f| &f.recipe), &lane.name) {
+            Some((r, crate::cluster::Role::Head)) => {
+                (lane.name, lane.display) = (r.name.clone(), r.display().to_string());
+                lane.ctx = r.engine.ctx.unwrap_or(65_536);
+            }
+            Some(_) => continue,
+            None => {}
+        }
         if lanes.iter().any(|l| l.name == lane.name) {
             continue;
         }

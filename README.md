@@ -258,6 +258,11 @@ in sparkA's opencode without touching spark2. Each lane gets its own base
 URL; remote lanes are tagged with the host (`glm5.3-flash [Spark2]` in grok).
 An offline host just contributes nothing.
 
+A multi-node (`[[nodes]]`) recipe is one lane named after the recipe, the
+model its head serves (`--served-model-name <recipe>`, `--alias <recipe>`),
+with the head's address and port, wherever the head runs. Its workers serve
+no API and get no lane.
+
 There is also an opt-in mirror: `lmdeck harness export on` writes the same
 `opencode.json` payload to `~/.local/share/opencode-export/` — the copy a
 second machine's pull job can fetch over HTTP (lmdeck serves nothing for

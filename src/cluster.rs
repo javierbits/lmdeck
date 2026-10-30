@@ -265,6 +265,12 @@ pub fn node_name(r: &Recipe, n: &NodeSpec) -> String {
     format!("{}.{}", r.name, n.name)
 }
 
+/// The multi-node recipe among `recipes` that a run named `served_as` is a
+/// node of, and that node's role.
+pub fn node_of<'a>(recipes: impl IntoIterator<Item = &'a Recipe>, served_as: &str) -> Option<(&'a Recipe, Role)> {
+    recipes.into_iter().find_map(|r| r.nodes.iter().find(|n| node_name(r, n) == served_as).map(|n| (r, n.role)))
+}
+
 /// Resolves every node: hosts, links, weights, placeholders.
 pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
     if r.nodes.is_empty() {

@@ -49,6 +49,7 @@ impl Host {
             .env_remove("HF_HOME")
             .env_remove("LMDECK_TOKEN")
             .env_remove("LMDECK_DEMO")
+            .env_remove("LMDECK_NO_SYNC")
             .env_remove("HF_TOKEN");
         for (k, v) in &self.extra_env {
             c.env(k, v);
@@ -308,6 +309,56 @@ fn multi_node_order_reverse_stop_and_failing_worker() {
     assert!(err.contains("w1") && err.contains("worker-broke-on-purpose"), "{err}");
     assert!(err.contains("stopped the 1 node(s) already started"), "{err}");
     assert_eq!(wait_for(&order, &["up head", "stop head"], 15), ["up head", "stop head"]);
+}
+
+/// The provider ids the controller's opencode.json lists after a harness sync.
+fn opencode_lanes(c: &Host) -> Vec<String> {
+    c.run(&["harness", "sync"]);
+    let text = fs::read_to_string(c.dir.join("home/.config/opencode/opencode.json")).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    v["provider"].as_object().map(|p| p.keys().cloned().collect()).unwrap_or_default()
+}
+
+/// A multi-node recipe syncs to the agent harnesses as the model it serves
+/// (its recipe name, `--served-model-name <recipe>`), not as lmdeck's
+/// per-node names, and a worker, which serves no API, not at all.
+#[test]
+fn multi_node_lanes_are_the_recipe_not_its_nodes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let a = serve(Host::new(root, "sa", "[serve]\naccept_recipes = true\n"), &[]);
+    let c = Host::new(root, "ctl", "");
+    fs::create_dir_all(c.dir.join("home/.config/opencode")).unwrap();
+    fs::write(
+        c.dir.join("home/config/hosts.toml"),
+        format!(
+            "[[host]]\nname = \"a\"\nurl = \"{}\"\n\n[[link]]\na = \"local\"\nb = \"a\"\na_addr = \"127.0.0.1\"\nb_addr = \"127.0.0.1\"\na_ifname = \"lo\"\nb_ifname = \"lo\"\nkind = \"cx7\"\n",
+            a.url
+        ),
+    )
+    .unwrap();
+    let order = root.join("order.txt");
+    // The head here, its worker on a.
+    let (duo_port, rev_port) = (free_port(), free_port());
+    c.add_recipe("duo", &cluster_recipe("duo", root, duo_port, free_port(), &order, false));
+    // The other way around: the head on a, the worker here.
+    let rev = cluster_recipe("rev", root, rev_port, free_port(), &order, false)
+        .replace("host = \"local\"", "host = \"HEAD\"")
+        .replace("host = \"a\"", "host = \"local\"")
+        .replace("host = \"HEAD\"", "host = \"a\"");
+    c.add_recipe("rev", &rev);
+    c.run(&["use", "duo"]);
+    c.run(&["use", "rev"]);
+    assert_eq!(opencode_lanes(&c), ["duo", "rev"]);
+    let text = fs::read_to_string(c.dir.join("home/.config/opencode/opencode.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(v["provider"]["duo"]["options"]["baseURL"].as_str().unwrap().ends_with(&format!(":{duo_port}/v1")), "{v}");
+    assert_eq!(v["provider"]["rev"]["options"]["baseURL"], format!("http://127.0.0.1:{rev_port}/v1"), "{v}");
+    assert!(v["provider"]["duo"]["models"].get("duo").is_some(), "{v}");
+    // Stopped, the lane goes.
+    c.run(&["stop", "duo"]);
+    assert_eq!(opencode_lanes(&c), ["rev"]);
+    c.run(&["stop", "rev"]);
 }
 
 /// A fake HF cache entry: `models--org--name/{refs/main, snapshots/<commit>/…}`.

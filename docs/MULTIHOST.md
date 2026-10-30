@@ -77,7 +77,9 @@ Tokens are never written to the repo or logs.
   the README's Harness sync), and every lmdeck also asks its configured
   hosts what *they* are serving: sparkA's opencode lists sparkB's running
   model (base URL pointed at sparkB), no copy involved. `lmdeck harness
-  hosts all|none|NAME…` and `[harness] hosts` choose which hosts count.
+  hosts all|none|NAME…` and `[harness] hosts` choose which hosts count. A
+  `[[nodes]]` recipe syncs as one lane named after the recipe, pointed at
+  its head (not `<recipe>.head`); workers get none.
 
 
 ## 2. Where the weights live
