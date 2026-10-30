@@ -116,7 +116,7 @@ pub fn run_wizard(
     let mut models_dir = cfg.models_dir.clone();
     println!("\n{}", crate::ui::bold("model weights"));
     println!("{}", crate::ui::dim("lmdeck pull downloads here; recipes read `<models_dir>/<repo>/<file>`."));
-    println!("{}", crate::ui::dim("engines that keep their own hub cache (tensorfold, mlx, lmstudio) ignore this —"));
+    println!("{}", crate::ui::dim("engines that keep their own hub cache (tensorfold, mlx, lmstudio) ignore this:"));
     println!("{}", crate::ui::dim("  set HF_HOME too, for those"));
     loop {
         let hint = space_hint(&models_dir);
@@ -149,7 +149,7 @@ pub fn run_wizard(
     for f in &serving {
         let ver = f.version.as_deref().unwrap_or("?");
         let q = format!(
-            "  lmdeck {ver} answers at {} — add it?",
+            "  lmdeck {ver} answers at {}. add it?",
             crate::ui::bold(&format!("http://{}:{port}", f.candidate.ip))
         );
         if !ask_yes(p, &q, true) {
@@ -164,7 +164,7 @@ pub fn run_wizard(
         println!(
             "{}",
             crate::ui::dim(&format!(
-                "  nothing answered on :{port} at {} — those machines need `lmdeck serve`",
+                "  nothing answered on :{port} at {}; those machines need `lmdeck serve`",
                 ips.join(", ")
             ))
         );
@@ -177,7 +177,7 @@ pub fn run_wizard(
         }
     }
     if added.is_empty() {
-        println!("{}", crate::ui::dim("no hosts added — `lmdeck host add <name> <url>` any time."));
+        println!("{}", crate::ui::dim("no hosts added. `lmdeck host add <name> <url>` any time."));
     } else {
         hosts.save(paths)?;
         println!("{} hosts.toml: {}", crate::ui::green("✓"), added.join(", "));
