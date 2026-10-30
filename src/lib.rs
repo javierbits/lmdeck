@@ -26,6 +26,8 @@ pub mod runner;
 pub mod schema;
 pub mod setup;
 pub mod sources;
+pub mod ssh;
+
 pub mod telemetry;
 pub mod theme;
 pub mod topology;

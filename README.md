@@ -60,7 +60,7 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
 `use`, `switch`, `list`, `init`), a short setup runs before anything else:
 
 1. **This machine**: what was detected: platform, CPU, memory, GPUs, engines,
-   and the network ports that matter (ConnectX-7 / RDMA, Tailscale), then a
+   and the ConnectX-7 / RDMA ports, then a
    "does this look right?" confirm.
 2. **Model weights**: where `lmdeck pull` downloads to, shown with the free
    space on that filesystem (the default is `~/models`). Native engines that
@@ -68,12 +68,17 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    `HF_HOME` too if you want everything off the boot disk. Any time:
    `lmdeck init --models-dir /mnt/nvme/models`, `LMDECK_MODELS_DIR`, or the
    `models_dir` key in config.toml.
-3. **The cluster**: the wizard probes the neighbours on your CX7 ports (and
-   sweeps those subnets when the neighbour table is silent), plus your
-   Tailscale peers, for an `lmdeck serve` on port 7979, and offers to add each
-   one to `hosts.toml` with a name and token. The other machines must run
-   `lmdeck serve`; without it they can't be driven or measured (see
-   [docs/MULTIHOST.md](docs/MULTIHOST.md)).
+3. **The cluster**: the wizard looks for the other Sparks over the
+   ConnectX-7 links only: the neighbours on each CX7 port (a sweep of the
+   subnet when the neighbour table is silent) and the subnets routed through
+   those ports, which is how a ring reaches the Spark across from it. Each
+   address that answers on ssh or on `lmdeck serve` (port 7979) is grouped
+   into one machine by its SSH host key, so two cables to the same Spark are
+   one host, and named by its real hostname (read over ssh, or reported by
+   `lmdeck serve`). With no hostname it asks; it never makes one up. The
+   other machines must run `lmdeck serve`; without it they can't be driven or
+   measured (see [docs/MULTIHOST.md](docs/MULTIHOST.md)).
+
 4. **Recipe sources**: repos to `lmdeck add <name>` from
    (`github:owner/repo`, `hf:owner/repo`, a URL, a local directory). There is
    no default source; the built-in recipes are always there.

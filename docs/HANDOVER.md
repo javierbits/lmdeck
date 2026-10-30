@@ -57,7 +57,8 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - `examples/ornith-122b-awq-lmdeploy.toml`: LMDeploy-in-Docker example with a clearly marked **placeholder** model repo (`<your-org>/…`). Not a built-in.
   - The health check polls `/v1/models`.
   - Servers are detached processes. Stopping sends SIGTERM to the process group, then SIGKILL after 20 s. Docker servers stop with `docker stop`, LM Studio with `lms unload`.
-- **First-run setup** (`src/setup.rs`): runs once before the first interactive command. It shows the detected machine (platform, memory, GPUs, engines, CX7/RDMA and Tailscale ports), asks for the models dir (with free space), probes CX7 neighbours, their subnets and Tailscale peers for `lmdeck serve` on 7979 and offers to add each to `hosts.toml`, then asks for recipe sources. `[setup] done = true` in config.toml ends it; `LMDECK_NO_SYNC=1` skips it.
+- **First-run setup** (`src/setup.rs`): runs once before the first interactive command. It shows the detected machine (platform, memory, GPUs, engines, CX7/RDMA ports), asks for the models dir (with free space), then finds the other Sparks over CX7 only (neighbours, a sweep of silent subnets, and subnets routed through a CX7 port), groups addresses by SSH host key, names each by its hostname (ssh, `lmdeck serve`'s `/api/health`, ssh config, reverse DNS; never invented) and offers to add each to `hosts.toml`, then asks for recipe sources. No Tailscale anywhere in it. SSH goes through `src/ssh.rs` (`Ssh` trait; tests use a mock).
+ `[setup] done = true` in config.toml ends it; `LMDECK_NO_SYNC=1` skips it.
 - **CLI commands:**
   - `list [-l|-d|-a] [--json]`
   - `use`/`on`/`start` and `switch`, both with `--dry-run` and `--force`

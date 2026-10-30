@@ -280,7 +280,12 @@ fn handle(st: &State, mut req: Request) {
         return error(req, 404, "not found");
     };
     if api == "health" {
-        return json_reply(req, 200, &json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}));
+        // The hostname lets the setup wizard on another Spark name this one.
+        return json_reply(
+            req,
+            200,
+            &json!({"ok": true, "version": env!("CARGO_PKG_VERSION"), "host": crate::util::hostname()}),
+        );
     }
     if let Some(tok) = &st.token {
         let given = header(&req, "Authorization")

@@ -755,7 +755,7 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
                     Err(err) => println!(
                         "  {} not reachable yet: {err}\n  {}",
                         yellow("○"),
-                        dim("on that machine run `lmdeck serve --host <its tailscale/LAN IP> --token <token>`")
+                        dim("on that machine run `lmdeck serve --host <its CX7 or LAN IP> --token <token>`")
                     ),
                 }
             }
