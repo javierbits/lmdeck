@@ -51,7 +51,10 @@ CONTAINER_NAME = "{container}"
 ring = ["./start-switchless.sh"]
 
 [hardware]
+# Mia's scripts drive all four Sparks from this one.
+hosts = 4
 min_memory_gb = 100
+
 os = ["linux"]
 arch = ["aarch64"]
 accelerator = ["nvidia"]

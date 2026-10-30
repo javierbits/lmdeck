@@ -26,6 +26,98 @@ pub struct Detected {
     /// start.sh hands the server off and exits (`docker run -d`, `nohup`, `&`, …).
     pub detached: bool,
     pub uses_docker: bool,
+    /// Root `start*.sh` scripts besides `start.sh`, sorted.
+    pub other_starts: Vec<String>,
+    /// Fabric (`ring`, `mesh`, `switch`, `single`) → the script its name points at.
+    pub by_fabric: BTreeMap<String, String>,
+    /// Start scripts whose name doesn't say which fabric they're for.
+    pub unmatched: Vec<String>,
+    /// Sparks the scripts use, from the repo name or README ("4x DGX Sparks").
+    pub hosts: Option<u32>,
+    /// The largest download the README mentions, in GB (for ready_timeout).
+    pub weights_gb: Option<u32>,
+}
+
+/// The fabrics a start script is for, from its name: `start-switchless.sh`
+/// and `start-ring.sh` → ring (and a 3-host mesh), `start-roce.sh` → switch.
+pub fn fabrics_for(file: &str) -> &'static [&'static str] {
+    let s = file.to_ascii_lowercase();
+    if s.contains("switchless") || s.contains("ring") {
+        &["ring", "mesh"]
+    } else if s.contains("mesh") {
+        &["mesh"]
+    } else if s.contains("roce") || s.contains("switch") {
+        &["switch"]
+    } else if s.contains("single") || s.contains("solo") {
+        &["single"]
+    } else {
+        &[]
+    }
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '~'))
+        .map(|w| w.trim_matches(['.', '~']).to_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn count_word(w: &str) -> Option<u32> {
+    let n = match w {
+        "two" | "dual" => 2,
+        "three" => 3,
+        "four" | "quad" => 4,
+        "six" => 6,
+        "eight" => 8,
+        _ => w.strip_suffix(['x', '×']).unwrap_or(w).parse().ok()?,
+    };
+    (1..=64).contains(&n).then_some(n)
+}
+
+/// "4x DGX Sparks", "4-DGX-Sparks", "four DGX Sparks", "2 x Spark": the
+/// largest count in `text`.
+pub fn sparks_in(text: &str) -> Option<u32> {
+    let w = words(text);
+    let mut best = None;
+    for i in 0..w.len() {
+        if w[i] != "spark" && w[i] != "sparks" {
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && matches!(w[j - 1].as_str(), "dgx" | "x" | "×" | "nvidia") {
+            j -= 1;
+        }
+        if let Some(n) = j.checked_sub(1).and_then(|k| count_word(&w[k])) {
+            best = best.max(Some(n));
+        }
+    }
+    best
+}
+
+/// The largest "~510 GB" / "1.2 TB" in `text`, in GB.
+pub fn largest_gb(text: &str) -> Option<u32> {
+    let w = words(text);
+    let mut best = None;
+    for pair in w.windows(2) {
+        let scale = match pair[1].as_str() {
+            "gb" | "gib" => 1.0,
+            "tb" | "tib" => 1000.0,
+            _ => continue,
+        };
+        if let Ok(v) = pair[0].parse::<f64>() {
+            let gb = (v * scale).round();
+            if (1.0..100_000.0).contains(&gb) {
+                best = best.max(Some(gb as u32));
+            }
+        }
+    }
+    best
+}
+
+/// How long a first start may take: a minute per GB the README says it
+/// downloads, at least an hour, at most twelve.
+pub fn ready_timeout(d: &Detected) -> u64 {
+    (d.weights_gb.unwrap_or(0) as u64 * 60).clamp(3600, 43200)
 }
 
 /// `NAME="${NAME:-default}"` (also `${NAME-default}`, `${NAME:=default}`,
@@ -91,8 +183,9 @@ fn script_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Looks at a checkout. Fails unless it has `start.sh` and `stop.sh` at the root.
-pub fn detect(dir: &Path) -> Result<Detected> {
+/// Looks at a checkout of `repo`. Fails unless it has `start.sh` and
+/// `stop.sh` at the root.
+pub fn detect(dir: &Path, repo: &str) -> Result<Detected> {
     let missing: Vec<&str> = ["start.sh", "stop.sh"].into_iter().filter(|f| !dir.join(f).is_file()).collect();
     if !missing.is_empty() {
         bail!(
@@ -143,7 +236,47 @@ pub fn detect(dir: &Path) -> Result<Detected> {
     if !d.detached && d.uses_docker {
         d.detached = all.contains("docker run -d") || all.contains("--detach") || all.contains("compose up -d");
     }
+    if let Ok(rd) = fs::read_dir(dir) {
+        let mut v: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|n| n.starts_with("start") && n.ends_with(".sh") && n != "start.sh")
+            .collect();
+        v.sort();
+        d.other_starts = v;
+    }
+    for s in &d.other_starts {
+        let kinds = fabrics_for(s);
+        if kinds.is_empty() {
+            d.unmatched.push(s.clone());
+        }
+        for k in kinds {
+            d.by_fabric.entry(k.to_string()).or_insert_with(|| s.clone());
+        }
+    }
+    let readme = ["README.md", "README", "readme.md", "Readme.md", "README.txt"]
+        .iter()
+        .find_map(|f| fs::read_to_string(dir.join(f)).ok())
+        .unwrap_or_default();
+    let name = repo.trim_end_matches('/').trim_end_matches(".git").rsplit(['/', ':']).next().unwrap_or("");
+    d.hosts = sparks_in(name).or_else(|| sparks_in(&readme)).filter(|n| *n > 1);
+    d.weights_gb = largest_gb(&readme);
     Ok(d)
+}
+
+/// A one-line note when start scripts were found that `lmdeck add` couldn't
+/// place, naming them and the recipe file to edit.
+pub fn script_note(d: &Detected, file: &Path) -> Option<String> {
+    if d.unmatched.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "this repo has more than one start script: start.sh, {}. lmdeck runs ./start.sh; if one of the others is for a particular fabric, set it under [engine.command_by_fabric] in {} (e.g. ring = [\"./{}\"])",
+        d.other_starts.join(", "),
+        file.display(),
+        d.unmatched[0]
+    ))
 }
 
 /// `github:o/r`, `o/r`, `https://github.com/o/r[.git][/tree/<ref>]`, any git
@@ -256,8 +389,13 @@ pub fn recipe_toml(name: &str, display: &str, pin: &SourcePin, d: &Detected) -> 
         }
         (None, _) => {}
     }
-    t.push_str("# First runs often build images or download weights before the server answers.\n");
-    t.push_str("ready_timeout = 3600\n");
+    match d.weights_gb {
+        Some(gb) if ready_timeout(d) > 3600 => t.push_str(&format!(
+            "# The README mentions ~{gb} GB to download: the first start may take hours before the port opens.\n"
+        )),
+        _ => t.push_str("# First runs often build images or download weights before the server answers.\n"),
+    }
+    t.push_str(&format!("ready_timeout = {}\n", ready_timeout(d)));
     let mut env: Vec<(String, &str)> = vec![];
     if let Some(v) = &d.port_var {
         env.push((v.clone(), "{port}"));
@@ -274,6 +412,27 @@ pub fn recipe_toml(name: &str, display: &str, pin: &SourcePin, d: &Detected) -> 
     }
     for (k, v) in env {
         t.push_str(&format!("{k} = {}\n", q(v)));
+    }
+    if !d.other_starts.is_empty() {
+        t.push_str("\n# The repo ships more than one start script. lmdeck runs the one for the fabric it\n");
+        t.push_str("# detects at start (`lmdeck use <name> --dry-run` shows which), else ./start.sh.\n");
+        t.push_str("[engine.command_by_fabric]\n");
+        for (k, s) in &d.by_fabric {
+            t.push_str(&format!("{k} = [{}]\n", q(&format!("./{s}"))));
+        }
+        for s in &d.unmatched {
+            t.push_str(&format!(
+                "# TODO: {s} isn't matched to a fabric; if it is for one, e.g. ring = [{}]\n",
+                q(&format!("./{s}"))
+            ));
+        }
+    }
+    if let Some(n) = d.hosts {
+        t.push_str("\n[hardware]\n");
+        t.push_str(&format!(
+            "# The repo runs on {n} Sparks; its scripts reach the others themselves, so lmdeck starts it here.\n"
+        ));
+        t.push_str(&format!("hosts = {n}\n"));
     }
     t
 }
@@ -345,7 +504,7 @@ DASH=${DASH-7}
                 "CONTAINER_NAME=\"${CONTAINER_NAME:-srv-1}\"\nHOST=\"${HOST:-0.0.0.0}\"\nPORT=\"${PORT:-8888}\"\n",
             ),
         ]);
-        let det = detect(d.path()).unwrap();
+        let det = detect(d.path(), "x").unwrap();
         assert_eq!(det.port, Some(8888));
         assert_eq!(det.container.as_deref(), Some("srv-1"));
         assert!(det.detached && det.uses_docker);
@@ -365,7 +524,7 @@ DASH=${DASH-7}
     #[test]
     fn leaves_todos_when_unsure() {
         let d = checkout(&[("start.sh", "exec ./server --port 9000\n"), ("stop.sh", "pkill server\n")]);
-        let det = detect(d.path()).unwrap();
+        let det = detect(d.path(), "x").unwrap();
         assert_eq!((det.port, det.detached, det.container.clone()), (None, false, None));
         let pin = SourcePin { repo: "/tmp/x", git_ref: "main", branch: Some("main") };
         let text = recipe_toml("x", "x", &pin, &det);
@@ -373,6 +532,57 @@ DASH=${DASH-7}
         assert!(Recipe::parse(&text, "x").is_ok(), "{text}");
 
         let d = checkout(&[("start.sh", "x\n")]);
-        assert!(detect(d.path()).unwrap_err().to_string().contains("stop.sh"));
+        assert!(detect(d.path(), "x").unwrap_err().to_string().contains("stop.sh"));
+    }
+
+    #[test]
+    fn counts_sparks_and_gigabytes() {
+        assert_eq!(sparks_in("DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"), Some(4));
+        assert_eq!(sparks_in("runs on four DGX Sparks over CX7"), Some(4));
+        assert_eq!(sparks_in("glm-5.3-flash-exl3-2x-spark-tensorfold"), Some(2));
+        assert_eq!(sparks_in("2 x Spark"), Some(2));
+        assert_eq!(sparks_in("download once on spark1, then copy to spark2"), None);
+        assert_eq!(largest_gb("the ~510 GB checkpoint, ~80 GiB per Spark"), Some(510));
+        assert_eq!(largest_gb("1.2 TB of weights"), Some(1200));
+        assert_eq!(largest_gb("no sizes here"), None);
+    }
+
+    #[test]
+    fn start_scripts_map_to_fabrics_and_the_rest_get_a_note() {
+        let d = checkout(&[
+            ("start.sh", "docker run -d img\n"),
+            ("start-switchless.sh", "FABRIC_EXPECT=ring ./start.sh\n"),
+            ("start-debug.sh", "x\n"),
+            ("stop.sh", "x\n"),
+            ("README.md", "# Big model\nNeeds four DGX Sparks. The first run downloads the ~510 GB checkpoint.\n"),
+        ]);
+        let det = detect(d.path(), "https://github.com/MiaAI-Lab/Some-Model").unwrap();
+        assert_eq!(det.other_starts, ["start-debug.sh", "start-switchless.sh"]);
+        assert_eq!(det.by_fabric["ring"], "start-switchless.sh");
+        assert_eq!(det.by_fabric["mesh"], "start-switchless.sh");
+        assert_eq!(det.unmatched, ["start-debug.sh"]);
+        assert_eq!((det.hosts, det.weights_gb), (Some(4), Some(510)));
+        let pin = SourcePin { repo: "https://github.com/MiaAI-Lab/Some-Model", git_ref: "abc", branch: None };
+        let text = recipe_toml("m", "m", &pin, &det);
+        let r = Recipe::parse(&text, "m").unwrap();
+        assert_eq!(r.engine.command, ["./start.sh"]);
+        assert_eq!(r.engine.command_by_fabric["ring"], ["./start-switchless.sh"]);
+        assert_eq!(r.engine.command_by_fabric["mesh"], ["./start-switchless.sh"]);
+        assert!(!r.engine.command_by_fabric.contains_key("switch"));
+        assert_eq!(r.engine.ready_timeout, Some(30600));
+        assert_eq!(r.hardware.hosts, Some(4));
+        assert_eq!(r.machines(), 4);
+        assert_eq!(r.nodes(), 1, "its scripts reach the others; lmdeck starts it here");
+        assert!(text.contains("TODO: start-debug.sh"), "{text}");
+        let note = script_note(&det, Path::new("/c/m.toml")).unwrap();
+        assert!(note.contains("start.sh, start-debug.sh, start-switchless.sh") && note.contains("/c/m.toml"), "{note}");
+
+        // The name wins over the README; one start script means no table and no note.
+        let d = checkout(&[("start.sh", "x\n"), ("stop.sh", "x\n"), ("README.md", "tested on 8 Sparks too\n")]);
+        let det = detect(d.path(), "o/Model-2x-DGX-Spark").unwrap();
+        assert_eq!(det.hosts, Some(2));
+        assert!(script_note(&det, Path::new("x")).is_none());
+        let text = recipe_toml("m", "m", &SourcePin { repo: "x", git_ref: "y", branch: None }, &det);
+        assert!(!text.contains("command_by_fabric") && text.contains("ready_timeout = 3600"), "{text}");
     }
 }

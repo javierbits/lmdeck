@@ -712,3 +712,14 @@ fn doctor_reports_newer_schemas_and_skips_them() {
     assert!(stderr.contains("needs lmdeck newer than") && stderr.contains("using the defaults"), "{stderr}");
     assert!(stdout.contains("config.toml"), "{stdout}");
 }
+
+#[test]
+fn adding_a_repo_a_builtin_wraps_adds_the_builtin_offline() {
+    let e = Env::new();
+    let out = e.run(&["add", "MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"]);
+    assert!(out.contains("built-in recipe deepseek-v4.1-flash-1017-4x-spark-tensorfold already wraps"), "{out}");
+    let text =
+        fs::read_to_string(e.path("home/config/recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml")).unwrap();
+    assert!(text.contains("start-switchless.sh") && text.contains("hosts = 4"), "{text}");
+    assert!(!e.path("home/cache/checkouts").join("deepseek-v4.1-flash-1017-4x-spark-tensorfold").exists());
+}

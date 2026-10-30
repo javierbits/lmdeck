@@ -343,6 +343,11 @@ pub struct HardwareReq {
     /// the host that runs each one. A value above 1 with no `[[nodes]]` is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodes: Option<u32>,
+    /// How many Sparks a wrapped recipe's own scripts use. They reach the
+    /// other machines themselves (ssh, docker), so lmdeck starts it on this
+    /// one only; the count is for the fit check ("needs 4 Sparks · 1 online").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<u32>,
 }
 
 impl HardwareReq {
@@ -619,6 +624,9 @@ impl Recipe {
         if self.hardware.nodes == Some(0) {
             bail!("hardware.nodes must be at least 1");
         }
+        if self.hardware.hosts == Some(0) {
+            bail!("hardware.hosts must be at least 1");
+        }
         if !self.nodes.is_empty() {
             let heads = self.nodes.iter().filter(|n| n.role == NodeRole::Head).count();
             if heads != 1 {
@@ -686,6 +694,12 @@ impl Recipe {
 
     pub fn port(&self) -> u16 {
         self.engine.port.unwrap_or_else(|| self.engine.name.default_port())
+    }
+
+    /// How many machines it needs: its `[[nodes]]`, `hardware.nodes`, or the
+    /// Sparks a wrapped recipe's scripts use (`hardware.hosts`).
+    pub fn machines(&self) -> u32 {
+        self.nodes().max(self.hardware.hosts.unwrap_or(1))
     }
 
     pub fn nodes(&self) -> u32 {

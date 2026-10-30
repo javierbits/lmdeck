@@ -583,6 +583,7 @@ os            = ["linux"]    # linux | macos
 arch          = []           # aarch64 | x86_64
 min_compute_capability = "10.0"   # e.g. NVFP4 needs Blackwell (GB10 = 12.1)
 nodes         = 1
+hosts         = 4      # wrapped recipes: Sparks its scripts use (fit check only)
 ```
 
 Placeholders in `args` and `command`: `{name}`, `{port}`, `{ctx}`, `{model}`,
@@ -696,6 +697,18 @@ lmdeck use ornith-1.5-122b-tensorfold --dry-run
 `.env.example` to find the port and Docker container name, pins the commit it
 cloned, and leaves `TODO` comments for whatever it can't tell. Review the file
 it writes in `~/.config/lmdeck/recipes/`.
+
+- More than one `start*.sh` at the root: a script named for a fabric goes
+  under `[engine.command_by_fabric]` (`start-switchless.sh` / `start-ring.sh`
+  → `ring` and `mesh`, `start-roce.sh` → `switch`); `./start.sh` stays the
+  default. Any other start script is listed in a note with the file to edit.
+- "4x DGX Sparks" in the repo name or README sets `[hardware] hosts = 4`, so
+  the fit check knows it needs four Sparks.
+- `ready_timeout` is a minute per GB of the largest download the README
+  mentions (an hour at least, twelve at most).
+- A repo a built-in recipe already wraps gets that recipe instead, unless you
+  pass `--name`.
+
 
 ```toml
 [source]                       # cloned into ~/.cache/lmdeck/checkouts/<recipe>/

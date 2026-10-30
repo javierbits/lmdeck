@@ -260,9 +260,11 @@ mod tests {
         assert_eq!(e.ready_timeout, Some(43200));
         assert_eq!(e.ctx, Some(1_048_576));
         // Mia's start.sh ssh's the workers. Setting hardware.nodes without [[nodes]]
-        // makes `lmdeck use` refuse the recipe.
+        // makes `lmdeck use` refuse the recipe; hardware.hosts only feeds the fit check.
         assert!(r.hardware.nodes.is_none());
         assert_eq!(r.nodes(), 1);
+        assert_eq!(r.machines(), 4);
+
         assert!(r.nodes.is_empty());
         assert_eq!(r.family(), "DeepSeek");
         let src = r.source.unwrap();

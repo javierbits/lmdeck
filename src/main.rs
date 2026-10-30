@@ -2043,6 +2043,28 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
         return add_from_index(ctx, repo, name, git_ref, force);
     }
     let (url, url_ref, default_name) = wrap::parse_repo_arg(repo)?;
+    // A repo a built-in recipe already wraps (tuned by hand) gets that recipe.
+    if name.is_none() && git_ref.is_none() && url_ref.is_none() {
+        let same = |r: &str| r.trim_end_matches('/').trim_end_matches(".git").eq_ignore_ascii_case(&url);
+        let built = catalog::builtin().into_iter().find(|f| f.recipe.source.as_ref().is_some_and(|s| same(&s.repo)));
+        if let Some(f) = built {
+            println!(
+                "{} the built-in recipe {} already wraps this repo; adding that copy {}",
+                cyan("◆"),
+                bold(&f.recipe.name),
+                dim("(pass --name to write a fresh wrapper instead)")
+            );
+            let path = catalog::add_to_deck(&ctx.paths, &f.recipe, force)?;
+            println!(
+                "{} added {} to the deck {}",
+                green("✓"),
+                bold(&f.recipe.name),
+                dim(&format!("({})", path.display()))
+            );
+            println!("  try: lmdeck use {} --dry-run", f.recipe.name);
+            return Ok(());
+        }
+    }
     let name = name.unwrap_or(default_name);
     if !valid_name(&name) {
         bail!("invalid name '{name}': use letters, digits, '.', '_' or '-' (or pass --name)");
@@ -2065,7 +2087,7 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
     println!("{} {} {}", cyan("↓"), url, dim(&format!("→ {}", co.display())));
     let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone(), branch: None };
     let outcome = checkout::sync(&src, &co, true)?;
-    let det = wrap::detect(&co)?;
+    let det = wrap::detect(&co, &url)?;
     let branch = checkout::default_branch(&co);
     // Pin the commit unless a ref was asked for.
     let pinned = wanted_ref.clone().unwrap_or_else(|| outcome.commit().to_string());
@@ -2089,6 +2111,17 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
         found("container", det.container.clone());
     }
     println!("  {:<10} {}", "detached", if det.detached { "yes" } else { "no (TODO: check)" });
+    for (k, s) in &det.by_fabric {
+        println!("  {:<10} ./{s} on a {k}", "launcher");
+    }
+    if let Some(n) = det.hosts {
+        println!("  {:<10} {n} Sparks (its scripts reach the others)", "needs");
+    }
+    println!("  {:<10} {}s", "ready in", wrap::ready_timeout(&det));
+    if let Some(note) = wrap::script_note(&det, &deck_file) {
+        println!("{} {note}", yellow("!"));
+    }
+
     let todos = text.matches("TODO").count();
     if todos > 0 {
         println!("{} {todos} TODO(s) to review in {}", yellow("!"), deck_file.display());
