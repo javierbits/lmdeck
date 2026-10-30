@@ -966,7 +966,8 @@ fn status_cell(s: &Status) -> String {
         Status::Loaded => green("● loaded"),
         Status::Loading => yellow("◐ loading"),
         Status::External => cyan("● external"),
-        Status::PortBusy => yellow("! port busy"),
+        // Not this recipe: some other server holds its port.
+        Status::PortBusy => format!("{} {}", dim("○"), yellow("port taken")),
         Status::Stopped => dim("○ stopped"),
     }
 }
@@ -976,7 +977,7 @@ fn status_tag(s: &Status) -> String {
         Status::Loaded => green("loaded"),
         Status::External => cyan("external"),
         Status::Loading => yellow("loading"),
-        Status::PortBusy => yellow("port busy"),
+        Status::PortBusy => yellow("(port taken by another server)"),
         Status::Stopped => String::new(),
     }
 }
@@ -1039,9 +1040,7 @@ fn deck_table(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool) 
 fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out: bool, group: bool) -> Result<()> {
     let ups = update_views(ctx, entries);
     let mut cache: HashMap<u16, Probe> = HashMap::new();
-    let mut t = Table::new(&["#", "", "name", "engine", "quant", "size", "dl", "port", "origin"])
-        .right(&[0, 5, 7])
-        .max_width(2, 48);
+    let mut t = Table::new(&["#", "", "name", "engine", "quant", "size", "dl", "port", "origin"]).right(&[0, 5, 7]);
     let mut rows = vec![];
     let mut display: Vec<(usize, usize, &'static str, Vec<String>)> = vec![];
     let node = ctx.cfg.node_name();
@@ -1078,14 +1077,20 @@ fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
             "update": update_json(ups.get(&r.name)),
             "weights_on": weights_on, "nodes": nodes,
+            "other_platform": lmdeck::compat::other_platform(r, std::env::consts::OS, std::env::consts::ARCH),
         }));
         let glyph = match st {
             Status::Loaded | Status::External => green("●"),
             Status::Loading => yellow("◐"),
-            Status::PortBusy => yellow("!"),
-            Status::Stopped => dim("○"),
+            Status::PortBusy | Status::Stopped => dim("○"),
         };
-        let mut name = bold(&r.name);
+
+        // Recipes for another platform (MLX on a Spark) stay listed, greyed out.
+        let elsewhere = lmdeck::compat::other_platform(r, std::env::consts::OS, std::env::consts::ARCH);
+        let mut name = match &elsewhere {
+            Some(why) => dim(&format!("{} ({why})", r.name)),
+            None => bold(&r.name),
+        };
         if st != Status::Stopped {
             name = format!("{name} {}", status_tag(&st));
         }
@@ -2022,7 +2027,13 @@ fn browse(
         };
         let speed = e.speed.as_ref().map(|s| format!("{:.1} tok/s", s.tok_s)).unwrap_or_else(|| "–".into());
         println!();
-        println!("{}  {state}  {fit}  {}", bold(&e.name), dim(&format!("{} Spark(s) · {speed}", e.sparks())));
+        let sparks = match e.sparks() {
+            1 => "1 Spark".to_string(),
+            n => format!("{n} Sparks"),
+        };
+        let name = if r.fit == lmdeck::compat::Level::Fail { dim(&e.name) } else { bold(&e.name) };
+        println!("{name}  {state}  {fit}  {}", dim(&format!("{sparks} · {speed}")));
+
         if !e.description.is_empty() {
             println!("  {}", e.description);
         }

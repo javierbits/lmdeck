@@ -35,6 +35,23 @@ pub struct Fleet {
     pub online: u32,
 }
 
+/// When `r` can't run on an `os`/`arch` machine at all (an MLX recipe on a
+/// Spark), a short label for it: `macOS only`, `needs linux`, `needs x86_64`.
+/// Cheap: no hardware probe, so lists can grey such recipes out.
+pub fn other_platform(r: &Recipe, os: &str, arch: &str) -> Option<String> {
+    let req = &r.hardware;
+    let os = normalize_os(os);
+    if !req.os.is_empty() && !req.os.iter().any(|o| normalize_os(o) == os) {
+        let wants: Vec<String> = req.os.iter().map(|o| normalize_os(o)).collect();
+        return Some(if wants == ["macos"] { "macOS only".into() } else { format!("needs {}", wants.join("/")) });
+    }
+    let arch = normalize_arch(arch);
+    if !req.arch.is_empty() && !req.arch.iter().any(|a| normalize_arch(a) == arch) {
+        return Some(format!("needs {}", req.arch.join("/")));
+    }
+    None
+}
+
 /// A GB10 / DGX Spark platform string.
 pub fn is_spark(platform: &str) -> bool {
     let p = platform.to_lowercase();
@@ -271,6 +288,23 @@ mod tests {
         let one = Recipe::parse("name = \"y\"\n[engine]\nname = \"custom\"\ncommand = [\"a\"]\n", "y").unwrap();
         let _ = check(&one, &spark(), None, None).with_fleet(&one, || unreachable!());
         assert!(is_spark("NVIDIA DGX Spark (GB10)") && !is_spark("Apple M4 Max") && !is_spark("iPhone"));
+    }
+
+    #[test]
+    fn mac_only_recipes_are_labelled_on_linux() {
+        let r = |hw: &str| {
+            Recipe::parse(
+                &format!("name = \"x\"\n[engine]\nname = \"custom\"\ncommand = [\"a\"]\n[hardware]\n{hw}\n"),
+                "x",
+            )
+            .unwrap()
+        };
+        let mlx = r("os = [\"macos\"]\narch = [\"aarch64\"]");
+        assert_eq!(other_platform(&mlx, "linux", "aarch64").as_deref(), Some("macOS only"));
+        assert_eq!(other_platform(&mlx, "macos", "aarch64"), None);
+        assert_eq!(other_platform(&mlx, "macos", "x86_64").as_deref(), Some("needs aarch64"));
+        assert_eq!(other_platform(&r("os = [\"linux\"]"), "macos", "aarch64").as_deref(), Some("needs linux"));
+        assert_eq!(other_platform(&r(""), "linux", "aarch64"), None);
     }
 
     fn mac() -> Hardware {

@@ -129,7 +129,11 @@ fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>,
         if gb > have {
             return (
                 Level::Fail,
-                format!("~{gb:.0} GB of weights; {have:.0} GB across {need} machine(s) like this one"),
+                if need == 1 {
+                    format!("~{gb:.0} GB of weights; this machine has {have:.0} GB")
+                } else {
+                    format!("~{gb:.0} GB of weights; {have:.0} GB across {need} machines like this one")
+                },
             );
         }
         if gb > have * 0.85 {

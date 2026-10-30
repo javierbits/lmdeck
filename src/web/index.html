@@ -82,7 +82,8 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:12p
 .r1{display:flex;align-items:center;gap:6px}
 .pill{display:inline-flex;align-items:center;gap:6px;font:700 11px var(--mono);padding:3px 9px;border-radius:99px;color:var(--on-ok);text-transform:lowercase}
 .pill.loaded{background:var(--ok)} .pill.loading{background:var(--warn);color:var(--on-warn)} .pill.external{background:var(--cyan);color:var(--on-info)}
-.pill.port-busy{background:var(--warn);color:var(--on-warn)} .pill.stopped{background:var(--line2);color:var(--muted)} .pill.busy{background:var(--accent);color:var(--on-accent)}
+.pill.port-busy{background:var(--line2);color:var(--warn)}
+ .pill.stopped{background:var(--line2);color:var(--muted)} .pill.busy{background:var(--accent);color:var(--on-accent)}
 .pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
 .pill.loaded .dot,.pill.loading .dot{animation:blink 1.4s infinite}
 @keyframes blink{50%{opacity:.35}}
@@ -363,7 +364,7 @@ function visible(){
     .sort((a, b) => up(b) - up(a)); // running first; sort is stable
 }
 const up = r => ["loaded","loading","external"].includes(r.status);
-const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port busy", stopped:"stopped"};
+const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port taken", stopped:"stopped"};
 
 // Family display order mirrors the Rust FAMILY_RULES; "Other" sorts last.
 const FAMILY_RANKS = ["Qwen","Gemma","DeepSeek","Nemotron","Kimi","GPT-OSS","GLM","Nex","Step","Ornith","MiMo","MiniMax","Llama","Mistral","Phi","Command","Yi","Falcon","SmolLM","OLMo","InternLM","Hunyuan","Granite","Seed","Apertus","Ernie","Grok","RWKV","Apex"];

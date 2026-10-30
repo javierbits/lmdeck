@@ -124,7 +124,8 @@ fn status_pill(r: &RecipeView, busy: bool) -> (&'static str, fn(&Theme) -> Color
         Status::Loaded => ("● running", |t| t.ok),
         Status::Loading => ("◐ loading", |t| t.warn),
         Status::External => ("● extern", |t| t.info),
-        Status::PortBusy => ("! busy", |t| t.warn),
+        // Another server holds this recipe's port; the recipe itself isn't running.
+        Status::PortBusy => ("○ blocked", |t| t.dim),
         Status::Stopped => ("○ stopped", |t| t.dim),
     }
 }
@@ -530,6 +531,13 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     }
     let ctx = r.ctx.map(|c| format!(" · ctx {c}")).unwrap_or_default();
     lines.push(kv("serve", format!("{} · :{}{ctx}", r.engine, r.port), t));
+    if r.status == Status::PortBusy {
+        lines.push(Line::from(Span::styled(
+            format!("port {} is held by another server, so this recipe can't start until it stops", r.port),
+            Style::new().fg(t.warn),
+        )));
+    }
+
     lines.push(Line::from(vec![
         Span::styled(format!("{:<10}", "endpoint"), Style::new().fg(t.muted)),
         Span::styled(r.endpoint.clone(), Style::new().fg(t.info).underlined()),
