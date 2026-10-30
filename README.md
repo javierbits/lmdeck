@@ -96,9 +96,12 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    - then checks that it answers, and adds the host under its hostname.
 
 
-4. **Recipe sources**: repos to `lmdeck add <name>` from
-   (`github:owner/repo`, `hf:owner/repo`, a URL, a local directory). There is
-   no default source; the built-in recipes are always there.
+4. **Recipe sources**: repos that hold lmdeck recipe files (`.toml`), searched
+   alongside the built-ins (`github:owner/repo`, `hf:owner/repo`, a URL, a
+   local directory). There is no default source; the built-in recipes are
+   always there. A model repo with its own start scripts isn't a source: run
+   `lmdeck add <url>` for it instead.
+
 
 Answers are saved to `~/.config/lmdeck/` (`hosts.toml`, `config.toml`) and
 `[setup] done = true` keeps the wizard from asking again; `lmdeck setup` runs

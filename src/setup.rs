@@ -284,9 +284,16 @@ pub fn run_wizard(
         println!("  {} hosts.toml: {}", crate::ui::green("✓"), listed.join(", "));
     }
 
-    // Recipe sources: repos to install from. No default; the built-ins are free.
+    // Recipe sources: collections of recipe files. No default; the built-ins are free.
     println!("\n{}", crate::ui::bold("recipe sources"));
-    println!("{}", crate::ui::dim("repos to `lmdeck add <name>` from; the built-in recipes are always included."));
+    println!(
+        "{}",
+        crate::ui::dim(
+            "repos full of lmdeck recipe files (.toml), searched alongside the built-ins (always included).\n\
+             To run a model repo with its own start scripts, skip this and use `lmdeck add <url>` later."
+        )
+    );
+
     println!("{}", crate::ui::dim("  github:owner/repo · hf:owner/repo · an https URL · a local directory"));
     let mut sources: Vec<(String, String)> = vec![];
     loop {
