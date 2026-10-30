@@ -47,6 +47,7 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         placed_on: None,
         cluster_phase: None,
         cluster_error: None,
+        chat: true,
     }
 }
 

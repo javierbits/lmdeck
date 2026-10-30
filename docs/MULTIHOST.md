@@ -79,7 +79,9 @@ Tokens are never written to the repo or logs.
   model (base URL pointed at sparkB), no copy involved. `lmdeck harness
   hosts all|none|NAME…` and `[harness] hosts` choose which hosts count. A
   `[[nodes]]` recipe syncs as one lane named after the recipe, pointed at
-  its head (not `<recipe>.head`); workers get none.
+  its head (not `<recipe>.head`); workers get none. A recipe with
+  `[harness] chat = false` (not a chat model) is left out wherever it runs:
+  each host's snapshot says so.
 
 
 ## 2. Where the weights live

@@ -394,12 +394,43 @@ pub struct Recipe {
     pub engine: EngineSpec,
     #[serde(default, skip_serializing_if = "HardwareReq::is_empty")]
     pub hardware: HardwareReq,
+    /// `[harness]`: whether agent-harness sync offers it as a chat model.
+    #[serde(default, skip_serializing_if = "HarnessSpec::is_default")]
+    pub harness: HarnessSpec,
     /// Multi-node: how the `[[nodes]]` are brought up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster: Option<ClusterSpec>,
     /// Multi-node: one entry per machine (exactly one `role = "head"`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeSpec>,
+}
+
+/// `[harness]`: how agent-harness sync (`crate::harness`) treats the recipe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessSpec {
+    /// `false`: the server isn't a chat model (a decision or classifier
+    /// server), so harness sync leaves it out. Default `true`.
+    #[serde(default = "HarnessSpec::chats")]
+    pub chat: bool,
+}
+
+impl Default for HarnessSpec {
+    /// A chat model, synced like any other.
+    fn default() -> Self {
+        HarnessSpec { chat: HarnessSpec::chats() }
+    }
+}
+
+impl HarnessSpec {
+    /// The `chat` default: recipes are chat models unless they say otherwise.
+    fn chats() -> bool {
+        true
+    }
+
+    /// Nothing set, so a written recipe leaves the table out.
+    pub fn is_default(&self) -> bool {
+        *self == HarnessSpec::default()
+    }
 }
 
 mod nodes;

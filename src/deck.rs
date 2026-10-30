@@ -268,6 +268,8 @@ pub struct RecipeView {
     /// Multi-node: `starting`, `up` or `failed` (+ error), from the run record.
     pub cluster_phase: Option<String>,
     pub cluster_error: Option<String>,
+    /// A chat model harness sync offers (`[harness] chat`, default true).
+    pub chat: bool,
 }
 
 impl RecipeView {
@@ -478,6 +480,7 @@ impl Deck {
                 placed_on,
                 cluster_phase: crec.as_ref().map(|c| c.phase.clone()),
                 cluster_error: crec.and_then(|c| c.error),
+                chat: r.harness.chat,
             });
         }
         // Listed recipes first, in list order; then the rest by origin.

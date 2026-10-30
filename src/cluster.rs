@@ -453,6 +453,8 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         d.cluster = None;
         d.hardware.nodes = None;
         d.hardware.min_memory_gb = node_memory_gb;
+        // Harness sync offers the recipe (its head serves it), never a node's own name.
+        d.harness.chat = false;
         d.model.home = None;
         d.model.nfs_volume = None;
         d.engine.name = Engine::Custom;

@@ -361,6 +361,47 @@ fn multi_node_lanes_are_the_recipe_not_its_nodes() {
     c.run(&["stop", "rev"]);
 }
 
+/// A recipe that isn't a chat model (a decision or classifier server) stays
+/// out of the agent harnesses with `[harness] chat = false`, whether it runs
+/// here or on another host, and so does a multi-node one.
+#[test]
+fn recipes_that_dont_chat_stay_out_of_the_harnesses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let a = serve(Host::new(root, "sa", "[serve]\naccept_recipes = true\n"), &[]);
+    let c = Host::new(root, "ctl", "");
+    fs::create_dir_all(c.dir.join("home/.config/opencode")).unwrap();
+    fs::write(
+        c.dir.join("home/config/hosts.toml"),
+        format!(
+            "[[host]]\nname = \"a\"\nurl = \"{}\"\n\n[[link]]\na = \"local\"\nb = \"a\"\na_addr = \"127.0.0.1\"\nb_addr = \"127.0.0.1\"\nkind = \"cx7\"\n",
+            a.url
+        ),
+    )
+    .unwrap();
+    let quiet = "\n[harness]\nchat = false\n";
+    c.add_recipe("chat", &web_recipe("chat", root, free_port()));
+    c.add_recipe("clef", &format!("{}{quiet}", web_recipe("clef", root, free_port())));
+    c.add_recipe("clef2", &format!("{}{quiet}", web_recipe("clef2", root, free_port())));
+    let order = root.join("order.txt");
+    c.add_recipe(
+        "judge",
+        &format!("{}{quiet}", cluster_recipe("judge", root, free_port(), free_port(), &order, false)),
+    );
+    c.run(&["use", "chat"]);
+    c.run(&["use", "clef"]);
+    c.run(&["use", "clef2", "--on", "a"]);
+    c.run(&["use", "judge"]);
+    assert_eq!(opencode_lanes(&c), ["chat"]);
+    // Only a boolean says it.
+    let bad = root.join("bad.toml");
+    fs::write(&bad, format!("{}\n[harness]\nchat = \"no\"\n", web_recipe("bad", root, free_port()))).unwrap();
+    let err = c.fail(&["recipe", "add", bad.to_str().unwrap()]);
+    assert!(err.contains("chat"), "{err}");
+    c.run(&["stop", "judge"]);
+    c.run(&["stop", "clef2"]);
+}
+
 /// A fake HF cache entry: `models--org--name/{refs/main, snapshots/<commit>/…}`.
 fn fake_hf(hf: &Path, repo: &str, commit: &str, files: &[(&str, usize)]) {
     let d = hf.join(format!("models--{}", repo.replace('/', "--")));

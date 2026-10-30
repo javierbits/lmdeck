@@ -263,6 +263,14 @@ model its head serves (`--served-model-name <recipe>`, `--alias <recipe>`),
 with the head's address and port, wherever the head runs. Its workers serve
 no API and get no lane.
 
+A recipe that isn't a chat model (a decision or classifier server that
+answers its own API) opts out, here and in other hosts' syncs:
+
+```toml
+[harness]
+chat = false   # default true
+```
+
 There is also an opt-in mirror: `lmdeck harness export on` writes the same
 `opencode.json` payload to `~/.local/share/opencode-export/` — the copy a
 second machine's pull job can fetch over HTTP (lmdeck serves nothing for
@@ -596,6 +604,9 @@ arch          = []           # aarch64 | x86_64
 min_compute_capability = "10.0"   # e.g. NVFP4 needs Blackwell (GB10 = 12.1)
 nodes         = 1
 hosts         = 4      # wrapped recipes: Sparks its scripts use (fit check only)
+
+[harness]              # optional
+chat = false           # not a chat model: harness sync leaves it out (default true)
 ```
 
 The memory check uses `min_memory_gb` when the recipe sets it. Otherwise it

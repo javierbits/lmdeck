@@ -54,6 +54,8 @@ pub struct Lane {
     pub vision: bool,
     /// Served on another host (its grok display gets a ` [Host]` tag).
     pub remote: bool,
+    /// A chat model (`[harness] chat`); the others never reach the configs.
+    pub chat: bool,
 }
 
 impl Lane {
@@ -224,6 +226,9 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
             Some(_) => continue,
             None => (rec.name.clone(), cat.entries.iter().find(|f| f.recipe.name == rec.name).map(|f| &f.recipe)),
         };
+        if recipe.is_some_and(|r| !r.harness.chat) {
+            continue;
+        }
         // Every running lane is managed, catalog or not (its hermes entry is
         // rewritten, never preserved as foreign).
         managed.insert(name.clone());
@@ -236,6 +241,7 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
             host: host.clone(),
             port: rec.port,
             remote: false,
+            chat: true,
         });
     }
     let wanted = cfg.harness.hosts.as_deref();
@@ -243,12 +249,12 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
         match crate::cluster::node_of(cat.entries.iter().map(|f| &f.recipe), &lane.name) {
             Some((r, crate::cluster::Role::Head)) => {
                 (lane.name, lane.display) = (r.name.clone(), r.display().to_string());
-                lane.ctx = r.engine.ctx.unwrap_or(65_536);
+                (lane.ctx, lane.chat) = (r.engine.ctx.unwrap_or(65_536), r.harness.chat);
             }
             Some(_) => continue,
             None => {}
         }
-        if lanes.iter().any(|l| l.name == lane.name) {
+        if !lane.chat || lanes.iter().any(|l| l.name == lane.name) {
             continue;
         }
         managed.insert(lane.name.clone());
@@ -299,6 +305,8 @@ fn lanes_from(e: &HostEntry) -> Vec<Lane> {
                 host: host.clone(),
                 port: r.get("port")?.as_u64()? as u16,
                 ctx: r.get("ctx").and_then(|c| c.as_u64()).unwrap_or(65_536),
+                // A host on an older lmdeck doesn't say: a chat model.
+                chat: r.get("chat").and_then(|c| c.as_bool()).unwrap_or(true),
             })
         })
         .collect()
@@ -814,6 +822,7 @@ mod tests {
             ctx: 65_536,
             vision,
             remote: false,
+            chat: true,
         }
     }
 

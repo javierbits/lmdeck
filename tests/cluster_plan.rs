@@ -106,6 +106,19 @@ fn an_explicit_minimum_is_what_each_node_needs() {
 }
 
 #[test]
+fn node_recipes_stay_out_of_the_harnesses() {
+    // The recipe is the lane (its head serves it); each node's own recipe is lmdeck's
+    // bookkeeping, so a host that only knows that one never offers it as a model.
+    let tmp = tempfile::tempdir().unwrap();
+    let r = split(2, 10.0, "");
+    assert!(r.harness.chat);
+    let plan = cluster::plan(&deck(tmp.path()), &r, &Opts::default()).unwrap();
+    assert!(plan.nodes.iter().all(|n| !n.recipe.harness.chat));
+    let again = Recipe::parse(&plan.nodes[0].recipe.to_toml().unwrap(), "x").unwrap();
+    assert!(!again.harness.chat, "the flag survives the trip to the node's host");
+}
+
+#[test]
 fn nodes_sharing_a_machine_reach_each_other_on_loopback() {
     let tmp = tempfile::tempdir().unwrap();
     let mut r = split(3, 30.0, "");
