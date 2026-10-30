@@ -582,7 +582,7 @@ args  = ["--cache-mode", "Q8"]            # appended last; placeholders below
 # stop / detached / container / logs: custom only, see "Wrapped recipes"
 
 [hardware]             # all optional
-min_memory_gb = 24     # unified memory (GB10, Apple), VRAM (discrete GPUs) or RAM (CPU)
+min_memory_gb = 24     # unified memory (GB10, Apple), VRAM (discrete GPUs) or RAM (CPU), per machine
 accelerator   = ["nvidia"]   # nvidia | apple | amd | cpu
 os            = ["linux"]    # linux | macos
 arch          = []           # aarch64 | x86_64
@@ -590,6 +590,13 @@ min_compute_capability = "10.0"   # e.g. NVFP4 needs Blackwell (GB10 = 12.1)
 nodes         = 1
 hosts         = 4      # wrapped recipes: Sparks its scripts use (fit check only)
 ```
+
+The memory check uses `min_memory_gb` when the recipe sets it. Otherwise it
+takes the weights' size (on disk, else `size_gb`) plus 20%. A model split
+over several machines (`[[nodes]]`, or a wrapped recipe's `hosts`) needs its
+share on each one instead: the size divided by the number of machines. Each
+node is checked against its share, and a share that doesn't fit one machine
+is still refused (without `--force`).
 
 Placeholders in `args` and `command`: `{name}`, `{port}`, `{ctx}`, `{model}`,
 `{models_dir}`, `{host}`, `{repo}`, `{revision}`. `custom` recipes also get

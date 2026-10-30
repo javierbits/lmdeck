@@ -143,6 +143,9 @@ impl Plan {
                 out.push(format!("     link: {}", l.label()));
             }
             out.push(format!("     weights: {}", n.weights));
+            if let Some(gb) = n.recipe.hardware.min_memory_gb {
+                out.push(format!("     memory: needs ~{gb:.0} GB"));
+            }
             if let Some(nfs) = &n.nfs {
                 out.push(format!("     export on {}: {}", show(&nfs.home), nfs.export_line));
                 out.push(format!("     volume: {}", nfs.volume_cmd));
@@ -267,7 +270,11 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
     let head_key = key(&head.host);
     let mut keys: Vec<String> = r.nodes.iter().map(|n| key(&n.host)).collect();
     let idx = crate::weights::Index::fresh(&deck.paths, &deck.cfg, crate::weights::INDEX_TTL);
-    let home = if r.model.repo.is_some() { idx.home(r, &node) } else { None };
+    let found = idx.home(r, &node);
+    // Reason: every node's own recipe keeps the whole `[model]`, so the home would be
+    // checked against the entire download; pin each node's share (or the explicit minimum).
+    let node_memory_gb = crate::compat::required_memory_gb(r, found.as_ref().map(|h| h.size));
+    let home = found.filter(|_| r.model.repo.is_some());
     if let Some(h) = &home {
         keys.push(h.host.clone());
     }
@@ -400,6 +407,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         d.nodes = vec![];
         d.cluster = None;
         d.hardware.nodes = None;
+        d.hardware.min_memory_gb = node_memory_gb;
         d.model.home = None;
         d.model.nfs_volume = None;
         d.engine.name = Engine::Custom;

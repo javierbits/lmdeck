@@ -147,6 +147,11 @@ host (`host = "local"` or a hosts.toml name), with exactly one
 - stops them in **reverse** order, and if a node fails to come up, stops the
   ones already started and shows that node's log;
 - reports one aggregate status and per-node status; `lmdeck logs <recipe> --node w1` reads one node's log;
+- checks each node's memory against **its share** of the weights: the size
+  (on the weights home's disk, else `size_gb`) divided by the number of
+  nodes, or `[hardware] min_memory_gb` when the recipe sets it, which counts
+  per node. `--dry-run` prints it as `memory: needs ~N GB` under each node;
+
 - fills fast-link facts into each node's command: `{head_addr}`,
   `{node_addr}`, `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,
   `{image}`, `{head_port}`, `{node}`, `{rank}`, `{nodes}`, and the fabric:

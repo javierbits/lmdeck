@@ -96,14 +96,19 @@ impl Report {
     }
 }
 
-/// Memory the recipe needs, in GB: explicit `min_memory_gb`, else the
-/// weights size plus 20% headroom (KV cache, activations).
+/// Memory the recipe needs on each machine, in GB: explicit `min_memory_gb`,
+/// else the weights size plus 20% headroom (KV cache, activations). A model
+/// split over several machines (`[[nodes]]`, or a wrapped recipe's
+/// `hardware.hosts`) needs its share on each: the size over the machine count.
 pub fn required_memory_gb(r: &Recipe, on_disk_bytes: Option<u64>) -> Option<f64> {
     if let Some(m) = r.hardware.min_memory_gb {
         return Some(m);
     }
     let gb = on_disk_bytes.filter(|b| *b > 0).map(|b| b as f64 / 1_073_741_824.0).or(r.model.size_gb)?;
-    Some(gb * 1.2)
+    Some(match r.machines() {
+        1 => gb * 1.2,
+        n => gb / n as f64,
+    })
 }
 
 /// vLLM/SGLang reserve a fixed fraction of (unified) memory up front.
