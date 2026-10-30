@@ -75,16 +75,35 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    address that answers on ssh or on `lmdeck serve` (port 7979) is grouped
    into one machine by its SSH host key, so two cables to the same Spark are
    one host, and named by its real hostname (read over ssh, or reported by
-   `lmdeck serve`). With no hostname it asks; it never makes one up. The
-   other machines must run `lmdeck serve`; without it they can't be driven or
-   measured (see [docs/MULTIHOST.md](docs/MULTIHOST.md)).
+   `lmdeck serve`). With no hostname it asks; it never makes one up.
+
+   The other machines must run `lmdeck serve`; without it they can't be
+   driven or measured (see [docs/MULTIHOST.md](docs/MULTIHOST.md)). For each
+   one that doesn't answer on 7979, the wizard offers to set it up over SSH
+   on the CX7 address:
+   - log in with keys only (`BatchMode`); if the key isn't accepted it offers
+     `ssh-copy-id` (your SSH password, typed into ssh itself) and makes a key
+     first if you have none;
+   - copy this lmdeck binary when the OS and CPU match, otherwise
+     `cargo install --git https://github.com/javierbits/lmdeck` there;
+   - write a new token to `~/.config/lmdeck/serve.env` there (mode 600, sent
+     over stdin, never on a command line) and save it in `hosts.toml` here;
+   - start `lmdeck serve --host <its CX7 address>`, as a systemd user service
+     when you say so (`lmdeck-serve.service`, restarts on failure). To start
+     it at boot it turns on `loginctl enable-linger`; if that needs sudo it
+     asks for the password once, hidden, and passes it to `sudo -S` on stdin.
+     It isn't saved or logged.
+   - then checks that it answers, and adds the host under its hostname.
+
 
 4. **Recipe sources**: repos to `lmdeck add <name>` from
    (`github:owner/repo`, `hf:owner/repo`, a URL, a local directory). There is
    no default source; the built-in recipes are always there.
 
 Answers are saved to `~/.config/lmdeck/` (`hosts.toml`, `config.toml`) and
-`[setup] done = true` keeps the wizard from asking again. `LMDECK_NO_SYNC=1`
+`[setup] done = true` keeps the wizard from asking again; `lmdeck setup` runs
+it again (hosts and sources already there are kept). `LMDECK_NO_SYNC=1`
+
 skips all first-run prompts; `lmdeck host add` and `lmdeck source add` do the
 same jobs any time.
 

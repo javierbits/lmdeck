@@ -184,6 +184,9 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Run the setup wizard again: this machine, the other Sparks on the CX7
+    /// links (and lmdeck on them over SSH), recipe sources.
+    Setup,
 }
 
 #[derive(Subcommand)]
@@ -507,6 +510,13 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Doctor { json }) => doctor(&ctx, json),
         Some(Cmd::Harness { cmd }) => harness_cmd(&ctx, cmd),
         Some(Cmd::Init { models_dir, force }) => init(ctx, models_dir, force),
+        Some(Cmd::Setup) => {
+            if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+                anyhow::bail!("`lmdeck setup` asks questions; run it in a terminal");
+            }
+            setup_wizard(&mut ctx);
+            Ok(())
+        }
     }
 }
 
@@ -517,26 +527,7 @@ fn run(cli: Cli) -> Result<()> {
 /// served models. Both save their answers to config.toml.
 fn first_run(ctx: &mut Ctx) {
     if lmdeck::setup::should_run(&ctx.cfg) {
-        match lmdeck::setup::wizard(&ctx.paths, &ctx.cfg) {
-            Ok(outcome) => {
-                if let Some(dir) = &outcome.models_dir {
-                    ctx.cfg.models_dir = dir.clone();
-                }
-                for (name, spec) in &outcome.sources {
-                    let Ok(parsed) = lmdeck::sources::SourceSpec::parse(spec) else { continue };
-                    if let Err(e) = fetch_source(ctx, name, &parsed) {
-                        eprintln!("{} source {name}: {e:#}", yellow("!"));
-                    }
-                    ctx.cfg.sources.push(SourceEntry { name: name.clone(), spec: spec.clone() });
-                }
-                if !outcome.sources.is_empty() || outcome.models_dir.is_some() {
-                    if let Err(e) = ctx.cfg.save(&ctx.paths) {
-                        eprintln!("{} {e:#}", yellow("warning:"));
-                    }
-                }
-            }
-            Err(e) => eprintln!("{} setup: {e:#}", yellow("warning:")),
-        }
+        setup_wizard(ctx);
     }
     if !lmdeck::harness::should_ask(&ctx.cfg) {
         return;
@@ -552,6 +543,35 @@ fn first_run(ctx: &mut Ctx) {
                 println!("{} {}", green("✓"), dim(&format!("saved to {}", file.display())));
             }
             Err(e) => eprintln!("{} {e:#}", yellow("warning:")),
+        }
+    }
+}
+
+/// The setup wizard, then the sources it picked are fetched and saved.
+fn setup_wizard(ctx: &mut Ctx) {
+    {
+        match lmdeck::setup::wizard(&ctx.paths, &ctx.cfg) {
+            Ok(outcome) => {
+                if let Some(dir) = &outcome.models_dir {
+                    ctx.cfg.models_dir = dir.clone();
+                }
+                for (name, spec) in &outcome.sources {
+                    if ctx.cfg.sources.iter().any(|s| &s.name == name) {
+                        continue;
+                    }
+                    let Ok(parsed) = lmdeck::sources::SourceSpec::parse(spec) else { continue };
+                    if let Err(e) = fetch_source(ctx, name, &parsed) {
+                        eprintln!("{} source {name}: {e:#}", yellow("!"));
+                    }
+                    ctx.cfg.sources.push(SourceEntry { name: name.clone(), spec: spec.clone() });
+                }
+                if !outcome.sources.is_empty() || outcome.models_dir.is_some() {
+                    if let Err(e) = ctx.cfg.save(&ctx.paths) {
+                        eprintln!("{} {e:#}", yellow("warning:"));
+                    }
+                }
+            }
+            Err(e) => eprintln!("{} setup: {e:#}", yellow("warning:")),
         }
     }
 }

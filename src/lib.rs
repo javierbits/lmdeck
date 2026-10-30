@@ -19,6 +19,8 @@ pub mod index;
 pub mod models;
 pub mod ops;
 pub mod paths;
+pub mod peers;
+
 pub mod placement;
 pub mod recipe;
 pub mod remote;

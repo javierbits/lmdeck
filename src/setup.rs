@@ -111,6 +111,10 @@ pub struct Outcome {
 pub trait Prompt {
     /// Prints `prompt` and reads one line (`None` on EOF).
     fn line(&mut self, prompt: &str) -> Option<String>;
+    /// Like [`Prompt::line`], without echoing what is typed (a password).
+    fn secret(&mut self, prompt: &str) -> Option<String> {
+        self.line(prompt)
+    }
 }
 
 /// Reads from stdin, printing the prompt first.
@@ -127,6 +131,52 @@ impl Prompt for Terminal {
             Err(_) => None,
         }
     }
+
+    fn secret(&mut self, prompt: &str) -> Option<String> {
+        print!("{prompt}");
+        std::io::stdout().flush().ok()?;
+        let echo_off = NoEcho::new();
+        let mut s = String::new();
+        let read = std::io::stdin().lock().read_line(&mut s);
+        drop(echo_off);
+        println!();
+        match read {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(s),
+        }
+    }
+}
+
+/// Turns terminal echo off until dropped.
+struct NoEcho(Option<libc::termios>);
+
+impl NoEcho {
+    fn new() -> NoEcho {
+        // SAFETY: tcgetattr/tcsetattr on stdin with a zeroed, then filled, termios.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+                return NoEcho(None);
+            }
+            let saved = t;
+            t.c_lflag &= !libc::ECHO;
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) != 0 {
+                return NoEcho(None);
+            }
+            NoEcho(Some(saved))
+        }
+    }
+}
+
+impl Drop for NoEcho {
+    fn drop(&mut self) {
+        if let Some(t) = self.0 {
+            // SAFETY: restores the attributes read in `new`.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+            }
+        }
+    }
 }
 
 /// Whether the first-run setup should run for this invocation.
@@ -137,25 +187,44 @@ pub fn should_run(cfg: &Config) -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+/// How the wizard reaches the other machines; tests swap each part.
+pub struct Net<'a> {
+    pub ssh: &'a mut dyn Ssh,
+    /// The port `lmdeck serve` uses on the peers.
+    pub port: u16,
+    /// Scans for the peers.
+    pub find: &'a mut dyn FnMut(&mut dyn Ssh) -> Vec<Peer>,
+    /// Is an `lmdeck serve` answering at `ip:port`?
+    pub health: &'a mut dyn FnMut(&str, u16) -> bool,
+}
+
 /// Detects this machine's summary and scans for cluster peers, then prompts.
+/// When hosts were added, shows the topology they make.
 pub fn wizard(paths: &Paths, cfg: &Config) -> Result<Outcome> {
     let fab = fabric::detect();
     let mut ssh = crate::ssh::System;
     let mut find = |ssh: &mut dyn Ssh| scan(&fab, SERVE_PORT, ssh);
-    run_wizard(paths, cfg, &mut Terminal, &mut ssh, SERVE_PORT, &fab, &mut find)
+    let mut health = |ip: &str, port: u16| probe_one(ip, port).0;
+    let mut net = Net { ssh: &mut ssh, port: SERVE_PORT, find: &mut find, health: &mut health };
+    let out = run_wizard(paths, cfg, &mut Terminal, &fab, &mut net)?;
+    if !out.hosts.is_empty() {
+        println!("\n{}", crate::ui::bold("topology"));
+        let views = crate::hosts::snapshot_once(paths, true);
+        let t = crate::topology::build(paths, cfg, &views, false);
+        for line in crate::topology::render_text(&t).lines() {
+            println!("  {line}");
+        }
+    }
+    Ok(out)
 }
 
-/// The whole wizard against any [`Prompt`] and [`Ssh`]. `port` is the one
-/// `lmdeck serve` uses on the peers; `find` scans for them (tests hand back
-/// a fixed list).
+/// The whole wizard against any [`Prompt`] and [`Net`].
 pub fn run_wizard(
     paths: &Paths,
     cfg: &Config,
     p: &mut dyn Prompt,
-    ssh: &mut dyn Ssh,
-    port: u16,
     fab: &fabric::Fabric,
-    find: &mut dyn FnMut(&mut dyn Ssh) -> Vec<Peer>,
+    net: &mut Net,
 ) -> Result<Outcome> {
     println!("{}", crate::ui::bold("lmdeck first-run setup"));
     let hw = crate::hardware::Hardware::detect();
@@ -200,7 +269,7 @@ pub fn run_wizard(
     // The other Sparks, over the CX7 links.
     println!("\n{}", crate::ui::bold("the cluster"));
     let mut hosts = HostsFile::load(paths).unwrap_or_default();
-    let added = cluster_step(p, ssh, port, fab, find, &mut hosts);
+    let added = cluster_step(p, net, fab, &mut hosts);
     if added.is_empty() {
         println!("{}", crate::ui::dim("  no hosts added. `lmdeck host add <name> <url>` any time."));
     } else {
@@ -257,21 +326,15 @@ pub fn run_wizard(
 }
 
 /// Finds the peers, shows them, and asks about each. Returns the names added.
-fn cluster_step(
-    p: &mut dyn Prompt,
-    ssh: &mut dyn Ssh,
-    port: u16,
-    fab: &fabric::Fabric,
-    find: &mut dyn FnMut(&mut dyn Ssh) -> Vec<Peer>,
-    hosts: &mut HostsFile,
-) -> Vec<String> {
+fn cluster_step(p: &mut dyn Prompt, net: &mut Net, fab: &fabric::Fabric, hosts: &mut HostsFile) -> Vec<String> {
+    let port = net.port;
     let links_up = fab.nics.iter().any(is_fast);
     if links_up {
         println!("{}", crate::ui::dim("  looking for the other Sparks over the ConnectX-7 links (a few seconds)..."));
     } else {
         println!("{}", crate::ui::dim("  no ConnectX-7 link is up here, so there are no other Sparks to look for."));
     }
-    let peers = find(ssh);
+    let peers = (net.find)(&mut *net.ssh);
     if peers.is_empty() {
         if links_up {
             println!(
@@ -306,14 +369,35 @@ fn cluster_step(
     }
     if !silent.is_empty() {
         let names: Vec<String> = silent.iter().map(|x| x.label()).collect();
-        println!(
-            "  {} {}: no lmdeck answers on :{port}. Each Spark runs `lmdeck serve`, which lets this one",
-            crate::ui::yellow("!"),
-            names.join(", ")
-        );
-        println!("    start, stop and measure it.");
-        if ask_yes(p, "  add them anyway? they show as offline until `lmdeck serve` runs there", false) {
-            for pr in silent {
+        println!("\n  {} {}: lmdeck isn't running there.", crate::ui::yellow("!"), names.join(", "));
+        for l in [
+            "Every Spark runs `lmdeck serve`; this one starts, stops and measures the others through it.",
+            "I can set that up over SSH on the CX7 link: install lmdeck, start `lmdeck serve` on the",
+            "CX7 address with a new token, and add a service so it comes back after a reboot. At most",
+            "it asks for your SSH password once (to copy your key) and the sudo password for the service.",
+        ] {
+            println!("    {}", crate::ui::dim(l));
+        }
+        for pr in silent {
+            println!();
+            let q = format!("  set up lmdeck on {} ({})?", crate::ui::bold(&pr.label()), pr.ip());
+            if ask_yes(p, &q, true) {
+                let Some(r) = crate::peers::bootstrap(p, &mut *net.ssh, pr, port, &mut *net.health) else { continue };
+                if added.contains(&r.name) {
+                    println!("    {}", crate::ui::dim(&format!("{} is already added: same machine", r.name)));
+                    continue;
+                }
+                let known = Peer { name: Some(r.name.clone()), named_by: "hostname", ..pr.clone() };
+                let url = format!("http://{}:{port}", r.ip);
+                if let Some(name) = ask_name(p, &known) {
+                    if add_host(hosts, &name, &url, Some(r.token), &known) && !added.contains(&name) {
+                        added.push(name);
+                    }
+                }
+                continue;
+            }
+            let q = format!("  add {} anyway? it shows as offline until `lmdeck serve` runs there", pr.label());
+            if ask_yes(p, &q, false) {
                 let url = format!("http://{}:{port}", pr.ip());
                 if let Some(name) = ask_name(p, pr) {
                     if add_host(hosts, &name, &url, None, pr) && !added.contains(&name) {
@@ -451,7 +535,7 @@ fn free_space_note(path: &std::path::Path) -> Option<String> {
     Some(if gb >= 1000.0 { format!("{:.1} TB", gb / 1000.0) } else { format!("{gb:.0} GB") })
 }
 
-fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {
+pub(crate) fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {
     let hint = if default { "Y/n" } else { "y/N" };
     match p.line(&format!("{prompt} [{hint}] > ")) {
         None => default,
@@ -792,7 +876,7 @@ fn probe_all_with(cands: &[Candidate], port: u16, ssh_port: u16) -> Vec<Answer> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fabric::Nic;
     use crate::ssh::Out;
@@ -837,13 +921,17 @@ mod tests {
     }
 
     impl Ssh for MockSsh {
+        /// The first matching reply; it is used up when a later one also matches.
         fn run(&mut self, addr: &str, cmd: &str, stdin: Option<&[u8]>) -> Out {
             self.calls.push((addr.into(), cmd.into(), stdin.map(|s| String::from_utf8_lossy(s).into_owned())));
-            self.replies
-                .iter()
-                .find(|(a, c, _)| a == addr && cmd.contains(c.as_str()))
-                .map(|(_, _, o)| o.clone())
-                .unwrap_or_else(|| Out::fail(&format!("ssh: connect to host {addr} port 22: Connection timed out")))
+            let hits: Vec<usize> = (0..self.replies.len())
+                .filter(|&i| self.replies[i].0 == addr && cmd.contains(self.replies[i].1.as_str()))
+                .collect();
+            match hits.as_slice() {
+                [] => Out::fail(&format!("ssh: connect to host {addr} port 22: Connection timed out")),
+                [only] => self.replies[*only].2.clone(),
+                [first, ..] => self.replies.remove(*first).2,
+            }
         }
         fn host_key(&mut self, addr: &str) -> Option<String> {
             self.keys.get(addr).cloned()
@@ -1080,7 +1168,9 @@ mod tests {
     fn wiz(paths: &Paths, p: &mut Script, ssh: &mut MockSsh, peers: Vec<Peer>) -> Outcome {
         let fab = fabric::Fabric::default();
         let mut find = move |_: &mut dyn Ssh| peers.clone();
-        run_wizard(paths, &Config::default(), p, ssh, 7979, &fab, &mut find).unwrap()
+        let mut health = |_: &str, _: u16| true;
+        let mut net = Net { ssh, port: 7979, find: &mut find, health: &mut health };
+        run_wizard(paths, &Config::default(), p, &fab, &mut net).unwrap()
     }
 
     #[test]
@@ -1096,7 +1186,8 @@ mod tests {
             "",                       // add ember
             "",                       // name: the hostname
             "tok123",                 // token
-            "n",                      // gigabyte has no lmdeck: don't add anyway
+            "n",                      // gigabyte has no lmdeck: don't set it up
+            "n",                      // nor add it anyway
             "github:someone/recipes", // source
             "",                       // done with sources
         ]);
@@ -1138,16 +1229,52 @@ mod tests {
     fn wizard_never_invents_a_name() {
         let (_d, paths) = tmp("wizard-noname");
         let peers = vec![peer(None, &["10.100.136.1"], None, Login::Denied)];
-        // add anyway: yes; the name prompt has no default, so empty skips it.
-        let mut p = Script::new(&["", "", "y", "", ""]);
+        // Not set up, added anyway; the name prompt has no default, so empty skips it.
+        let mut p = Script::new(&["", "", "n", "y", "", ""]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers.clone());
         assert!(out.hosts.is_empty());
         assert!(HostsFile::load(&paths).unwrap().hosts.is_empty());
         // Typing one works.
         let (_d2, paths2) = tmp("wizard-noname2");
-        let mut p = Script::new(&["", "", "y", "faraday", ""]);
+        let mut p = Script::new(&["", "", "n", "y", "faraday", ""]);
         let out = wiz(&paths2, &mut p, &mut MockSsh::default(), peers);
         assert_eq!(out.hosts, vec!["faraday"]);
+    }
+
+    #[test]
+    fn wizard_sets_up_a_silent_peer_and_adds_it_by_its_hostname() {
+        let (_d, paths) = tmp("wizard-boot");
+        let ip = "10.100.136.1";
+        let mut ssh = MockSsh { key_exists: true, copy_ok: true, ..Default::default() };
+        ssh.reply(ip, crate::peers::FACTS_CMD, Out::fail("Permission denied (publickey,password)."));
+        let facts = format!(
+            "host=faraday\narch={}\nos={}\nuser=jvr0x\nhome=/home/jvr0x\nlmdeck=\nsystemd=yes\nlinger=yes\n",
+            std::env::consts::ARCH,
+            std::env::consts::OS
+        );
+        ssh.reply(ip, crate::peers::FACTS_CMD, Out::ok(&facts));
+        ssh.reply(ip, "lmdeck.new", Out::ok("lmdeck 0.1.0\n"));
+        ssh.reply(ip, "serve.env", Out::ok(""));
+        let peers = vec![peer(None, &[ip], None, Login::Denied)];
+        let mut p = Script::new(&[
+            "", "", // machine, models dir
+            "", // set up lmdeck on 10.100.136.1: yes
+            "", // ssh-copy-id: yes
+            "", // service: yes
+            "", // name: the hostname it reported
+            "", // no sources
+        ]);
+        let out = wiz(&paths, &mut p, &mut ssh, peers);
+        assert_eq!(ssh.copied, vec![ip.to_string()]);
+        assert_eq!(out.hosts, vec!["faraday"]);
+        let hosts = HostsFile::load(&paths).unwrap();
+        let e = hosts.get("faraday").unwrap();
+        assert_eq!(e.url, format!("http://{ip}:7979"));
+        let tok = e.token.clone().unwrap();
+        assert_eq!(tok.len(), 32);
+        let sent = ssh.calls.iter().find(|(_, c, _)| c.contains("serve.env")).and_then(|(_, _, s)| s.clone()).unwrap();
+        assert_eq!(sent, format!("LMDECK_TOKEN={tok}\n"), "the token goes over stdin");
+        assert!(!ssh.calls.iter().any(|(_, c, _)| c.contains(&tok)), "never on a command line");
     }
 
     #[test]
@@ -1157,7 +1284,8 @@ mod tests {
         let mut p = Script::new(&[
             "n",                  // machine doesn't look right: still continues
             "",                   // models dir: keep the default
-            "n",                  // don't add the silent host
+            "n",                  // don't set up the silent host
+            "n",                  // nor add it
             "not a spec at all!", // rejected
             "github:o/r",         // accepted
             "",                   // finish
