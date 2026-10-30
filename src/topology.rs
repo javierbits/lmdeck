@@ -587,6 +587,21 @@ fn demo_activity(links: &[Link]) -> Vec<(String, String, String)> {
 }
 
 /// `lmdeck hosts topology`: one block per host, then switches, then the links.
+/// A host's weights on one line: every name when there are a few, otherwise
+/// the count, the first three and a pointer to `lmdeck weights`.
+fn weights_summary(ids: &[String]) -> String {
+    const SHOWN: usize = 3;
+    if ids.len() <= SHOWN + 1 {
+        return ids.join(", ");
+    }
+    format!(
+        "{} models: {} and {} more (`lmdeck weights` lists them)",
+        ids.len(),
+        ids[..SHOWN].join(", "),
+        ids.len() - SHOWN
+    )
+}
+
 pub fn render_text(t: &Topology) -> String {
     let mut s = String::new();
     if t.demo {
@@ -644,7 +659,7 @@ pub fn render_text(t: &Topology) -> String {
             s.push_str(&format!("             running: {}\n", h.running.join(", ")));
         }
         if !h.weights.is_empty() {
-            s.push_str(&format!("             weights: {}\n", h.weights.join(", ")));
+            s.push_str(&format!("             weights: {}\n", weights_summary(&h.weights)));
         }
         if let Some(f) = &h.fabric {
             for n in f.nics.iter().filter(|n| matches!(n.kind, fabric::NicKind::Cx7) && !n.ipv4.is_empty()) {
@@ -706,4 +721,18 @@ pub fn render_text(t: &Topology) -> String {
         s.push('\n');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::weights_summary;
+
+    #[test]
+    fn long_weight_lists_are_summarised() {
+        let ids: Vec<String> = (1..=4).map(|i| format!("m{i}")).collect();
+        assert_eq!(weights_summary(&ids), "m1, m2, m3, m4");
+        let ids: Vec<String> = (1..=30).map(|i| format!("org/model-{i}")).collect();
+        let s = weights_summary(&ids);
+        assert_eq!(s, "30 models: org/model-1, org/model-2, org/model-3 and 27 more (`lmdeck weights` lists them)");
+    }
 }
