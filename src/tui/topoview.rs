@@ -1,6 +1,6 @@
 //! Topology tab: hosts as boxes with braille device icons, switches as hubs,
-//! cables as edges. Layout is computed from the graph (seeded, overlap-free).
-//! When the terminal is too narrow, falls back to a segment-grouped list.
+//! cables as edges. Layout grows with the host count (1, 2, 3, …). When the
+//! pane cannot hold every box without overlap, the tab lists every host.
 
 use ratatui::layout::{Constraint, Layout};
 use ratatui::prelude::*;
@@ -41,7 +41,9 @@ pub fn draw(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme, focus
         return false;
     }
     let positions = layout(topo, area.width, area.height);
-    if positions.is_empty() {
+    // A pane that cannot separate the cards would paint them on top of each other.
+    // The list already names every host, at any count.
+    if positions.is_empty() || overlaps(&positions) {
         draw_list(frame, area, topo, theme);
         return false;
     }
@@ -310,8 +312,37 @@ fn draw_list(frame: &mut Frame, area: Rect, topo: &Topology, theme: &Theme) {
     );
 }
 
-/// Seeded layout: switches near the centre, hosts around their switches or
-/// in a ring / line for cables. Deterministic for a given graph + size.
+/// Radius that keeps `n` boxes of width `box_w`, plus `gap`, from overlapping on a circle.
+fn clearance_radius(n: usize, box_w: f64, gap: f64) -> f64 {
+    if n < 2 {
+        return 0.0;
+    }
+    (box_w + gap) / (2.0 * (std::f64::consts::PI / n as f64).sin())
+}
+
+/// Ring radius for hosts that are not sat around a switch.
+fn host_ring_radius(n: usize) -> f64 {
+    clearance_radius(n, HOST_W as f64, 4.0).max(12.0)
+}
+
+/// Ring radius for the hosts on one switch. The floor keeps a small group off the hub.
+fn switch_ring_radius(n: usize) -> f64 {
+    clearance_radius(n.max(1), HOST_W as f64, 4.0).max((HOST_W.max(HOST_H) as f64) * 1.5 + 2.0)
+}
+
+/// Reports whether any two placed boxes share area.
+fn overlaps(positions: &[Pos]) -> bool {
+    positions.iter().enumerate().any(|(i, a)| {
+        positions[i + 1..].iter().any(|b| {
+            let ox = (a.x + a.w as i32).min(b.x + b.w as i32) - a.x.max(b.x);
+            let oy = (a.y + a.h as i32).min(b.y + b.h as i32) - a.y.max(b.y);
+            ox > 0 && oy > 0
+        })
+    })
+}
+
+/// Switches near the centre, hosts around their switches or in a ring / line.
+/// The ring grows with the host count. Deterministic for a given graph and pane.
 pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
     let n_hosts = topo.hosts.len();
     let n_sw = topo.switches.len();
@@ -361,10 +392,9 @@ pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
             .collect();
         let sp = positions.iter().find(|p| p.id == sw.id).cloned();
         let Some(sp) = sp else { continue };
-        let n = members.len().max(1) as f64;
-        // Clearance so HOST_W boxes on a ring do not overlap.
-        let need = (HOST_W as f64 + 4.0) / (2.0 * (std::f64::consts::PI / n).sin());
-        let radius = need.max((HOST_W.max(HOST_H) as f64) * 1.5 + 2.0);
+        let count = members.len().max(1);
+        let radius = switch_ring_radius(count);
+        let n = count as f64;
         for (i, key) in members.iter().enumerate() {
             if !placed.insert((*key).to_string()) {
                 continue;
@@ -384,7 +414,13 @@ pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
     }
 
     // Remaining hosts (cables / no segment): ring or line.
-    let rest: Vec<&TopoHost> = topo.hosts.iter().filter(|h| !placed.contains(&h.key)).collect();
+    let mut rest: Vec<&TopoHost> = topo.hosts.iter().filter(|h| !placed.contains(&h.key)).collect();
+    // A switchless ring sits around the circle in its cabled order (a folded
+    // ring 1-2-4-3 draws 4 opposite 1), so every cable joins neighbours.
+    if topo.fabric.kind == crate::fabric::ShapeKind::Ring {
+        let at = |k: &str| topo.fabric.order.iter().position(|x| x == k).unwrap_or(usize::MAX);
+        rest.sort_by_key(|h| at(&h.key));
+    }
     if !rest.is_empty() {
         let n = rest.len() as f64;
         if rest.len() == 2 && n_sw == 0 {
@@ -405,7 +441,7 @@ pub(crate) fn layout(topo: &Topology, width: u16, height: u16) -> Vec<Pos> {
         } else {
             let cx = aw as f64 / 2.0;
             let cy = ah as f64 / 2.0;
-            let radius = (aw.min(ah) as f64 * 0.32).max(12.0);
+            let radius = host_ring_radius(rest.len());
             for (i, h) in rest.iter().enumerate() {
                 let angle = std::f64::consts::TAU * (i as f64) / n - std::f64::consts::FRAC_PI_2;
                 positions.push(Pos {
@@ -651,13 +687,137 @@ mod tests {
         };
         let p = layout(&t, 120, 40);
         assert_eq!(p.len(), 9);
-        for i in 0..p.len() {
-            for j in i + 1..p.len() {
-                let (a, b) = (&p[i], &p[j]);
-                let ox = (a.x + a.w as i32).min(b.x + b.w as i32) - a.x.max(b.x);
-                let oy = (a.y + a.h as i32).min(b.y + b.h as i32) - a.y.max(b.y);
-                assert!(!(ox > 0 && oy > 0), "overlap {} × {}", a.id, b.id);
-            }
+        assert!(!overlaps(&p), "eight hosts on a switch overlap in 120x40");
+    }
+
+    fn pane_for(radius: f64) -> (u16, u16) {
+        let w = ((2.0 * radius) + HOST_W as f64 + 8.0).ceil() as u16;
+        let h = ((2.0 * radius) + HOST_H as f64 + 8.0).ceil() as u16;
+        (w.max(40), h.max(16))
+    }
+
+    #[test]
+    fn folded_ring_draws_in_cabled_order() {
+        let mut t = loose(4);
+        t.fabric = crate::fabric::Shape {
+            kind: crate::fabric::ShapeKind::Ring,
+            order: ["spark1", "spark2", "spark4", "spark3"].map(String::from).to_vec(),
+        };
+        let (w, h) = pane_for(host_ring_radius(4));
+        let p = layout(&t, w, h);
+        assert!(!overlaps(&p));
+        let at = |k: &str| p.iter().find(|x| x.id == k).map(|x| (x.x, x.y)).unwrap();
+        // Clockwise from the top: spark1, spark2 (right), spark4 (bottom), spark3 (left).
+        assert!(at("spark4").1 > at("spark2").1 && at("spark4").1 > at("spark3").1);
+        assert!(at("spark3").0 < at("spark1").0 && at("spark3").0 < at("spark4").0);
+        assert!(at("spark2").0 > at("spark1").0);
+        // Without the ring the rack order stands: spark3 at the bottom.
+        let p = layout(&loose(4), w, h);
+        let at = |k: &str| p.iter().find(|x| x.id == k).map(|x| (x.x, x.y)).unwrap();
+        assert!(at("spark3").1 > at("spark4").1);
+    }
+
+    fn loose(n: usize) -> Topology {
+        Topology {
+            hosts: (1..=n).map(|i| host(&format!("spark{i}"), &format!("spark-{i}"))).collect(),
+            ..Default::default()
         }
+    }
+
+    fn switched(n: usize) -> Topology {
+        let sw = Switch {
+            id: "switch:10.20.0.0/24".into(),
+            name: "fabric".into(),
+            subnet: "10.20.0.0/24".into(),
+            kind: LinkKind::Cx7,
+            ports: n,
+        };
+        let hosts: Vec<TopoHost> = (1..=n).map(|i| host(&format!("spark{i}"), &format!("spark-{i}"))).collect();
+        let members: Vec<_> = hosts
+            .iter()
+            .enumerate()
+            .map(|(i, h)| crate::fabric::Member {
+                host: h.key.clone(),
+                ifname: Some("enp1s0f0np0".into()),
+                ip: format!("10.20.0.{}", 11 + i),
+                hcas: vec!["rocep1s0f0".into()],
+                gid_index: Some(3),
+                speed_mbps: Some(200_000),
+                rails: 1,
+            })
+            .collect();
+        Topology {
+            hosts,
+            switches: vec![sw.clone()],
+            segments: vec![Segment {
+                subnet: sw.subnet.clone(),
+                class: SegmentClass::Switch,
+                kind: LinkKind::Cx7,
+                members,
+                switch: Some(sw),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn assert_every_host(p: &[Pos], n: usize) {
+        let ids: std::collections::BTreeSet<&str> = p.iter().map(|p| p.id.as_str()).collect();
+        for i in 1..=n {
+            assert!(ids.contains(format!("spark{i}").as_str()), "missing spark{i}");
+        }
+    }
+
+    #[test]
+    fn any_host_count_fits_on_a_pane_sized_for_the_ring() {
+        for n in [1usize, 2, 3, 4, 6, 8, 12] {
+            let (w, h) = pane_for(host_ring_radius(n));
+            let p = layout(&loose(n), w, h);
+            assert_eq!(p.len(), n, "n={n} dropped a host in {w}x{h}");
+            assert_every_host(&p, n);
+            assert!(!overlaps(&p), "n={n} overlapped in {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn any_switch_membership_fits_on_a_pane_sized_for_the_ring() {
+        for n in [1usize, 3, 4, 8, 12] {
+            let (w, h) = pane_for(switch_ring_radius(n));
+            let p = layout(&switched(n), w, h);
+            assert_eq!(p.len(), n + 1, "n={n} dropped a node in {w}x{h}");
+            assert_every_host(&p, n);
+            assert!(p.iter().any(|x| x.id.starts_with("switch:")), "n={n} dropped the switch");
+            assert!(!overlaps(&p), "n={n} on a switch overlapped in {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn crowded_pane_keeps_every_host_and_lists_them() {
+        let t = loose(12);
+        let p = layout(&t, 30, 10);
+        assert_eq!(p.len(), 12);
+        assert!(overlaps(&p), "12 cards cannot separate in 30x10");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).expect("backend");
+        let theme = crate::tui::theme::omp();
+        let mut diagram = true;
+        term.draw(|f| {
+            diagram = draw(f, f.area(), &t, theme, 0);
+        })
+        .expect("draw");
+        assert!(!diagram, "overlapping cards fall back to the list");
+    }
+
+    #[test]
+    fn fitted_pane_keeps_the_diagram() {
+        let n = 4;
+        let (w, h) = pane_for(host_ring_radius(n));
+        let t = loose(n);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).expect("backend");
+        let theme = crate::tui::theme::omp();
+        let mut diagram = false;
+        term.draw(|f| {
+            diagram = draw(f, f.area(), &t, theme, 0);
+        })
+        .expect("draw");
+        assert!(diagram, "four hosts on a fitted pane stay a diagram");
     }
 }

@@ -821,6 +821,13 @@ mod tests {
     }
 
     #[test]
+    fn topology_page_is_not_capped_at_three_hosts() {
+        assert!(INDEX_HTML.contains("function ringR"));
+        assert!(!INDEX_HTML.contains("nHost <= 3"), "canvas height must not special-case three hosts");
+        assert!(!INDEX_HTML.contains("ellipse/triangle"));
+    }
+
+    #[test]
     fn loopback_and_tokens() {
         for h in ["localhost", "127.0.0.1", "::1", "[::1]", "127.0.0.2"] {
             assert!(is_loopback(h), "{h}");

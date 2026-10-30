@@ -339,7 +339,8 @@ pub struct HardwareReq {
     /// Minimum CUDA compute capability, e.g. `"10.0"` for NVFP4 (GB10 is 12.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_compute_capability: Option<String>,
-    /// Number of machines the recipe spans (lmdeck v0.1 runs single-node only).
+    /// How many machines the recipe spans. Any count works: `[[nodes]]` names
+    /// the host that runs each one. A value above 1 with no `[[nodes]]` is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodes: Option<u32>,
 }

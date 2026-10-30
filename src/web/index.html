@@ -630,23 +630,64 @@ function iconDots(kind, cx, cy, scale, color, pulse){
   }
   return g + `</g>`;
 }
-function topoLayout(t, W, H){
-  // Compact preferred-shot cards. Place CX7-linked hosts first (ellipse/triangle),
-  // then CX7-switch rings, then islands. LAN/TS switches don't own host placement.
-  const pad = 28, HW = 236, HH = 118, SW = 128, SH = 52, GAP = 28;
+function ringR(n, chord){
+  // Radius that puts n points `chord` apart on a circle. One point has no ring.
+  if (n < 2) return 0;
+  return chord / (2 * Math.sin(Math.PI / n));
+}
+function topoBounds(pos, extraH){
+  // Frames whatever was placed. The canvas grows with the cards; nothing is
+  // squeezed back into a fixed width or height.
+  const pad = 36;
+  const ids = Object.keys(pos);
+  if (!ids.length) return {pos, w: 640, h: 240};
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  ids.forEach(id => {
+    const p = pos[id];
+    minX = Math.min(minX, p.x - p.w / 2);
+    minY = Math.min(minY, p.y - p.h / 2);
+    maxX = Math.max(maxX, p.x + p.w / 2);
+    maxY = Math.max(maxY, p.y + p.h / 2);
+  });
+  const w = (maxX - minX) + pad * 2;
+  const h = (maxY - minY) + pad * 2 + (extraH || 0);
+  // The single-host hint is a long line under the card, so that canvas is wider.
+  const W = Math.max(w, extraH ? 640 : 480);
+  const H = Math.max(h, 220);
+  const dx = pad - minX + (W - w) / 2;
+  const dy = pad - minY;
+  ids.forEach(id => { pos[id].x += dx; pos[id].y += dy; });
+  return {pos, w: W, h: H};
+}
+function topoLayout(t){
+  // CX7 components and loose hosts sit on circles sized from how many there
+  // are (1, 2, 3, …). CX7 switches use the same circle, wide enough that the
+  // hub clears the cards. LAN/TS switches do not move hosts.
+  const HW = 236, HH = 118, SW = 128, SH = 52, GAP = 28, CHORD = HW + GAP;
   const pos = {};
   const hosts = t.hosts || [], switches = t.switches || [], segments = t.segments || [], links = t.links || [];
-  const hash = s => { let h = 2166136261; for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
-
-  const placeHost = (key, x, y) => { pos[key] = {x, y, w: HW, h: HH, kind:"host"}; };
-  const placeSw = (id, x, y) => { pos[id] = {x, y, w: SW, h: SH, kind:"switch"}; };
-
-  if (hosts.length === 1 && !switches.length){
-    placeHost(hosts[0].key, W/2, H/2);
-    return pos;
-  }
 
   const placed = new Set();
+  const placeHost = (key, x, y) => { pos[key] = {x, y, w: HW, h: HH, kind:"host"}; };
+  const placeSw = (id, x, y) => { pos[id] = {x, y, w: SW, h: SH, kind:"switch"}; };
+  const placeRing = (keys, cx, cy, R) => {
+    const n = keys.length;
+    keys.forEach((k, i) => {
+      if (n <= 1) placeHost(k, cx, cy);
+      else if (n === 2) placeHost(k, cx + (i === 0 ? -R : R), cy);
+      else {
+        const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
+        placeHost(k, cx + R * Math.cos(a), cy + R * Math.sin(a));
+      }
+      placed.add(k);
+    });
+  };
+
+  if (hosts.length === 1 && !switches.length){
+    placeHost(hosts[0].key, 0, 0);
+    return topoBounds(pos, 36);
+  }
+
   // CX7 host↔host cable adjacency (ignores switch endpoints).
   const cx7Adj = {};
   links.forEach(l => {
@@ -665,7 +706,7 @@ function topoLayout(t, W, H){
     }
   });
 
-  // Connected components of CX7 hosts → ellipse (controller at top).
+  // Connected components of CX7 hosts. The controller sits at the top of its ring.
   const comps = [];
   const seen = new Set();
   Object.keys(cx7Adj).forEach(start => {
@@ -678,85 +719,83 @@ function topoLayout(t, W, H){
     }
     comps.push(comp);
   });
-  comps.forEach((comp, ci) => {
+  let cursor = 0;
+  const ringSpan = (n, R) => (n <= 1 ? HW : 2 * R + HW) + GAP;
+  comps.forEach(comp => {
     const n = comp.length;
     const ctl = comp.includes(t.controller) ? t.controller : comp[0];
-    const order = [ctl, ...comp.filter(k => k !== ctl)];
-    const cx = W / 2 + (ci - (comps.length - 1) / 2) * 40;
-    const cy = n <= 2 ? H * 0.42 : H * 0.38;
-    // Radius sized so card boxes clear each other on the ring.
-    const need = (HW + GAP) / (2 * Math.sin(Math.PI / Math.max(n, 2)));
-    const rx = n <= 2 ? Math.min(W * 0.32, 300) : Math.min(W * 0.38, Math.max(280, need));
-    const ry = n <= 2 ? 0 : Math.min(H * 0.28, Math.max(130, need * 0.55));
-    order.forEach((k, i) => {
-      const a = n <= 2 ? Math.PI * (i === 0 ? 1 : 0) : -Math.PI / 2 + (2 * Math.PI * i) / n;
-      placeHost(k, cx + rx * Math.cos(a), cy + ry * Math.sin(a));
-      placed.add(k);
-    });
+    // A switchless ring goes around in its cabled order so each cable joins neighbours.
+    const ring = (t.fabric && t.fabric.kind === "ring" && t.fabric.order) || [];
+    const order = comp.every(k => ring.includes(k))
+      ? ring.filter(k => comp.includes(k))
+      : [ctl, ...comp.filter(k => k !== ctl)];
+    const R = ringR(n, CHORD);
+    const cx = cursor + (n <= 1 ? HW / 2 : R + HW / 2);
+    placeRing(order, cx, 0, R);
+    cursor += ringSpan(n, R);
   });
 
-  // CX7 switches: ring of unplaced members, then switch at centroid.
+  // CX7 switches: ring of unplaced members, then the hub at their centroid.
+  // 260 clears a 128×52 hub sitting inside 236×118 cards (they need about 210).
+  // A bigger membership grows the ring past that floor.
   const cx7SwSegs = segments.filter(s => s.class === "switch" && s.switch && (s.kind || "").toLowerCase() === "cx7");
-  cx7SwSegs.forEach((seg, si) => {
+  cx7SwSegs.forEach(seg => {
     const sw = seg.switch;
     const mem = (seg.members || []).map(m => m.host);
     const unplaced = mem.filter(h => !placed.has(h));
-    const n = Math.max(mem.length, 1);
-    const need = (HW + GAP) / (2 * Math.sin(Math.PI / Math.max(n, 2)));
-    const R = Math.max(260, need + 20);
-    // Seed switch near center (or offset if multiple).
-    let sx = W / 2 + (si - (cx7SwSegs.length - 1) / 2) * (R * 0.3);
-    let sy = H / 2;
-    if (unplaced.length){
-      unplaced.forEach((h, i) => {
-        const a = -Math.PI / 2 + (2 * Math.PI * i) / unplaced.length + ((hash(h) % 5) - 2) * 0.01;
-        placeHost(h, sx + Math.cos(a) * R, sy + Math.sin(a) * R);
-        placed.add(h);
-      });
+    if (unplaced.length === 1){
+      placeHost(unplaced[0], cursor + HW / 2, 0);
+      placed.add(unplaced[0]);
+      cursor += HW + GAP;
+    } else if (unplaced.length){
+      const n = unplaced.length;
+      const R = Math.max(ringR(n, CHORD), 260);
+      const cx = cursor + R + HW / 2;
+      placeRing(unplaced, cx, 0, R);
+      cursor += ringSpan(n, R);
     }
-    // Centroid of all members for switch glyph.
     const pts = mem.map(h => pos[h]).filter(Boolean);
     if (pts.length){
-      sx = pts.reduce((a,p) => a + p.x, 0) / pts.length;
-      sy = pts.reduce((a,p) => a + p.y, 0) / pts.length;
+      const sx = pts.reduce((a,p) => a + p.x, 0) / pts.length;
+      const sy = pts.reduce((a,p) => a + p.y, 0) / pts.length;
+      placeSw(sw.id, sx, sy);
+    } else {
+      placeSw(sw.id, cursor + SW / 2, 0);
+      cursor += SW + GAP;
     }
-    placeSw(sw.id, sx, sy);
   });
 
-  // Remaining hosts (e.g. offline mac): bottom row islands.
+  // Hosts with no CX7 segment (an offline mac, a fleet that has not linked yet).
   const rest = hosts.filter(h => !placed.has(h.key));
-  if (rest.length === 2 && !comps.length && !cx7SwSegs.length){
-    placeHost(rest[0].key, W * 0.28, H * 0.45);
-    placeHost(rest[1].key, W * 0.72, H * 0.45);
-  } else if (rest.length === 1 && hosts.length === 2 && placed.size === 1){
-    const other = [...placed][0];
-    const op = pos[other];
-    placeHost(rest[0].key, op.x < W/2 ? W * 0.72 : W * 0.28, op.y);
-  } else {
-    rest.forEach((h, i) => {
-      const x = W / 2 + (i - (rest.length - 1) / 2) * (HW + GAP);
-      placeHost(h.key, x, H - HH / 2 - pad);
-      placed.add(h.key);
-    });
+  if (rest.length === 1 && hosts.length === 2 && placed.size === 1){
+    const op = pos[[...placed][0]];
+    placeHost(rest[0].key, op.x + HW + GAP, op.y);
+    placed.add(rest[0].key);
+  } else if (rest.length){
+    const n = rest.length;
+    const R = ringR(n, CHORD);
+    const cx = cursor + (n <= 1 ? HW / 2 : R + HW / 2);
+    placeRing(rest.map(h => h.key), cx, 0, R);
+    cursor += ringSpan(n, R);
   }
 
-  // LAN/TS switches: place at member centroid but do not move hosts (glyph optional).
+  // LAN/TS switches: member centroid, nudged down. Repulsion keeps them off the cards.
   segments.forEach(seg => {
     if (seg.class !== "switch" || !seg.switch) return;
-    if ((seg.kind || "").toLowerCase() === "cx7") return; // already placed
+    if ((seg.kind || "").toLowerCase() === "cx7") return;
     const sw = seg.switch;
     if (pos[sw.id]) return;
     const pts = (seg.members || []).map(m => pos[m.host]).filter(Boolean);
     if (!pts.length) return;
     const sx = pts.reduce((a,p) => a + p.x, 0) / pts.length;
     const sy = pts.reduce((a,p) => a + p.y, 0) / pts.length;
-    // Park lan/ts switch slightly below centroid so it doesn't sit on CX7 labels.
-    placeSw(sw.id, sx, Math.min(H - SH/2 - pad, sy + HH * 0.35));
+    placeSw(sw.id, sx, sy + HH * 0.35);
   });
 
-  // Strong AABB repulsion so cards (and switch pills) never overlap.
+  // Safety net. Does not clamp back into a canvas: a fixed canvas is what
+  // stacked cards once the fleet grew past three.
   const ids = Object.keys(pos);
-  for (let iter = 0; iter < 60; iter++){
+  for (let iter = 0; iter < 80; iter++){
     let moved = false;
     for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++){
       const A = pos[ids[i]], B = pos[ids[j]];
@@ -769,22 +808,14 @@ function topoLayout(t, W, H){
         moved = true;
       }
     }
-    ids.forEach(id => {
-      const p = pos[id];
-      p.x = Math.min(W - p.w / 2 - pad, Math.max(p.w / 2 + pad, p.x));
-      p.y = Math.min(H - p.h / 2 - pad, Math.max(p.h / 2 + pad, p.y));
-    });
     if (!moved) break;
   }
-  return pos;
+  return topoBounds(pos, hosts.length < 2 ? 36 : 0);
 }
 function topoSvg(t){
   const hosts = t.hosts || [], switches = t.switches || [], links = t.links || [], segments = t.segments || [];
-  const nHost = hosts.length, nSw = switches.filter(s => (s.kind || "").toLowerCase() === "cx7").length;
-  const n = nHost + nSw;
-  const W = Math.max(1100, 320 + n * 90);
-  const H = Math.max(nHost <= 1 ? 260 : nHost <= 3 ? 480 : 520, 220 + Math.ceil(Math.sqrt(Math.max(n, 1))) * 160);
-  const pos = topoLayout(t, W, H);
+  const lay = topoLayout(t);
+  const pos = lay.pos, W = lay.w, H = lay.h;
 
   // Prefer host↔host CX7 cables; CX7 switches → spokes; LAN/TS → dashed host↔host only when no CX7 covers the pair.
   const drawLinks = [];
