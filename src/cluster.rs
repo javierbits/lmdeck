@@ -461,6 +461,13 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
         d.engine.image = None;
         d.engine.entrypoint = vec![];
         d.engine.volumes = vec![];
+        // What's left is filled where the node runs, or nowhere: say so now, not on the node.
+        let at = |what: &str| format!("[[nodes]] {} {what}", n.name);
+        let cmd = d.engine.command.iter().map(|s| (at("command"), s.as_str()));
+        let env = d.engine.env.iter().map(|(k, v)| (at(&format!("env {k}")), v.as_str()));
+        let rest = d.engine.stop.iter().chain(&d.engine.logs).chain(&d.engine.container);
+        let rest = rest.map(|s| (at("stop, logs or container"), s.as_str()));
+        crate::vars::check(&r.name, cmd.chain(env).chain(rest), crate::vars::on_machine)?;
         let command_line =
             shlex::try_join(d.engine.command.iter().map(String::as_str)).unwrap_or_else(|_| d.engine.command.join(" "));
         let gate = match (n.ready_port, n.role) {

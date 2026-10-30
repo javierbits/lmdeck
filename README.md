@@ -608,6 +608,25 @@ recipes that use `command_by_fabric`. `{user}` is the login name and `{home}`
 the home directory of the machine the command runs on (for `ssh {user}@…`
 lines and paths under home).
 
+A command can also name what its machine has configured instead of a path,
+so the recipe works on anyone's machines. Each is filled on the machine the
+command runs on (on each node for `[[nodes]]`):
+
+| placeholder | what |
+|---|---|
+| `{hf_home}` | the Hugging Face home lmdeck mounts into containers: `$HF_HOME`, else `~/.cache/huggingface` |
+| `{llama_server}`, `{vllm}`, `{python}`, `{lmdeploy}`, `{lms}`, `{mlx_server}`, `{tensorfold}`, `{docker}` | that binary, from `[engines]` in config.toml or found the way `lmdeck doctor` finds it (`PATH`, `~/llama.cpp/build/bin`, `~/utils/llama.cpp/build/bin`, …) |
+| `{llama_server_dir}`, `{vllm_dir}`, `{python_dir}`, … | the directory holding that binary: `{llama_server_dir}/rpc-server` is llama.cpp's RPC server next to `llama-server` |
+| `{tabbyapi_dir}` | the TabbyAPI checkout (`[engines] tabbyapi_dir`, or `~/tabbyAPI`, …) |
+
+Only placeholders a recipe uses are looked up. One its machine can't fill
+fails the plan, saying which `[engines]` key to set, and so does any
+`{name}` lmdeck doesn't know (a typo such as `{modle}`, or `{head_addr}`
+outside `[[nodes]]`), naming where it is. Nothing reaches a command as
+`{x}`. Braces that aren't a lowercase name are left alone: a shell's
+`${VAR}`, JSON such as `{"method":"mtp"}`. A command that needs a literal
+`{name}` (a Jinja or Python template) belongs in a script file.
+
 A wrapped recipe whose own scripts drive several Sparks (`[hardware] hosts =
 N`) gets the other Sparks as placeholders, so it needn't name your machines:
 `{peer_addr}` and `{peer_host}` for the first, `{peer2_addr}` /
@@ -661,7 +680,7 @@ default.
 | engine | command (simplified) |
 |---|---|
 | `llama.cpp` | `llama-server --model <models_dir>/<repo>/<file> --alias <name> --host --port --ctx-size …`. If the GGUF isn't on disk, it uses `--hf-repo <repo> --hf-file <file>` instead. |
-| `vllm` | Native: `vllm serve <repo or path> --served-model-name <name> --host --port --max-model-len [--revision]`. With `image`, it runs `docker run --rm --name lmdeck-<name> --gpus all --network host --ipc host` with the HF cache mounted. `HF_TOKEN` is forwarded by name only. |
+| `vllm` | Native: `vllm serve <repo or path> --served-model-name <name> --host --port --max-model-len [--revision]`. With `image`, it runs `docker run --rm --name lmdeck-<name> --gpus all --network host --ipc host` with the HF home (`$HF_HOME`, else `~/.cache/huggingface`) mounted. `HF_TOKEN` is forwarded by name only. |
 | `sglang` | `python3 -m sglang.launch_server --model-path … --served-model-name … --context-length …`, natively or in Docker. |
 | `lmdeploy` | `lmdeploy serve api_server <repo or path> --model-name <name> --server-name --server-port --session-len [--revision]` (default port 23333). With `image` (e.g. `openmmlab/lmdeploy:latest`) it runs in Docker like vLLM, with `lmdeploy serve api_server` after the image. Aliases: `lm-deploy`, `turbomind`. Set `engines.lmdeploy` if the binary isn't on `PATH`; `doctor` also accepts the `lmdeploy` Python module. |
 | `tabbyapi` | `python3 main.py --model-dir … --model-name … --backend exllamav3 --max-seq-len …`, run in the TabbyAPI checkout. Weights must be local: `lmdeck pull` puts EXL3 branches in `<models_dir>/<repo>-<revision>`. |

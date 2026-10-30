@@ -4,7 +4,7 @@
 //! lmdeck would run, which is what `recipe show` and `--dry-run` print and
 //! what the unit tests pin.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -209,7 +209,7 @@ fn python_modules(python: &str, mods: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn find_llama_server(o: &EngineOverrides) -> Option<PathBuf> {
+pub(crate) fn find_llama_server(o: &EngineOverrides) -> Option<PathBuf> {
     if let Some(b) = &o.llama_server {
         return which(b);
     }
@@ -221,7 +221,7 @@ fn find_llama_server(o: &EngineOverrides) -> Option<PathBuf> {
     })
 }
 
-fn find_tabbyapi(o: &EngineOverrides) -> Option<PathBuf> {
+pub(crate) fn find_tabbyapi(o: &EngineOverrides) -> Option<PathBuf> {
     let h = home_dir();
     let candidates: Vec<PathBuf> = match &o.tabbyapi_dir {
         Some(d) => vec![expand(d)],
@@ -230,7 +230,7 @@ fn find_tabbyapi(o: &EngineOverrides) -> Option<PathBuf> {
     candidates.into_iter().find(|d| d.join("main.py").is_file())
 }
 
-fn find_lms(o: &EngineOverrides) -> Option<PathBuf> {
+pub(crate) fn find_lms(o: &EngineOverrides) -> Option<PathBuf> {
     if let Some(b) = &o.lms {
         return which(b);
     }
@@ -244,7 +244,7 @@ fn find_lms(o: &EngineOverrides) -> Option<PathBuf> {
 
 /// TensorFold installs as `tensorfold` (Homebrew, or a symlink in `~/.tensorfold/bin` from
 /// install.sh); the Linux release archive ships the same binary as `tensorfold-native`.
-fn find_tensorfold(o: &EngineOverrides) -> Option<PathBuf> {
+pub(crate) fn find_tensorfold(o: &EngineOverrides) -> Option<PathBuf> {
     if let Some(b) = &o.tensorfold {
         return which(&expand(b).to_string_lossy());
     }
@@ -427,12 +427,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
     vars.insert("repo", repo.clone());
     vars.insert("revision", revision.clone());
     vars.insert("fabric", ctx.fabric.clone().unwrap_or_default());
-    vars.insert("home", ctx.home.display().to_string());
-    if r.engine.texts().any(|t| t.contains("{user}")) {
-        let user =
-            crate::vars::login().ok_or_else(|| anyhow!("{}: {{user}} needs this machine's login name", r.name))?;
-        vars.insert("user", user);
-    }
+    vars.extend(crate::vars::machine_vars(&r.name, r.engine.texts(), &ctx.overrides, &ctx.home)?);
     vars.extend(ctx.vars.iter().map(|(k, v)| (k.as_str(), v.clone())));
     // The working directory: a [source] checkout (a relative `dir` resolves
     // inside it), else `dir` as written.
@@ -543,7 +538,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
 
             if let Some(image) = &r.engine.image {
                 let name = container_name(&r.name);
-                let hf_home = ctx.home.join(".cache/huggingface");
+                let hf_home = crate::vars::hf_home(&ctx.home);
                 let mut a: Vec<String> = vec![
                     docker_bin,
                     "run".into(),
@@ -739,6 +734,7 @@ pub fn plan(r: &Recipe, ctx: &PlanCtx) -> Result<LaunchPlan> {
             }
         }
     }
+    crate::vars::check_plan(&r.name, &plan)?;
     Ok(plan)
 }
 

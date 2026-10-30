@@ -239,8 +239,10 @@ pub struct EngineSpec {
     /// Extra engine flags, appended last. Placeholders: `{name}`, `{port}`,
     /// `{ctx}`, `{model}`, `{models_dir}`, `{host}`, `{repo}`, `{revision}`,
     /// `{dir}` (the working directory), `{container}`, `{user}` / `{home}`
-    /// (this machine's login name and home directory) and, with
-    /// `hardware.hosts`, the peers' `{peer_addr}` / `{peer_host}`, … (README).
+    /// (this machine's login name and home directory), what it has configured
+    /// (`{hf_home}`, the `[engines]` binaries and their `_dir`s, see
+    /// [`crate::vars`]) and, with `hardware.hosts`, the peers' `{peer_addr}` /
+    /// `{peer_host}`, … (README). A placeholder nothing fills fails the plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Environment for the server process (or container). Values take the

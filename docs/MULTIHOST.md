@@ -170,7 +170,13 @@ places, see below), with exactly one `role = "head"`. lmdeck:
   RPC head writes `--rpc {peer_addr}:50052` instead of a worker address. A
   peer past the node count fails the plan;
 - fills `{user}` (login name) and `{home}` (home directory) on the machine
-  each node runs on, with the engine placeholders (`{model}`, `{port}`, …);
+  each node runs on, with the engine placeholders (`{model}`, `{port}`, …)
+  and what that machine has configured: `{hf_home}`, the `[engines]`
+  binaries (`{llama_server}`, `{python}`, `{docker}`, …) and their
+  directories (`{llama_server_dir}/rpc-server`), `{tabbyapi_dir}` (README,
+  "Recipe format"). A node whose machine lacks one fails to start, saying
+  which `[engines]` key to set there; a placeholder nothing fills fails the
+  plan on the controller, `--dry-run` included;
 - is **engine-agnostic**: the commands decide what runs (Ray + vLLM, SGLang,
   anything).
 
