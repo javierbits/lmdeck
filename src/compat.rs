@@ -27,7 +27,40 @@ pub struct Report {
     pub checks: Vec<Check>,
 }
 
+/// The DGX Sparks this controller can use now: itself, when it is one, and
+/// the hosts.toml machines that answer and report a GB10. Macs, phones and
+/// other hosts don't count.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Fleet {
+    pub online: u32,
+}
+
+/// A GB10 / DGX Spark platform string.
+pub fn is_spark(platform: &str) -> bool {
+    let p = platform.to_lowercase();
+    p.contains("gb10") || p.contains("spark")
+}
+
 impl Report {
+    /// Adds "needs N Sparks · M online" for a recipe whose scripts span
+    /// several Sparks (`hardware.hosts`): a failure when fewer are online.
+    /// `fleet` is only asked for when the recipe needs more than one.
+    pub fn with_fleet(mut self, r: &Recipe, fleet: impl FnOnce() -> Fleet) -> Report {
+        let need = r.hardware.hosts.unwrap_or(1);
+        if need <= 1 {
+            return self;
+        }
+        let fleet = fleet();
+
+        let ok = fleet.online >= need;
+        let mut detail = format!("needs {need} Sparks · {} online", fleet.online);
+        if !ok {
+            detail.push_str(" (add the others with `lmdeck setup`)");
+        }
+        self.checks.push(Check { level: if ok { Level::Ok } else { Level::Fail }, what: "sparks".into(), detail });
+        self
+    }
+
     pub fn level(&self) -> Level {
         self.checks.iter().map(|c| c.level).max().unwrap_or(Level::Ok)
     }
@@ -218,6 +251,26 @@ mod tests {
             Some(110.0),
             parse_nvidia_smi("NVIDIA GB10, [N/A], 12.1, 580\n"),
         )
+    }
+
+    #[test]
+    fn four_spark_wrappers_count_only_sparks_online() {
+        let text = "name = \"x\"\n[engine]\nname = \"custom\"\ncommand = [\"./start.sh\"]\n[hardware]\nhosts = 4\n";
+        let r = Recipe::parse(text, "x").unwrap();
+        let mut asked = 0;
+        let rep = check(&r, &spark(), None, None).with_fleet(&r, || {
+            asked += 1;
+            Fleet { online: 1 }
+        });
+        assert_eq!(asked, 1);
+        assert_eq!(rep.level(), Level::Fail);
+        assert!(rep.reasons(false).iter().any(|s| s.contains("needs 4 Sparks · 1 online")), "{:?}", rep.reasons(false));
+        let rep = check(&r, &spark(), None, None).with_fleet(&r, || Fleet { online: 4 });
+        assert!(rep.compatible());
+        // One-machine recipes never ask.
+        let one = Recipe::parse("name = \"y\"\n[engine]\nname = \"custom\"\ncommand = [\"a\"]\n", "y").unwrap();
+        let _ = check(&one, &spark(), None, None).with_fleet(&one, || unreachable!());
+        assert!(is_spark("NVIDIA DGX Spark (GB10)") && !is_spark("Apple M4 Max") && !is_spark("iPhone"));
     }
 
     fn mac() -> Hardware {

@@ -244,6 +244,7 @@ pub fn run_wizard(
     println!("{}", crate::ui::dim("lmdeck pull downloads here; recipes read `<models_dir>/<repo>/<file>`."));
     println!("{}", crate::ui::dim("engines that keep their own hub cache (tensorfold, mlx, lmstudio) ignore this:"));
     println!("{}", crate::ui::dim("  set HF_HOME too, for those"));
+    disk_check(&crate::paths::expand(&models_dir));
     loop {
         let hint = space_hint(&models_dir);
         let answer = p.line(&format!("  models dir [{}{}] > ", crate::ui::bold(&models_dir), hint));
@@ -262,6 +263,7 @@ pub fn run_wizard(
             crate::ui::bold(&v),
             crate::ui::dim(&hint_line(&crate::paths::expand(&v)))
         );
+        disk_check(&crate::paths::expand(&v));
         models_dir = v;
         break;
     }
@@ -512,7 +514,15 @@ fn ask_name(p: &mut dyn Prompt, pr: &Peer) -> Option<String> {
 
 /// ` · 3.6 TB free`, or empty when the path cannot be measured.
 fn space_hint(dir: &str) -> String {
-    free_space_note(&crate::paths::expand(dir)).map(|s| format!(" · {s}")).unwrap_or_default()
+    free_space_note(&crate::paths::expand(dir)).map(|s| format!(" · {s} free")).unwrap_or_default()
+}
+
+/// Warns when the filesystem under `path` is nearly full.
+fn disk_check(path: &std::path::Path) {
+    if let Some(w) = crate::hardware::disk_gb(path).and_then(|(free, total)| crate::hardware::disk_warning(free, total))
+    {
+        println!("  {} {w}", crate::ui::yellow("!"));
+    }
 }
 
 /// The free-space sentence for a confirmed directory.
@@ -531,8 +541,7 @@ fn usable_dir(v: &str) -> Option<String> {
 }
 
 fn free_space_note(path: &std::path::Path) -> Option<String> {
-    let gb = crate::hardware::free_gb(path)?;
-    Some(if gb >= 1000.0 { format!("{:.1} TB", gb / 1000.0) } else { format!("{gb:.0} GB") })
+    crate::hardware::free_gb(path).map(crate::hardware::human_gb)
 }
 
 pub(crate) fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {

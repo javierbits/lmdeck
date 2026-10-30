@@ -399,12 +399,14 @@ impl Deck {
         }
         let show = |k: &str| if k == crate::hosts::LOCAL { node.clone() } else { k.to_string() };
         let live = crate::hosts::read_live(&self.paths, Duration::from_secs(15));
+        let fleet = std::cell::OnceCell::new();
         for f in &cat.entries {
             let r = &f.recipe;
             let reference = reference(f);
             let index = listed_refs.iter().position(|x| *x == reference).map(|i| i + 1).unwrap_or(0);
             let p = self.presence(r);
-            let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
+            let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
+                .with_fleet(r, || *fleet.get_or_init(|| crate::hosts::fleet(&self.paths, &hw.platform)));
             // A multi-node recipe has one launch command per node, shown with its nodes.
             let planned = planned_port(&ports, f);
             let (command, plan_error) =
@@ -535,8 +537,10 @@ impl Deck {
         let hw = Hardware::detect();
         let inv = self.inventory(false);
         let p = self.presence(r);
-        let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
+        let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
+            .with_fleet(r, || crate::hosts::fleet(&self.paths, &hw.platform));
         let cat = self.catalog();
+
         let port = planned_for(&cat, &self.paths, &self.cfg, r);
         let fabric = crate::topology::fabric_for(&self.paths, &self.cfg, r).map(|f| f.kind.as_str().to_string());
         let plan = engine::plan(r, &PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric))?;

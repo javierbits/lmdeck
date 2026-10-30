@@ -14,6 +14,11 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// reports the filesystem it would be made on. `None` when nothing exists
 /// (`/` always does) or the command is missing.
 pub fn free_gb(dir: &Path) -> Option<f64> {
+    disk_gb(dir).map(|(free, _)| free)
+}
+
+/// (free, total) GB of the filesystem holding `dir` (or its nearest existing parent).
+pub fn disk_gb(dir: &Path) -> Option<(f64, f64)> {
     let mut at = dir.to_path_buf();
     loop {
         if at.exists() {
@@ -23,11 +28,35 @@ pub fn free_gb(dir: &Path) -> Option<f64> {
             return None;
         }
     }
-    // `df -Pk` prints 1024-byte blocks; the 4th field is available.
+    // `df -Pk` prints 1024-byte blocks: size is the 2nd field, available the 4th.
     let out = run_with_timeout(Command::new("df").arg("-Pk").arg(&at), Duration::from_secs(4))?;
     let line = out.lines().nth(1)?;
-    let kb: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
-    Some(kb as f64 * 1024.0 / GIB)
+    let mut f = line.split_whitespace();
+    let total: u64 = f.nth(1)?.parse().ok()?;
+    let free: u64 = f.nth(1)?.parse().ok()?;
+    Some((free as f64 * 1024.0 / GIB, total as f64 * 1024.0 / GIB))
+}
+
+/// A warning when the disk is nearly full: under 5% or under 50 GB free.
+pub fn disk_warning(free_gb: f64, total_gb: f64) -> Option<String> {
+    if total_gb <= 0.0 || (free_gb >= 50.0 && free_gb / total_gb >= 0.05) {
+        return None;
+    }
+    let used = (1.0 - free_gb / total_gb) * 100.0;
+    Some(format!(
+        "the disk is nearly full: {} free of {} ({used:.0}% used). Model weights take tens to hundreds of GB; free some space or pick a disk with room.",
+        human_gb(free_gb),
+        human_gb(total_gb)
+    ))
+}
+
+/// `21 GB`, `3.7 TB`.
+pub fn human_gb(gb: f64) -> String {
+    if gb >= 1000.0 {
+        format!("{:.1} TB", gb / 1000.0)
+    } else {
+        format!("{gb:.0} GB")
+    }
 }
 
 /// One GPU as reported by the driver.
@@ -298,6 +327,15 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearly_full_disks_warn() {
+        let w = disk_warning(21.0, 3700.0).unwrap();
+        assert!(w.contains("21 GB free of 3.7 TB (99% used)"), "{w}");
+        assert!(disk_warning(400.0, 3700.0).is_none());
+        assert!(disk_warning(40.0, 100.0).is_some(), "under 50 GB is little for models");
+        assert!(disk_warning(3.0, 0.0).is_none());
+    }
 
     #[test]
     fn parses_gb10_nvidia_smi() {

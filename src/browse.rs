@@ -62,17 +62,13 @@ fn norm_repo(r: &str) -> String {
     r.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase()
 }
 
-/// How many machines this controller can put a recipe on: itself plus hosts.toml.
-pub fn machines(hosts: usize) -> u32 {
-    1 + hosts as u32
+/// Joins the index with the snapshot. `sparks` counts the DGX Sparks online
+/// ([`crate::hosts::fleet`]); Macs and other hosts don't count.
+pub fn rows(index: &Index, snap: Option<&Snapshot>, sparks: u32) -> Vec<Row> {
+    index.entries.iter().map(|e| row(e, snap, sparks)).collect()
 }
 
-/// Joins the index with the snapshot. `machines` counts this machine plus hosts.toml.
-pub fn rows(index: &Index, snap: Option<&Snapshot>, machines: u32) -> Vec<Row> {
-    index.entries.iter().map(|e| row(e, snap, machines)).collect()
-}
-
-fn row(e: &Entry, snap: Option<&Snapshot>, machines: u32) -> Row {
+fn row(e: &Entry, snap: Option<&Snapshot>, sparks: u32) -> Row {
     let recipes = snap.map(|s| s.recipes.as_slice()).unwrap_or(&[]);
     let matches = |r: &&crate::deck::RecipeView| {
         r.name == e.name || r.source_repo.as_deref().is_some_and(|x| norm_repo(x) == norm_repo(&e.repo))
@@ -100,7 +96,7 @@ fn row(e: &Entry, snap: Option<&Snapshot>, machines: u32) -> Row {
             )
         })
     });
-    let (fit, fit_reason) = fit(e, snap, rv, machines);
+    let (fit, fit_reason) = fit(e, snap, rv, sparks);
     let install = match installed {
         "deck" => format!("in your deck as {}", rv.map(|r| r.name.as_str()).unwrap_or(&e.name)),
         _ => format!("lmdeck add {}", e.name),
@@ -117,13 +113,10 @@ fn row(e: &Entry, snap: Option<&Snapshot>, machines: u32) -> Row {
     }
 }
 
-fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>, machines: u32) -> (Level, String) {
+fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>, sparks: u32) -> (Level, String) {
     let need = e.sparks();
-    if need > machines {
-        return (
-            Level::Fail,
-            format!("needs {need} DGX Sparks; you have {machines} machine(s) (add hosts with `lmdeck host add`)"),
-        );
+    if need > 1 && need > sparks {
+        return (Level::Fail, format!("needs {need} Sparks · {sparks} online (add the others with `lmdeck setup`)"));
     }
     if let Some(r) = rv {
         let why = r.checks.iter().filter(|c| c.level != Level::Ok).map(|c| c.detail.clone()).collect::<Vec<_>>();
@@ -147,8 +140,9 @@ fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>,
         return (Level::Warn, format!("made for DGX Spark; this is {}", hw.platform));
     }
     if need > 1 {
-        return (Level::Ok, format!("{need} machines needed; you have {machines}"));
+        return (Level::Ok, format!("needs {need} Sparks · {sparks} online"));
     }
+
     (Level::Ok, "fits this machine".into())
 }
 
@@ -253,16 +247,19 @@ tags = { engine = "llama.cpp", quant = "gguf" }
     }
 
     #[test]
-    fn two_spark_entries_need_two_machines() {
+    fn two_spark_entries_need_two_sparks_online() {
         let i = idx();
-        let one = rows(&i, None, machines(0));
+        let one = rows(&i, None, 1);
         let z = one.iter().find(|r| r.entry.name == "zeta-big").unwrap();
         assert_eq!(z.fit, Level::Fail);
-        assert!(z.fit_reason.contains("needs 2 DGX Sparks"), "{}", z.fit_reason);
+        assert!(z.fit_reason.contains("needs 2 Sparks · 1 online"), "{}", z.fit_reason);
         assert_eq!(z.installed, "no");
         assert_eq!(z.install, "lmdeck add zeta-big");
         assert_eq!(z.readme, "https://github.com/o/zeta#readme");
-        let two = rows(&i, None, machines(1));
+        let two = rows(&i, None, 2);
         assert_ne!(two.iter().find(|r| r.entry.name == "zeta-big").unwrap().fit_reason, z.fit_reason);
+        // A Mac controller (no Spark online) can still run single-machine entries.
+        let none = rows(&i, None, 0);
+        assert!(none.iter().filter(|r| r.entry.sparks() == 1).all(|r| !r.fit_reason.contains("online")));
     }
 }

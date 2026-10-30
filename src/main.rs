@@ -1312,7 +1312,8 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
     let p = ctx.presence(r);
-    let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
+    let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
+        .with_fleet(r, || lmdeck::hosts::fleet(&ctx.paths, &hw.platform));
     let port = deck::planned_for(&cat, &ctx.paths, &ctx.cfg, r);
     let fabric = topology::fabric_for(&ctx.paths, &ctx.cfg, r);
     let plan = engine::plan(
@@ -1832,6 +1833,7 @@ fn recipe_search(
     let engine: Option<Engine> = engine.map(|e| e.parse::<Engine>()).transpose()?;
     let words: Vec<String> = query.iter().flat_map(|q| q.split_whitespace()).map(str::to_lowercase).collect();
     let hw = Hardware::detect();
+    let fleet = std::cell::OnceCell::new();
     let mut t = Table::new(&["fit", "recipe", "engine", "quant", "size", "description"])
         .right(&[4])
         .max_width(1, 44)
@@ -1852,7 +1854,8 @@ fn recipe_search(
             }
         }
         let p = ctx.presence(r);
-        let rep = compat::check(r, &hw, None, p.present().then_some(p.size));
+        let rep = compat::check(r, &hw, None, p.present().then_some(p.size))
+            .with_fleet(r, || *fleet.get_or_init(|| lmdeck::hosts::fleet(&ctx.paths, &hw.platform)));
         if compatible && !rep.compatible() {
             continue;
         }
@@ -1979,8 +1982,9 @@ fn browse(
     };
     let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
     let snap = deck.snapshot(false);
-    let nhosts = HostsFile::load(&ctx.paths).map(|f| f.hosts.len()).unwrap_or(0);
-    let rows = b::rows(&loaded.index, Some(&snap), b::machines(nhosts));
+    let sparks = lmdeck::hosts::fleet(&ctx.paths, &snap.hardware.platform).online;
+    let rows = b::rows(&loaded.index, Some(&snap), sparks);
+
     let shown: Vec<&b::Row> = b::filter(&rows, query, tags, sort)
         .into_iter()
         .filter(|r| !fits || r.fit != lmdeck::compat::Level::Fail)
@@ -2275,7 +2279,8 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
     }
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
-    let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size));
+    let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
+        .with_fleet(r, || lmdeck::hosts::fleet(&ctx.paths, &hw.platform));
     println!("\n  {} {}", bold("on this machine"), dim(&format!("({})", hw.platform)));
     print_report(&rep);
     match engine::plan(r, &PlanCtx::new(&ctx.cfg, p.local)) {
@@ -2497,11 +2502,13 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
     let cat = ctx.catalog();
+    let fleet = std::cell::OnceCell::new();
     let checked: Vec<(&Found, Report)> = listed(&cat)
         .into_iter()
         .map(|f| {
             let p = ctx.presence(&f.recipe);
-            let rep = compat::check(&f.recipe, &hw, Some(&inv), p.present().then_some(p.size));
+            let rep = compat::check(&f.recipe, &hw, Some(&inv), p.present().then_some(p.size))
+                .with_fleet(&f.recipe, || *fleet.get_or_init(|| lmdeck::hosts::fleet(&ctx.paths, &hw.platform)));
             (f, rep)
         })
         .collect();

@@ -436,6 +436,36 @@ pub struct LiveFile {
     pub at: u64,
     /// host key → (online, running recipe names).
     pub hosts: BTreeMap<String, (bool, Vec<String>)>,
+    /// host key → its platform ("NVIDIA DGX Spark (GB10)", "Apple M4 Max", …).
+    #[serde(default)]
+    pub platforms: BTreeMap<String, String>,
+}
+
+/// The Sparks online now (see [`crate::compat::Fleet`]): this machine when
+/// `local_platform` is one, plus the hosts.toml entries that answer with a
+/// GB10. Reads the sampler's live file when it is fresh, else asks each
+/// host once, in parallel.
+pub fn fleet(paths: &Paths, local_platform: &str) -> crate::compat::Fleet {
+    use crate::compat::is_spark;
+    let mut online = is_spark(local_platform) as u32;
+    let entries = HostsFile::load(paths).map(|f| f.hosts).unwrap_or_default();
+    let live = read_live(paths, Duration::from_secs(60));
+    let mut ask = vec![];
+    for e in &entries {
+        match live.as_ref().and_then(|l| Some((l.hosts.get(&e.name)?.0, l.platforms.get(&e.name)?))) {
+            Some((up, platform)) => online += (up && is_spark(platform)) as u32,
+            None => ask.push(e),
+        }
+    }
+    let asked: u32 = std::thread::scope(|s| {
+        let jobs: Vec<_> =
+            ask.iter().map(|e| s.spawn(move || fetch(e, u64::MAX, Duration::from_millis(1500)))).collect();
+        jobs.into_iter()
+            .filter_map(|j| j.join().ok()?.ok())
+            .filter(|(r, _)| r.telemetry.as_ref().is_some_and(|t| is_spark(&t.platform)))
+            .count() as u32
+    });
+    crate::compat::Fleet { online: online + asked }
 }
 
 fn live_path(paths: &Paths) -> PathBuf {
@@ -452,7 +482,12 @@ pub fn write_live(paths: &Paths, views: &[HostView]) {
                 (v.name.clone(), (v.online, running.unwrap_or_default()))
             })
             .collect(),
+        platforms: views
+            .iter()
+            .filter_map(|v| Some((v.name.clone(), v.telemetry.as_ref()?.platform.clone())))
+            .collect(),
     };
+
     let p = live_path(paths);
     let _ = fs::create_dir_all(&paths.cache_dir);
     if let Ok(body) = serde_json::to_string(&f) {

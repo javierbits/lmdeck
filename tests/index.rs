@@ -259,7 +259,9 @@ fn browse_filters_sorts_and_reports_fit() {
     let v = e.json(&["browse", "--json"]);
     let big = &v["entries"][0];
     assert_eq!(big["fit"], "fail");
-    assert!(big["fit_reason"].as_str().unwrap().contains("needs 2 DGX Sparks"));
+    // Only Sparks count (this machine, if it is one; no hosts here), never a Mac or phone.
+    assert!(big["fit_reason"].as_str().unwrap().contains("needs 2 Sparks ·"), "{big}");
+
     assert_eq!(big["installed"], "no");
     assert!(!names(&e.json(&["browse", "--json", "--fits"])).contains(&"big-two".to_string()));
     let text = String::from_utf8(e.cmd().args(["browse"]).output().unwrap().stdout).unwrap();
