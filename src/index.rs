@@ -25,7 +25,7 @@ use crate::paths::Paths;
 use crate::telemetry::now_ms;
 
 /// The default index: `index.toml` on this repo's `main`.
-pub const DEFAULT_URL: &str = "https://github.com/jvr0x/lmdeck/blob/main/index.toml";
+pub const DEFAULT_URL: &str = "https://github.com/javierbits/lmdeck/blob/main/index.toml";
 
 const MAX_BYTES: u64 = 1 << 20;
 
@@ -387,20 +387,28 @@ pub fn url(cfg: &IndexConfig) -> String {
         .unwrap_or_else(|| DEFAULT_URL.to_string())
 }
 
-/// The cached index, without touching the network.
+/// The cached index, without touching the network. The cache belongs to the
+/// URL it was fetched from: a copy fetched from another URL (an old default,
+/// a changed `[index] url`) is never handed out for this one.
 pub fn cached(paths: &Paths, cfg: &IndexConfig) -> Loaded {
     let url = url(cfg);
     let meta = read_meta(paths).unwrap_or_default();
-    let text = fs::read_to_string(cache_file(paths)).ok();
+    let other_url = (meta.url != url).then(|| meta.url.clone()).filter(|u| !u.is_empty() && meta.fetched_ms > 0);
+    let ours = meta.url == url && meta.fetched_ms > 0;
+    let text = if ours { fs::read_to_string(cache_file(paths)).ok() } else { None };
+    let meta = if meta.url == url { meta } else { Meta::default() };
     let mut out = Loaded { url: url.clone(), fetched_ms: meta.fetched_ms, from_cache: true, ..Default::default() };
     match text.as_deref().map(Index::parse) {
         Some(Ok(i)) => out.index = i,
         Some(Err(e)) => out.hint = Some(format!("cached index unreadable: {e:#}")),
         None => {
             out.fetched_ms = 0;
-            out.hint = Some(match &meta.last_error {
-                Some(e) => format!("no index yet: {e}"),
-                None => "no index cached yet (`lmdeck browse` fetches it)".into(),
+            out.hint = Some(match (&meta.last_error, &other_url) {
+                (Some(e), _) => format!("no index yet: {e}"),
+                (None, Some(o)) => {
+                    format!("the cached index is from {o}, not {url}; `lmdeck browse --refresh` fetches it")
+                }
+                (None, None) => "no index cached yet (`lmdeck browse` fetches it)".into(),
             });
         }
     }
@@ -408,9 +416,6 @@ pub fn cached(paths: &Paths, cfg: &IndexConfig) -> Loaded {
         if let Some(e) = meta.last_error.as_ref().filter(|_| meta.error_ms > meta.fetched_ms) {
             out.hint = Some(format!("using the cached index from {}: {e}", out.age_text()));
         }
-    }
-    if !meta.url.is_empty() && meta.url != url && out.fetched_ms > 0 {
-        out.hint = Some(format!("cached index is from {} (the configured url changed; refreshing)", meta.url));
     }
     out
 }
@@ -434,7 +439,7 @@ pub fn load(paths: &Paths, cfg: &IndexConfig, force: bool) -> Loaded {
     }
     let url = url(cfg);
     let res = fetch_text(&url, cfg).and_then(|t| Index::parse(&t).map(|i| (t, i)).context("the fetched index"));
-    let mut meta = read_meta(paths).unwrap_or_default();
+    let mut meta = read_meta(paths).filter(|m| m.url == url).unwrap_or_default();
     match res {
         Ok((text, index)) => {
             let now = now_ms();
@@ -447,9 +452,8 @@ pub fn load(paths: &Paths, cfg: &IndexConfig, force: bool) -> Loaded {
         Err(e) => {
             meta.last_error = Some(format!("{e:#}"));
             meta.error_ms = now_ms();
-            if meta.url.is_empty() {
-                meta.url = url.clone();
-            }
+            meta.url = url.clone();
+
             let _ = serde_json::to_string(&meta).map(|m| write_atomic(&meta_file(paths), &m));
             let mut c = cached(paths, cfg);
             let base = if c.fetched_ms > 0 {
@@ -524,19 +528,19 @@ tags = { engine = "tensorfold", quant = "exl3" }
 
     #[test]
     fn github_urls_and_auth_rules() {
-        let want = Some(("jvr0x".into(), "lmdeck".into(), "main".into(), "index.toml".into()));
+        let want = Some(("javierbits".into(), "lmdeck".into(), "main".into(), "index.toml".into()));
         assert_eq!(github_file(DEFAULT_URL), want);
-        assert_eq!(github_file("https://raw.githubusercontent.com/jvr0x/lmdeck/main/index.toml"), want);
-        assert_eq!(github_file("github:jvr0x/lmdeck/index.toml@main"), want);
+        assert_eq!(github_file("https://raw.githubusercontent.com/javierbits/lmdeck/main/index.toml"), want);
+        assert_eq!(github_file("github:javierbits/lmdeck/index.toml@main"), want);
         assert_eq!(github_file("https://example.com/index.toml"), None);
         // With a token: contents API, Bearer, raw media type.
         let r = request_for(DEFAULT_URL, Some("T0K"), Some("OTHER"));
-        assert!(r.url.ends_with("/repos/jvr0x/lmdeck/contents/index.toml?ref=main"), "{}", r.url);
+        assert!(r.url.ends_with("/repos/javierbits/lmdeck/contents/index.toml?ref=main"), "{}", r.url);
         assert!(r.headers.contains(&("Authorization".into(), "Bearer T0K".into())));
         assert!(r.headers.contains(&("Accept".into(), "application/vnd.github.raw".into())));
         // Without: the raw URL, no auth.
         let r = request_for(DEFAULT_URL, None, Some("OTHER"));
-        assert_eq!(r.url, "https://raw.githubusercontent.com/jvr0x/lmdeck/main/index.toml");
+        assert_eq!(r.url, "https://raw.githubusercontent.com/javierbits/lmdeck/main/index.toml");
         assert!(!r.headers.iter().any(|(k, _)| k == "Authorization"));
         // A GitHub token never goes to another host; token_env's does.
         let r = request_for("https://example.com/i.toml", Some("T0K"), None);
@@ -549,11 +553,37 @@ tags = { engine = "tensorfold", quant = "exl3" }
     fn recipe_links_resolve_against_the_index() {
         assert_eq!(
             resolve_link(DEFAULT_URL, "recipes/x.toml"),
-            "https://github.com/jvr0x/lmdeck/blob/main/recipes/x.toml"
+            "https://github.com/javierbits/lmdeck/blob/main/recipes/x.toml"
         );
         assert_eq!(resolve_link("github:o/r/index.toml@v2", "recipes/x.toml"), "github:o/r/recipes/x.toml@v2");
         assert_eq!(resolve_link("/srv/idx/index.toml", "x.toml"), "/srv/idx/x.toml");
         assert_eq!(resolve_link(DEFAULT_URL, "https://h/x.toml"), "https://h/x.toml");
+    }
+
+    #[test]
+    fn the_cache_belongs_to_its_url() {
+        if std::env::var("LMDECK_INDEX_URL").is_ok() {
+            return; // the env override would pick the URL for both configs
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(
+            |k| (k == "LMDECK_HOME").then(|| dir.path().join("h").display().to_string()),
+            dir.path().into(),
+        );
+        let a = dir.path().join("a.toml");
+        fs::write(&a, SAMPLE).unwrap();
+        let cfg_a = IndexConfig { url: Some(format!("file://{}", a.display())), ..Default::default() };
+        let loaded = load(&paths, &cfg_a, true);
+        assert_eq!(loaded.index.entries.len(), 2, "{:?}", loaded.hint);
+        assert_eq!(cached(&paths, &cfg_a).index.entries.len(), 2);
+        // Another URL never gets A's copy, even when fetching it fails.
+        let cfg_b = IndexConfig { url: Some("file:///nonexistent/b.toml".into()), ..Default::default() };
+        let c = cached(&paths, &cfg_b);
+        assert!(c.index.entries.is_empty() && c.fetched_ms == 0);
+        assert!(c.hint.as_deref().unwrap_or("").contains("a.toml"), "{:?}", c.hint);
+        let l = load(&paths, &cfg_b, false);
+        assert!(l.index.entries.is_empty(), "B must not reuse A's cache");
+        assert!(l.hint.as_deref().unwrap_or("").starts_with("couldn't fetch the index"), "{:?}", l.hint);
     }
 
     #[test]

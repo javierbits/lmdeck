@@ -1916,7 +1916,15 @@ fn add_from_index(ctx: &Ctx, arg: &str, name: Option<String>, git_ref: Option<St
     let e = e.clone();
     println!("{} {} {}", cyan("◆"), bold(&e.name), dim(&format!("from the index ({})", loaded.url)));
     if e.recipe.is_some() && git_ref.is_none() {
-        let mut r = lmdeck::index::fetch_recipe(&ctx.cfg.index, &e)?.expect("entry has a recipe link");
+        // A recipe that ships inside this binary needs no network at all.
+        let mut r = match catalog::builtin().into_iter().find(|f| f.recipe.name == e.name) {
+            Some(f) => {
+                println!("  {}", dim("using the built-in copy that ships with lmdeck"));
+                f.recipe
+            }
+            None => lmdeck::index::fetch_recipe(&ctx.cfg.index, &e)?.expect("entry has a recipe link"),
+        };
+
         if let Some(n) = name {
             if !valid_name(&n) {
                 bail!("invalid name '{n}'");
