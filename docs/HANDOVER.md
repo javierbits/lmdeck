@@ -2,11 +2,18 @@
 
 **Repo:** https://github.com/jvr0x/lmdeck. It is a **private** repo owned by `jvr0x` (Javier).
 
-**State (2026-10-23):**
-- `main`: `cacce29` (wrap-only recipes, LMDeploy, TOML only) on top of `80fe886`, then three test-hardening commits (`322532c`, `3295fc8`, `bcb7136`), a doc update (`5be1e3c`), and the upstream update indicator for wrapped recipes (the commit after `5be1e3c`).
-- CI was green on ubuntu, macOS and MSRV 1.85 at `bcb7136`; see `gh run list` for the update-indicator commit.
+**State (2026-10-30):**
+- `main` on top of `c423cc7` (opencode-export mirror) holds:
+  - `81cfb42` first-run setup wizard: machine, models dir, cluster peers and sources
+  - `2851b37` drop the browse tab and web view; lmdeck browse stays
+  - `3deac6b` fabric shapes: switchless ring and folded ring in cabled order
+  - `ee7bb8e` topology layout for any host count
+  - `501232d` deepseek v4.1 flash 4x spark tensorfold built-in
+  - `6f87b6c` setup wizard: plain punctuation in prompts and readme
+  - the handover update after it
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass on the Spark (`spark.local`). `add_wraps_a_repo_and_runs_it_detached` in `tests/cli.rs` fails now and then there ("my-server exited during startup"), also when run alone; the test predates these commits and passes on a re-run.
 - macOS CI note: the runners now have Homebrew Python 3.15, and a fresh `python3 -m http.server` there has taken ~40 s to answer. Tests that use it have long ready timeouts, and `free_port()` never hands out the same port twice.
-- Crate `lmdeck` v0.1.0, Rust edition with `rust-version = "1.85"`, about 12.5k lines of Rust.
+- Crate `lmdeck` v0.1.0, Rust edition with `rust-version = "1.85"`.
 - Nothing has been published to crates.io, PyPI, or npm.
 
 ## What lmdeck is
@@ -24,7 +31,7 @@ It is the successor to Javier's older Python tool **`jvr0x/lmswitch`**, which is
 lmdeck **never applies patches or builds engines**. Repos that need a patched engine (e.g. Mia's Ornith/TensorFold repo) are *wrapped*: lmdeck clones the repo, runs its own `start.sh`/`stop.sh` with settings as env vars, and watches/stops the server. A `[patches]` / `[engine.scripts]` / `[model.draft]` design was drafted and dropped; don't reintroduce it.
 
 ### Owner context
-- Javier owns **3 NVIDIA DGX Sparks** (GB10, 128 GB unified memory, arm64 Linux) and a Mac mini (Apple Silicon, macOS 26).
+- Javier owns **4 NVIDIA DGX Sparks** (GB10, 128 GB unified memory, arm64 Linux) and a Mac mini (Apple Silicon, macOS 26).
 - He uses EXL3 (exllamav3 / TabbyAPI), vLLM, llama.cpp, llama-swap, LM Studio, and TensorFold.
 - He cares a lot about looks. He loved the omp-style TUI and the Omarchy themes.
 - He wants code pushed to GitHub, not zip files.
@@ -46,15 +53,18 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - `lmdeck add <owner/repo | url | dir> [--name] [--ref] [--force]`: needs `start.sh` + `stop.sh` at the root, reads `VAR=${VAR:-default}` lines (root `*.sh`, `scripts/*.sh`, `.env.example`) for port/host/container, pins the cloned commit, writes TODOs for what it can't tell.
   - **Upstream update checks** (`src/updates.rs`): for cloned checkouts, `git ls-remote --symref` (timeout via a killed process group, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode`/`ConnectTimeout`, http low-speed limit) compares the checkout's HEAD to the branch head. States: `current`, `behind` (branch ref moved → `⬆ update`, `lmdeck pull`), `pinned_newer` (tag/sha pin and the default branch, or `[source] branch`, moved → `⬆ newer`, `lmdeck pull --latest` rewrites `ref` in the deck recipe), `not_cloned` (never checked), `unknown` (offline/gone; never an error), `disabled`. Cache `~/.cache/lmdeck/update-check.json`, `[updates] check/ttl_hours (6)/timeout_secs (5)`, `LMDECK_NO_UPDATE_CHECK=1`; errors are re-tried after 15 min. CLI listings re-check stale entries (3 s timeout); TUI and `serve` read the cache only and refresh in a background thread. Status is recomputed from the local HEAD each read, so it clears right after a pull. Shown in `list`, `recipe list/show` (+ JSON `update`), `lmdeck outdated [--fetch] [--json]` (alias `updates`), the TUI (badge, details line, `u` key) and the web cards (badge, `⬆ Update` button posting `{"latest":true}` for pins).
   - Built-in `ornith-1.5-122b-tensorfold` wraps MiaAI-Lab/Ornith-1.5-122B-TensorFold @ `0c8fd6a` (detached, container `ornith-122b-tf`, port 8888, `./stop.sh`, `docker logs -f ornith-122b-tf`, ready_timeout 10800, no `[model]`).
+  - Built-in `deepseek-v4.1-flash-1017-4x-spark-tensorfold` wraps MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold @ `476bbc7` (detached, container `dsv41-1017-tf`, port 8888, `./start.sh` / `./stop.sh`, ready_timeout 43200, no `[model]`, no `[[nodes]]`: Mia's script ssh's the other three Sparks). `[engine.command_by_fabric] ring = ["./start-switchless.sh"]` picks Mia's switchless launcher when the detected fabric is a ring; a switch or anything else runs `./start.sh`. `scripts/local.sh` (from `scripts/local.sh.example`) must name `WORKER`, `WORKER2`, `WORKER3` before the first real start.
   - `examples/ornith-122b-awq-lmdeploy.toml`: LMDeploy-in-Docker example with a clearly marked **placeholder** model repo (`<your-org>/…`). Not a built-in.
   - The health check polls `/v1/models`.
   - Servers are detached processes. Stopping sends SIGTERM to the process group, then SIGKILL after 20 s. Docker servers stop with `docker stop`, LM Studio with `lms unload`.
+- **First-run setup** (`src/setup.rs`): runs once before the first interactive command. It shows the detected machine (platform, memory, GPUs, engines, CX7/RDMA and Tailscale ports), asks for the models dir (with free space), probes CX7 neighbours, their subnets and Tailscale peers for `lmdeck serve` on 7979 and offers to add each to `hosts.toml`, then asks for recipe sources. `[setup] done = true` in config.toml ends it; `LMDECK_NO_SYNC=1` skips it.
 - **CLI commands:**
   - `list [-l|-d|-a] [--json]`
   - `use`/`on`/`start` and `switch`, both with `--dry-run` and `--force`
   - `outdated [names] [--fetch] [--json]`
   - `stop [--all]`, `logs`, `pull [--latest]` (via the `hf` CLI, `lms get`, or `tensorfold pull`; updates the checkout for `[source]` recipes)
-  - `add <repo>` (wrap a start.sh/stop.sh repo)
+  - `add <repo>` (wrap a start.sh/stop.sh repo) and `add <name>` (from the index)
+  - `browse` (the recipe index)
   - `init`
   - `recipe search|add|list|show|run|remove`
   - `doctor [--json]`
@@ -80,20 +90,20 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - Weights: each serve indexes its HF cache + models dir (`/api/weights`); the controller merges (60 s cache). `lmdeck weights`, "⛁ weights on" in list/cards/details, `⛁` in the TUI dl column.
   - Run-on (`--on`, TUI `o`, web dropdown): the fit check uses the run host; load estimate from size / link speed. **No copy mode exists.** Weights elsewhere → Mia's `WORKER_WEIGHTS=nfs`: read-only `/etc/exports` line + `sudo -n exportfs -ra` only with `[weights] allow_export = true` (else printed), `docker volume` type nfs, `test -f`/`find -L` preflight, mount at `/root/.cache/huggingface:ro`, `HF_HUB_OFFLINE=1`. Docker recipes with HF-cache weights only. No CX7 link → refused unless `--allow-slow-link` (loud warning).
   - Multi-node `[[nodes]]` recipes: ordered start with readiness gates, rollback on failure, reverse stop, aggregate + per-node status, `logs --node`. Placeholders `{head_addr} {node_addr} {ifname} {hca} {gid_index} {weights_mount} …` mirror lmswitch `vllm-dual` (NCCL ifname/HCA/GID, compile caches off NFS). `examples/vllm-ray-2spark.toml` is marked UNTESTED.
-  - CX7 detection (`/api/fabric`, no sudo): `ip -j`, `/sys/class/net`, mlx5 driver, RDMA devices, RoCE v2 GID index; L2 segment graph (cable vs synthetic switch from subnet membership / LLDP), LAN/Tailscale fallback, multi-GPU + hostname/alias/model, dot-art icons, `link_addr` and `[[link]]` overrides. Views: `lmdeck hosts topology [--json]`, TUI tab 3, web SVG.
-- **Recipe index + Browse** (`index.toml`, `src/index.rs`, `src/browse.rs`, `src/tui/browseview.rs`):
-  - `index.toml` at the repo root: two real MiaAI-Lab TensorFold entries (Ornith-1.5-122B on one Spark, GLM-5.3-Flash on two). Speeds and sizes are quoted from each repo's README, with a `note`; lmdeck never measured them.
+  - CX7 detection (`/api/fabric`, no sudo): `ip -j`, `/sys/class/net`, mlx5 driver, RDMA devices, RoCE v2 GID index; L2 segment graph (cable vs synthetic switch from subnet membership / LLDP), LAN/Tailscale fallback, multi-GPU + hostname/alias/model, dot-art icons, `link_addr` and `[[link]]` overrides. Views: `lmdeck hosts topology [--json]`, TUI tab 3, web SVG. The TUI and web layouts handle any number of hosts.
+  - **Fabric shape** (`fabric::shape`, `ShapeKind`): `single`, `cable` (two Sparks on one cable), `mesh` (every pair cabled, e.g. a triangle of three), `ring` (four or more Sparks switchless, each cabled to two neighbours in one cycle), `switch` (one CX7 switch segment holds every host), `mixed`, `none`. A ring carries its cabled order: a folded ring racked 1-2-3-4 and cabled 1-2-4-3-1 reads `spark → spark2 → spark4 → spark3 → spark`, and NCCL ranks follow that order. `lmdeck hosts topology` prints the fabric line (JSON `fabric {kind, order}`), the TUI and web draw a ring in cabled order, and `use --dry-run` prints the fabric and the workers in cabled order. A cluster plan on a ring routes each pair over the cables (`fabric::cable_path`) when the direct path is the LAN, and warns when the ranks skip the cabled order.
+  - Ring placeholders for `[[nodes]]` and custom recipes: `{fabric} {fabric_order} {ring_rank} {ring_prev} {ring_next} {ring_prev_addr} {ring_next_addr} {ring_prev_ifname} {ring_next_ifname}`. `[engine.command_by_fabric]` (custom only) maps a shape name to the start command; keys are checked against the shape names. `LMDECK_FABRIC` forces the shape. Demo topologies: `LMDECK_DEMO_TOPO=ring4|fold4|switch8|…`; fixtures in `tests/fixtures/fabric/` (`make.py` generates `ring4-*` and `fold4-*`).
+- **Recipe index** (`index.toml`, `src/index.rs`, `src/browse.rs`):
+  - `index.toml` at the repo root: three real MiaAI-Lab TensorFold entries (Ornith-1.5-122B on one Spark, GLM-5.3-Flash on two, DeepSeek-V4.1-Flash-1017 on four). Speeds and sizes are quoted from each repo's README, with a `note`; lmdeck never measured them. The DeepSeek `size_gb` is the four rank files (~320 GB), not the ~510 GB checkpoint.
   - Fetch: `[index] url` (default this repo's `main`; `LMDECK_INDEX_URL` overrides; `file://` works), cached at `~/.cache/lmdeck/index.toml`, TTL `ttl_hours` (6), `timeout_secs` (5). GitHub URLs use the contents API with `GITHUB_TOKEN`/`GH_TOKEN`/`gh auth token` (private repo works), else the raw URL; other URLs only get `[index] token_env`. Never prompts. Every failure keeps the cache with a hint. `LMDECK_NO_GH=1` skips `gh auth token`.
   - `lmdeck browse [words] [-t tag] [--sort name|sparks|speed] [--fits] [--refresh|--offline] [--json]`; `lmdeck add <name>` resolves through the index (native recipe link, else wraps the repo) with "did you mean".
-  - TUI tab 6 (Browse): list (state ●◆○, ⬆ update badge, engine, ×sparks, speed, fit), details, index panel; `↵`/`i` install (subprocess `lmdeck add`, no prompts), `/` search with `tag:x`/`#x`, `S` sort, `f` fits, `r` refresh.
-  - Web: a **Browse** button next to Deck/All (`?scope=browse&q=…&sort=speed`): tag chips, sort select, fits chip, cards with Install / README / copy command. API: `GET /api/index`, `POST /api/index/refresh`, `POST /api/add/{name}` (same loopback/token guard as other POSTs).
   - Fit for an index entry: sparks needed vs machines (this one + hosts.toml), the built-in recipe's compat report if it ships with lmdeck, `size_gb` vs memory.
 - **Themes** (`src/theme/`, `scripts/import-omarchy-themes.py`):
   - 24 themes: `omp` (the default), the 22 Omarchy themes Javier listed, and Starship.
   - Colours are taken from `omacom/omarchy` `themes/<slug>/colors.toml` at commit 967bbdd. The repo moved there from basecamp/omarchy.
   - Contrast is tested. The theme is saved in `~/.config/lmdeck/config.toml`. `--theme` and `LMDECK_THEME` override it.
   - Omarchy's MIT licence is in `licenses/omarchy-MIT.txt`.
-- **Tests:** 192 (154 unit, 18 `tests/cli.rs`, 6 `tests/index.rs` against a fake HTTP server, 5 `tests/multihost.rs` driving real `lmdeck serve` processes, 9 `tests/web.rs`). Index tests: fetch + cache + TTL, fallback to the cache with a hint (500, newer schema, offline, unreachable), the GitHub contents API + Bearer header, `token_env` (GITHUB_TOKEN not leaked to other hosts), browse filter/sort/fit, `add <name>` resolution and "did you mean"; the web test lists the index and installs by name. Test servers get `LMDECK_NO_GH=1` and a dead `LMDECK_INDEX_URL`, so nothing reaches GitHub. Update checks use local bare repos as remotes: branch and pinned recipes going behind/newer, `pull`/`pull --latest` clearing it, a removed remote → unknown, TTL 0, the env switch, the TUI badge and `u`, and the web badge + pull. No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
+- **Tests:** 246 (207 unit, 20 `tests/cli.rs`, 6 `tests/index.rs` against a fake HTTP server, 5 `tests/multihost.rs` driving real `lmdeck serve` processes, 8 `tests/web.rs`). Fabric tests cover one Spark, two on a cable, a triangle, a plain 4-ring, the folded 4-ring in cabled order, folded rings of 4 to 12, two separate 4-rings among 8 (mixed), and 8 on a switch; cluster tests check ring ranks, neighbours and placeholders; the TUI test draws the folded ring in cabled order; a CLI test checks the DeepSeek recipe picks `./start-switchless.sh` on `ring4`/`fold4` and `./start.sh` on `switch8`. Index tests: fetch + cache + TTL, fallback to the cache with a hint (500, newer schema, offline, unreachable), the GitHub contents API + Bearer header, `token_env` (GITHUB_TOKEN not leaked to other hosts), browse filter/sort/fit, `add <name>` resolution and "did you mean". Test servers get `LMDECK_NO_GH=1` and a dead `LMDECK_INDEX_URL`, so nothing reaches GitHub. Update checks use local bare repos as remotes: branch and pinned recipes going behind/newer, `pull`/`pull --latest` clearing it, a removed remote → unknown, TTL 0, the env switch, the TUI badge and `u`, and the web badge + pull. No network or GPU. New ones cover: wrapper parse; detached start with a stub `start.sh` (backgrounds `python3 -m http.server`) reaching ready and stopping via `stop.sh`; detached failure + log follower; source clone + update + pin from a local git repo; `lmdeck add` on a local fixture, end-to-end (add → dry-run → detached use → stop → pull); lmdeploy native/docker dry-run and the example; YAML rejected.
 - **Docs:** the README covers install, quick start, TUI, themes, the web dashboard, hosts and telemetry, commands, sources, the recipe format, engines, TensorFold, wrapped recipes, and files. This file is also kept in the repo as `docs/HANDOVER.md`. Screenshots are in `docs/screenshots/`.
 
 ## Files and dirs at runtime
@@ -113,7 +123,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
 - The TUI has only been driven in a simulated terminal, never a real one.
 - Update checks: tested only against local bare repos. Real GitHub over HTTPS/SSH, the timeout on a hung network, and private repos that need credentials (they should show `unknown`, never prompt) are unverified. The web badge/button was checked through the API and a JS syntax check, not visually.
 
-- Recipe index: the real private `index.toml` fetch was verified once from this VM with a `gh` token (and the 404 + hint without one). Installing the two real entries from Browse was not run here (it would clone the MiaAI-Lab repos; `add` of Ornith was checked earlier via `add <repo>`). The web Browse view was checked in headless Chrome (screenshot), the TUI tab only in the simulated terminal.
+- Recipe index: the real private `index.toml` fetch was verified once from this VM with a `gh` token (and the 404 + hint without one). Installing the real entries by name was not run here (it would clone the MiaAI-Lab repos; `add` of Ornith was checked earlier via `add <repo>`).
 - Multi-host: tested on one VM only (three `lmdeck serve` homes on loopback, hand-written `[[link]]` entries, python stub servers, real small downloaded weights). Never run: real CX7 cabling or detection on a Spark (the fixtures are constructed, not captured), NFS exports, `exportfs`, docker NFS volumes and the preflight, Ray/vLLM across nodes, `examples/vllm-ray-2spark.toml`, the load-time estimate against reality, and the non-loopback 403 path (no second interface here).
 
 ## Suggested next steps (rough priority)
@@ -125,8 +135,10 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
    - Fix whatever doesn't match reality.
 2. **Same pass on the Mac:** MLX, LM Studio, TensorFold.
 3. **Multi-host on real Sparks:** check CX7 detection against `lmdeck hosts topology`, one run-on over NFS (`--on`, with `allow_export` off first), then the UNTESTED vLLM+Ray example.
-4b. **Run the Ornith wrapper on a Spark** (`lmdeck use ornith-1.5-122b-tensorfold`), check the detached/container/logs path, and tune `ready_timeout`.
-4c. **Convert `jvr0x/ai-models` to TOML** if Javier wants a default source again (that repo needs his OK; don't touch lmswitch).
+4a. **Four Sparks on real cables:** run `lmdeck hosts topology` on the folded ring and on the plain ring and check the fabric line and order; then `lmdeck use deepseek-v4.1-flash-1017-4x-spark-tensorfold --dry-run` (expect `./start-switchless.sh`). Before the first real start, set `WORKER`, `WORKER2`, `WORKER3` in Mia's `scripts/local.sh` in cabled order (on the folded ring: `spark2`, `spark4`, `spark3`); lmdeck prints that order and leaves the file to Javier.
+4b. **Rebuild the installed binary** on each Spark (`cargo build --release` or `cargo install --path .`) so it carries the ring support and the wizard.
+4c. **Run the Ornith wrapper on a Spark** (`lmdeck use ornith-1.5-122b-tensorfold`), check the detached/container/logs path, and tune `ready_timeout`.
+4d. **Convert `jvr0x/ai-models` to TOML** if Javier wants a default source again (that repo needs his OK; don't touch lmswitch).
 5. **llama-swap config export** (`lmdeck export llama-swap`).
 6. **Smaller fixes:**
    - Docker recipes have no RSS.
