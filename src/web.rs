@@ -17,7 +17,8 @@
 //! - `GET  /api/probe?port=`           does a TCP port answer on this machine
 //! - `GET  /api/plan/{recipe}?on=<host>`  where weights come from and the NFS steps (dry run)
 //! - `POST /api/start/{recipe}` body `{"on":"<host>","allow_slow_link":false}` runs it on another host
-//! - `POST /api/run` `{"recipe":"<toml>","only":false,"force":false}`  needs `[serve] accept_recipes`
+//! - `POST /api/run` `{"recipe":"<toml>","only":false,"force":false}`  needs `[serve] accept_recipes`;
+//!   `"peers":["<host>",…]` says the controller filled in the recipe's peers (they count as this machine's Sparks)
 //! - `POST /api/weights/{export,volume,preflight}`  the NFS steps (see `placement`)
 //! - `GET  /api/hosts/{host}/{recipes,status,logs/{recipe}}`, `POST /api/hosts/{host}/{start,stop,switch}/{recipe}`
 //!   proxied to that host with the token from hosts.toml
@@ -563,8 +564,11 @@ fn post_more(st: &State, req: Request, api: &str, body: &str) -> Option<Request>
                 if !r.nodes.is_empty() {
                     return Err(anyhow!("upload each node's recipe, not the multi-node one"));
                 }
+                // Reason: a controller that filled in the recipe's peers names them, and they
+                // stand in for this machine's own hosts.toml, which it need not have.
+                let picked: Option<Vec<String>> = serde_json::from_value(v.get("peers").cloned().unwrap_or_default())?;
                 crate::catalog::save_remote(&st.deck.paths, &r)?;
-                let m = st.deck.start_recipe(&r, b("only"), b("force"))?;
+                let m = st.deck.start_recipe(&r, picked.as_deref(), b("only"), b("force"))?;
                 Ok(json!({"ok": true, "message": m}))
             })()
         }

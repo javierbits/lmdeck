@@ -136,17 +136,18 @@ pub fn resolve<'a>(deck: &Deck, r: &'a Recipe) -> Result<(Cow<'a, Recipe>, Optio
 /// The Sparks a wrapped recipe's scripts drive, as [`peers`] picked them.
 #[derive(Debug, Default)]
 pub struct Peers {
-    /// Each one's name and the CX7 address this machine reaches it on, in rank order.
+    /// Each one's name and the CX7 address the head reaches it on, in rank order.
     pub hosts: Vec<(String, String)>,
     /// Planning notes (a peer reached through another Spark).
     pub warnings: Vec<String>,
 }
 
 /// The peers of a wrapped recipe whose own scripts drive `[hardware] hosts`
-/// Sparks: the other machines, picked around this one the way `host =
-/// "auto"` picks workers. None, without asking the fabric, when the recipe
-/// uses no peer placeholder.
-pub fn peers(paths: &Paths, cfg: &Config, r: &Recipe) -> Result<Peers> {
+/// Sparks: the other machines, picked around `head` (`local`, or the
+/// hosts.toml host the recipe starts on) the way `host = "auto"` picks
+/// workers, from this machine's hosts.toml and fabric graph. None, without
+/// asking the fabric, when the recipe uses no peer placeholder.
+pub fn peers(paths: &Paths, cfg: &Config, r: &Recipe, head: &str) -> Result<Peers> {
     if crate::vars::peer_past(r.engine.texts(), 0).is_none() {
         return Ok(Peers::default());
     }
@@ -162,13 +163,13 @@ pub fn peers(paths: &Paths, cfg: &Config, r: &Recipe) -> Result<Peers> {
     let show = |h: &str| if h == LOCAL { node.clone() } else { h.to_string() };
     let rack = rack(paths, cfg);
     let graph = crate::topology::graph_for(paths, cfg, &rack);
-    let picked = choose(&graph, &rack, LOCAL, &[LOCAL.to_string()], hosts - 1, &show).map_err(|e| {
+    let picked = choose(&graph, &rack, head, &[head.to_string()], hosts - 1, &show).map_err(|e| {
         anyhow!("{}: [hardware] hosts = {hosts} needs {} more Spark(s) for its peers but {e:#}", r.name, hosts - 1)
     })?;
     let mut out = Peers::default();
     for p in &picked {
-        let link = crate::cluster::link_for(&graph, LOCAL, p, &show, &mut out.warnings);
-        let addr = link.as_ref().and_then(|l| l.sides(LOCAL)).map(|(_, far)| far.ip.clone());
+        let link = crate::cluster::link_for(&graph, head, p, &show, &mut out.warnings);
+        let addr = link.as_ref().and_then(|l| l.sides(head)).map(|(_, far)| far.ip.clone());
         out.hosts.push((show(p), addr.ok_or_else(|| anyhow!("{}: no CX7 path to {}", r.name, show(p)))?));
     }
     Ok(out)

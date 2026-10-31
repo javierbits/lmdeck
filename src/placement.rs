@@ -27,7 +27,7 @@ use crate::fabric::{Link, LinkKind};
 use crate::hosts::LOCAL;
 use crate::ops::Target;
 use crate::paths::Paths;
-use crate::recipe::{NfsMount, Recipe};
+use crate::recipe::{Engine, NfsMount, Recipe};
 use crate::weights::Index;
 
 /// CX7 line rate when the port speed couldn't be read (labelled nominal).
@@ -147,6 +147,17 @@ pub struct Plan {
     pub estimate: Option<Estimate>,
     pub run_mem_gb: Option<f64>,
     pub need_gb: Option<f64>,
+    /// The recipe's peers (`[hardware] hosts`), picked around the run host on
+    /// this machine's fabric graph: each one's name and the CX7 address the
+    /// run host reaches it on, in rank order. Empty when it names no peer.
+    pub peers: Vec<(String, String)>,
+    /// With peers and `command_by_fabric`: the CX7 fabric shape this machine
+    /// sees, and the command it picks for the run host (shell-quoted).
+    pub fabric: Option<(String, String)>,
+    /// The env entries this machine fills for the run host (the peers, and
+    /// `{fabric}` with them), as a local plan shows them: `KEY=value`, or
+    /// `KEY` alone for a secret or an engine other than `custom`.
+    pub env: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -167,6 +178,15 @@ impl Plan {
         }
         if let (Some(need), Some(have)) = (self.need_gb, self.run_mem_gb) {
             out.push(format!("fit: needs ~{need:.0} GB, {} has {have:.0} GB", show(&self.run_host)));
+        }
+        out.extend(self.env.iter().map(|e| format!("env:  {e}")));
+        if !self.peers.is_empty() {
+            let list: Vec<String> =
+                self.peers.iter().enumerate().map(|(i, (h, a))| format!("{}. {h} {a}", i + 1)).collect();
+            out.push(format!("peers: {}", list.join(", ")));
+        }
+        if let Some((shape, command)) = &self.fabric {
+            out.push(format!("fabric: {shape} (as {node} sees it), so {} runs {command}", show(&self.run_host)));
         }
         if let Some(n) = &self.nfs {
             out.push(format!("1. on {} (check /etc/exports; root):", show(&n.home)));
@@ -424,11 +444,21 @@ pub fn require_link<'a>(
     }
 }
 
-/// Picks where the weights come from for `r` on `run_host`.
+/// Picks where the weights come from for `r` on `run_host`, and the peers
+/// around it when the recipe's scripts drive several Sparks.
 pub fn plan(paths: &Paths, cfg: &Config, r: &Recipe, run_host: &str, allow_slow: bool) -> Result<Plan> {
     let node = cfg.node_name();
     let run_key = if crate::remote::is_local(run_host, &node) { LOCAL.to_string() } else { run_host.to_string() };
     crate::remote::check_host(paths, &run_key, &node)?;
+    // Reason: the run host may hold no hosts.toml, so this machine picks its peers on its
+    // own graph, and too few fail here, before the run host is asked to start anything.
+    let peers = crate::pick::peers(paths, cfg, r, &run_key)?;
+    let shape = if peers.hosts.is_empty() { None } else { crate::topology::fabric_for(paths, cfg, r) };
+    let fabric = shape.map(|s| {
+        let argv = r.engine.command_by_fabric.get(s.kind.as_str()).unwrap_or(&r.engine.command);
+        let line = shlex::try_join(argv.iter().map(String::as_str)).unwrap_or_else(|_| argv.join(" "));
+        (s.kind.as_str().to_string(), line)
+    });
     let idx = Index::fresh(paths, cfg, crate::weights::INDEX_TTL);
     let locs = idx.locate(r);
     let mut p = Plan {
@@ -441,8 +471,21 @@ pub fn plan(paths: &Paths, cfg: &Config, r: &Recipe, run_host: &str, allow_slow:
         estimate: None,
         run_mem_gb: None,
         need_gb: r.hardware.min_memory_gb.or(r.model.size_gb.map(|g| g * 1.2)),
-        warnings: vec![],
+        peers: peers.hosts,
+        fabric,
+        env: vec![],
+        warnings: peers.warnings,
     };
+    // Only the env filled here: `{port}`, `{hf_home}` and the like are the run host's.
+    let shown = |k: &str| r.engine.name == Engine::Custom && !k.contains("TOKEN") && !k.contains("KEY");
+    let placed = placed_recipe(r, &p);
+    p.env = placed
+        .engine
+        .env
+        .iter()
+        .filter(|(k, v)| r.engine.env.get(*k) != Some(*v))
+        .map(|(k, v)| if shown(k) { format!("{k}={v}") } else { k.clone() })
+        .collect();
     p.run_mem_gb = run_memory(paths, &run_key);
     if let (Some(need), Some(have)) = (p.need_gb, p.run_mem_gb) {
         if need > have {
@@ -540,9 +583,22 @@ fn run_memory(paths: &Paths, key: &str) -> Option<f64> {
     v.pointer("/telemetry/mem_total_gb").and_then(|m| m.as_f64()).filter(|g| *g > 0.0)
 }
 
-/// The recipe as the run host should start it (NFS volume mounted).
+/// The recipe as the run host should start it: the peers this machine picked
+/// filled in (with them, the command for this machine's view of the fabric),
+/// and the NFS volume mounted.
 pub fn placed_recipe(r: &Recipe, plan: &Plan) -> Recipe {
     let mut out = r.clone();
+    let mut vars = crate::vars::peer_vars(&plan.peers);
+    if let Some((shape, _)) = &plan.fabric {
+        // Reason: a run host without hosts.toml sees itself alone (`single`) and would
+        // run the wrong launcher; the shape and its command travel picked instead.
+        if let Some(argv) = out.engine.command_by_fabric.remove(shape) {
+            out.engine.command = argv;
+        }
+        out.engine.command_by_fabric.clear();
+        vars.insert("fabric".into(), shape.clone());
+    }
+    out.engine.fill(&vars);
     if let Some(n) = &plan.nfs {
         out.model.nfs_volume = Some(NfsMount { volume: n.volume.clone(), mount_at: n.mount_at.clone() });
         out.model.home = None;
@@ -578,10 +634,13 @@ pub fn prepare_nfs(deck: &Deck, n: &Nfs, run: &Target, image: &str) -> Result<Ve
 pub fn execute(deck: &Deck, r: &Recipe, plan: &Plan, only: bool, force: bool) -> Result<Vec<String>> {
     let (_, run) = Target::of(deck, &plan.run_host)?;
     let mut out = vec![];
+    // The peers filled in, by name: the run host takes them as its Sparks.
+    let names: Vec<String> = plan.peers.iter().map(|(h, _)| h.clone()).collect();
+    let picked = (!names.is_empty()).then_some(names.as_slice());
     if let Some(n) = &plan.nfs {
         out.extend(prepare_nfs(deck, n, &run, r.engine.image.as_deref().unwrap_or_default())?);
         let placed = placed_recipe(r, plan);
-        out.push(run.start_recipe(deck, &placed, only, force)?);
+        out.push(run.start_recipe(deck, &placed, picked, only, force)?);
         Record {
             recipe: r.name.clone(),
             run_host: plan.run_host.clone(),
@@ -594,13 +653,17 @@ pub fn execute(deck: &Deck, r: &Recipe, plan: &Plan, only: bool, force: bool) ->
     }
     if run.is_local() {
         Record::remove(&deck.paths, &r.name);
-        out.push(deck.start_recipe(r, only, force)?);
+        out.push(deck.start_recipe(r, None, only, force)?);
         return Ok(out);
     }
-    if run.knows(deck, &r.name)? {
+    // Reason: with peers the recipe goes resolved even when the run host knows the name
+    // (a built-in on both): its own copy would pick them from its own hosts.toml.
+    if picked.is_some() {
+        out.push(run.start_recipe(deck, &placed_recipe(r, plan), picked, only, force)?);
+    } else if run.knows(deck, &r.name)? {
         out.push(run.start_named(deck, &r.name, only, force)?);
     } else {
-        out.push(run.start_recipe(deck, r, only, force)?);
+        out.push(run.start_recipe(deck, r, None, only, force)?);
     }
     // Remembered so `stop`, `logs` and the views find it on that host.
     Record {

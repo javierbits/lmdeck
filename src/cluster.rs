@@ -612,7 +612,7 @@ pub fn start(deck: &Deck, r: &Recipe, opts: &Opts, mut progress: impl FnMut(&str
             if let Some(nfs) = &n.nfs {
                 l.extend(crate::placement::prepare_nfs(deck, nfs, &t, r.engine.image.as_deref().unwrap_or_default())?);
             }
-            l.push(t.start_recipe(deck, &n.recipe, false, opts.force)?);
+            l.push(t.start_recipe(deck, &n.recipe, None, false, opts.force)?);
             Ok(l)
         })();
         match step {

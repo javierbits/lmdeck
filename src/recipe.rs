@@ -331,6 +331,22 @@ impl EngineSpec {
         let lists = [&self.args, &self.volumes, &self.command, &self.stop, &self.logs];
         lists.into_iter().flatten().chain(by_fabric).chain(self.env.values()).chain(&self.container).map(String::as_str)
     }
+
+    /// Fills `vars` (placeholder name to value) into the strings [`texts`]
+    /// lists; placeholders `vars` doesn't name stay for the machine that runs it.
+    ///
+    /// [`texts`]: EngineSpec::texts
+    pub fn fill(&mut self, vars: &BTreeMap<String, String>) {
+        let by_fabric = self.command_by_fabric.values_mut().flatten();
+        let lists = [&mut self.args, &mut self.volumes, &mut self.command, &mut self.stop, &mut self.logs];
+        let texts =
+            lists.into_iter().flatten().chain(by_fabric).chain(self.env.values_mut()).chain(&mut self.container);
+        for s in texts {
+            for (k, v) in vars {
+                *s = s.replace(&format!("{{{k}}}"), v);
+            }
+        }
+    }
 }
 
 /// What the machine needs for this recipe to make sense.

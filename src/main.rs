@@ -1361,7 +1361,7 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         .with_fleet(r, || lmdeck::hosts::fleet(&ctx.paths, &hw.platform));
     let port = deck::planned_for(&cat, &ctx.paths, &ctx.cfg, r);
     let fabric = topology::fabric_for(&ctx.paths, &ctx.cfg, r);
-    let peers = lmdeck::pick::peers(&ctx.paths, &ctx.cfg, r)?;
+    let peers = lmdeck::pick::peers(&ctx.paths, &ctx.cfg, r, hosts::LOCAL)?;
     let plan = engine::plan(
         r,
         &PlanCtx::new(&ctx.cfg, p.local)

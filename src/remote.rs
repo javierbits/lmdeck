@@ -97,9 +97,10 @@ impl Client {
     }
 
     /// Uploads a recipe (TOML) and starts it (`POST /api/run`; the host must
-    /// have `[serve] accept_recipes = true`).
-    pub fn run(&self, recipe_toml: &str, only: bool, force: bool) -> Result<String> {
-        let v = self.post("run", &json!({"recipe": recipe_toml, "only": only, "force": force}))?;
+    /// have `[serve] accept_recipes = true`). `picked` names the peers this
+    /// machine filled in for the host, which takes them as its own Sparks.
+    pub fn run(&self, recipe_toml: &str, picked: Option<&[String]>, only: bool, force: bool) -> Result<String> {
+        let v = self.post("run", &json!({"recipe": recipe_toml, "peers": picked, "only": only, "force": force}))?;
         Ok(v.get("message").and_then(Value::as_str).unwrap_or("ok").to_string())
     }
 

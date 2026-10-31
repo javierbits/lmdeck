@@ -44,7 +44,9 @@ Every call goes to that host's own `lmdeck serve`
 (`/api/hosts/<host>/{start,stop,switch}/<recipe>` on the controller proxies
 it). A host only runs recipes it already has by name, unless its config has
 `[serve] accept_recipes = true`, which lets a controller upload a recipe
-(`POST /api/run`). A recipe is a command line, so that is off by default.
+(`POST /api/run`). A recipe is a command line, so that is off by default. A
+recipe that uses peer placeholders always goes uploaded, with the peers the
+controller picked filled in (§3).
 
 ### Tokens
 
@@ -205,6 +207,51 @@ plan refuses and says to run on the home or mount by hand.
 **No ConnectX-7 link, no streaming.** Without a CX7 link between the two
 hosts the plan is refused. `--allow-slow-link` (or the web/TUI equivalent)
 allows LAN / Tailscale and adds a loud warning.
+
+**Peers come from the controller.** A wrapped recipe whose own scripts
+drive several Sparks (`[hardware] hosts = N` and `{peer_addr}`,
+`{peer2_addr}`, … in its command or env, README "Recipe format") needs
+the N-1 Sparks around the machine it runs on. With `--on`, the controller
+picks them, so one machine (the hub) holds the cluster config and the
+others run `lmdeck serve` with no `hosts.toml`:
+
+- it picks them around **the run host**, from its own `hosts.toml` and
+  fabric graph, the way `host = "auto"` places workers: on a ring, the run
+  host's cable neighbours (next, then previous), then onward from next, in
+  cabled order from the run host. `{peer…_addr}` is each one's CX7 address
+  as the run host reaches it (through the Sparks cabled between them when
+  they share no cable, with a warning), `{peer…_host}` its hosts.toml name;
+- it fills those into the recipe it uploads, and with `command_by_fabric`
+  picks the command (and fills `{fabric}`) for the shape it sees, since a
+  run host without `hosts.toml` sees itself alone. The run host fills only
+  its own placeholders (`{port}`, `{host}`, `{container}`, `{user}`,
+  `{hf_home}`, the `[engines]` binaries, …);
+- the upload carries the peers' names (`"peers"` in `POST /api/run`): the run
+  host counts itself and them as the recipe's Sparks instead of asking its
+  own `hosts.toml`, and doesn't pick peers again. A run host that has the
+  recipe by name (a built-in on both machines) still gets the upload, so it
+  needs `[serve] accept_recipes = true`. There the upload sits beside the
+  built-in: its status, logs and stop go by the name, while a start on that
+  host by the bare name asks which one (`remote/<name>` or `builtin/<name>`);
+- too few Sparks around the run host fail on the controller, before
+  anything starts there:
+  `[hardware] hosts = 3 needs 2 more Spark(s) for its peers but only 1 machine(s) on ember's CX7 fabric are free (…)`.
+
+```sh
+$ lmdeck use deepseek-v4.1-flash-1017-4x-spark-tensorfold --on spark3 --dry-run
+plan for deepseek-v4.1-flash-1017-4x-spark-tensorfold
+  deepseek-v4.1-flash-1017-4x-spark-tensorfold on spark3
+  weights: not on any known host
+  env:  WORKER=10.40.3.2
+  env:  WORKER2=10.40.1.1
+  env:  WORKER3=10.40.2.1
+  peers: 1. spark4 10.40.3.2, 2. spark1 10.40.1.1, 3. spark2 10.40.2.1
+  fabric: ring (as spark1 sees it), so spark3 runs ./start-switchless.sh
+  warning: spark3 and spark1 share no cable: their CX7 traffic goes through spark2, …
+```
+
+A recipe without peer placeholders keeps the plain path: started by name
+when the run host has it, uploaded as written when it doesn't.
 
 ## 4. Multi-node recipes (`[[nodes]]`)
 

@@ -197,11 +197,19 @@ impl Probe for Fixture {
     }
 }
 
-/// Detects this machine's fabric (read-only, no sudo).
+/// Detects this machine's fabric (read-only, no sudo). With `LMDECK_NO_FABRIC`
+/// set it reports no NICs, as off Linux.
 pub fn detect() -> Fabric {
-    if !cfg!(target_os = "linux") {
+    // Reason: tests stand several hosts up on one machine, whose real CX7 ports
+    // would link them all; only their hosts.toml [[link]]s may.
+    let off = std::env::var_os("LMDECK_NO_FABRIC").is_some();
+    if off || !cfg!(target_os = "linux") {
         let mut f = Fabric { hostname: crate::util::hostname(), ..Default::default() };
-        f.notes.push("fabric detection reads Linux sysfs and `ip`; this OS reports no NICs".into());
+        f.notes.push(if off {
+            "LMDECK_NO_FABRIC is set: no NICs reported".into()
+        } else {
+            "fabric detection reads Linux sysfs and `ip`; this OS reports no NICs".into()
+        });
         return f;
     }
     detect_with(&System)

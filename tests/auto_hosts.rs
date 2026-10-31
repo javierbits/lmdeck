@@ -429,3 +429,31 @@ fn builtin_four_spark_recipe_hands_mias_scripts_its_workers() {
     let err = d.fail(&["use", name, "--dry-run"]);
     assert!(err.contains("hosts = 4") && err.contains("3 more Spark"), "{err}");
 }
+
+/// Started on another Spark (`--on spark3`), the built-in 4x recipe's
+/// workers are picked around spark3, not around this machine: its next cable
+/// neighbour, the Spark after that, then its previous neighbour (cabled order
+/// from spark3), each as spark3 reaches it. The ring's launcher is picked
+/// here too, since the run host may have no hosts.toml to see the ring with.
+#[test]
+fn a_start_on_another_spark_takes_the_workers_around_it_in_cabled_order() {
+    let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
+    // Cabled 1-2-3-4-1: spark4, spark1, spark2. Folded (1-2-4-3-1): spark1, spark2, spark4.
+    let rings = [
+        ("ring4", [("spark4", "10.40.3.2"), ("spark1", "10.40.1.1"), ("spark2", "10.40.2.1")]),
+        ("fold4", [("spark1", "10.41.4.2"), ("spark2", "10.41.1.2"), ("spark4", "10.41.3.1")]),
+    ];
+    for (topo, picks) in rings {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = Demo::new(tmp.path(), topo, 4);
+        let plan = d.run(&["use", name, "--on", "spark3", "--dry-run"]);
+        let listed: Vec<String> = picks.iter().enumerate().map(|(i, (h, a))| format!("{}. {h} {a}", i + 1)).collect();
+        let peers = format!("peers: {}", listed.join(", "));
+        assert!(plan.contains(&peers), "{topo}: missing {peers:?} in\n{plan}");
+        for (var, (_, addr)) in ["WORKER", "WORKER2", "WORKER3"].into_iter().zip(picks) {
+            let line = format!("env:  {var}={addr}");
+            assert!(plan.contains(&line), "{topo}: missing {line:?} in\n{plan}");
+        }
+        assert!(plan.contains("spark3 runs ./start-switchless.sh"), "{topo}:\n{plan}");
+    }
+}

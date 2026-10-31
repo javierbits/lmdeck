@@ -398,7 +398,9 @@ Design:
 - **Remote control.** Start, stop, switch and logs on another host go to
   that host's own `lmdeck serve`: `lmdeck use|switch|stop|logs … --on spark2`,
   the TUI Hosts tab, or the dashboard's host cards. A host only runs recipes
-  it has by name unless it sets `[serve] accept_recipes = true`.
+  it has by name unless it sets `[serve] accept_recipes = true`. A recipe
+  that uses peer placeholders (`{peer_addr}`, …) always goes uploaded, with
+  the peers the controller picked filled in.
 - **Multi-host** (weights on another host, running a model where its weights
   aren't, `[[nodes]]` recipes across Sparks, CX7 detection, topology): see
   **[docs/MULTIHOST.md](docs/MULTIHOST.md)**. A `[[nodes]]` worker with
@@ -463,7 +465,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
 | `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
-| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. `--dry-run` prints the plan. |
+| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. |
 | `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
 | `lmdeck hosts topology [--json] [--no-verify]` | Hosts and the links between them: CX7 cables, LAN, Tailscale, with a ping / TCP check. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
@@ -690,6 +692,20 @@ FABRIC_PEER2 = "{peer2_addr}"
 
 `--dry-run` lists the picks (`peers: 1. gigabyte 10.100.128.1, 2. ember 10.100.132.2`)
 and shows the filled `env`.
+
+Started on another host (`lmdeck use <recipe> --on ember`), the peers come
+from the controller, so the run host needs no `hosts.toml` of its own. The
+controller picks them around the run host on its own host list and fabric
+graph (on a ring: the run host's cable neighbours, then onward from its
+next one), as the addresses the run host reaches them on. It fills
+`{peer…_addr}` / `{peer…_host}` into the recipe it uploads, and with
+`command_by_fabric` it also picks the command and `{fabric}` for the shape
+it sees. The run host fills only its own placeholders (`{port}`, `{host}`,
+`{user}`, `{hf_home}`, …). That upload needs `[serve] accept_recipes = true`
+on the run host, even for a recipe the run host has by name (a built-in):
+its own copy would pick peers from its own `hosts.toml`. Too few Sparks
+around the run host fail on the controller, before anything starts there,
+and the controller's `--dry-run` shows the peers and the `env` they fill.
 
 A `custom` recipe can pick its launcher from the CX7 fabric. lmdeck detects
 the shape across this machine and `hosts.toml` when the recipe starts

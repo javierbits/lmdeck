@@ -530,24 +530,30 @@ impl Deck {
                 &crate::cluster::Opts { only, force, ..Default::default() },
             );
         }
-        self.start_recipe(r, only, force)
+        self.start_recipe(r, None, only, force)
     }
 
-    /// Starts a recipe that need not be in the catalog (an uploaded or derived one).
-    pub fn start_recipe(&self, r: &Recipe, only: bool, force: bool) -> Result<String> {
+    /// Starts a recipe that need not be in the catalog (an uploaded or derived
+    /// one). `picked` names the peers a controller picked around this machine
+    /// and filled in: with them, this machine needs no hosts.toml of its own.
+    pub fn start_recipe(&self, r: &Recipe, picked: Option<&[String]>, only: bool, force: bool) -> Result<String> {
         if r.nodes() > 1 {
             bail!("{} spans {} nodes; give it [[nodes]] to launch it across hosts", r.name, r.nodes());
         }
         let hw = Hardware::detect();
         let inv = self.inventory(false);
         let p = self.presence(r);
-        let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
-            .with_fleet(r, || crate::hosts::fleet(&self.paths, &hw.platform));
+        let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size)).with_fleet(r, || match picked {
+            // Reason: the controller found them answering on the CX7 fabric around this
+            // machine; this machine and they are the Sparks the recipe's scripts drive.
+            Some(names) => compat::Fleet { online: (names.len() as u32).saturating_add(1) },
+            None => crate::hosts::fleet(&self.paths, &hw.platform),
+        });
         let cat = self.catalog();
 
         let port = planned_for(&cat, &self.paths, &self.cfg, r);
         let fabric = crate::topology::fabric_for(&self.paths, &self.cfg, r).map(|f| f.kind.as_str().to_string());
-        let peers = crate::pick::peers(&self.paths, &self.cfg, r)?;
+        let peers = crate::pick::peers(&self.paths, &self.cfg, r, crate::hosts::LOCAL)?;
         let ctx = PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric);
         let plan = engine::plan(r, &ctx.with_vars(crate::vars::peer_vars(&peers.hosts)))?;
         match runner::status(&self.paths, &r.name, plan.port) {
@@ -602,7 +608,7 @@ impl Deck {
         let name = match resolve(&cat, target) {
             Ok(f) if !f.recipe.nodes.is_empty() => return crate::cluster::stop(self, &f.recipe),
             Ok(f) => f.recipe.name.clone(),
-            Err(_) if RunRecord::load(&self.paths, target).is_some() => target.to_string(),
+            Err(_) if self.is_run_name(&cat, target) => target.to_string(),
             Err(e) => return Err(e),
         };
         if runner::stop(&self.paths, &name, &self.docker())? {
@@ -675,14 +681,24 @@ impl Deck {
         }
     }
 
-    /// Resolves `target` to a recipe name (also accepts names of running servers).
+    /// Resolves `target` to a recipe name (also accepts names of running
+    /// servers, and a name several recipes share).
     pub fn name_of(&self, target: &str) -> Result<String> {
         let cat = self.catalog();
         match resolve(&cat, target) {
             Ok(f) => Ok(f.recipe.name.clone()),
-            Err(_) if RunRecord::load(&self.paths, target).is_some() => Ok(target.to_string()),
+            Err(_) if self.is_run_name(&cat, target) => Ok(target.to_string()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Whether `target` is the name a run goes by here although it names no
+    /// one recipe: a run record has it, or several origins share it.
+    fn is_run_name(&self, cat: &Catalog, target: &str) -> bool {
+        // Reason: a controller's upload of a built-in (its peers filled in, or its weights
+        // over NFS) sits beside the built-in. Starting it by that bare name stays ambiguous,
+        // but its log and run record go by the name alone, and must outlive the run.
+        RunRecord::load(&self.paths, target).is_some() || cat.entries.iter().any(|f| f.recipe.name == target)
     }
 }
 

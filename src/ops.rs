@@ -51,11 +51,19 @@ impl Target {
         }
     }
 
-    /// Starts `r` as given (uploaded to a remote host).
-    pub fn start_recipe(&self, deck: &Deck, r: &Recipe, only: bool, force: bool) -> Result<String> {
+    /// Starts `r` as given (uploaded to a remote host). `picked` names the
+    /// peers this machine filled in for the target, when it did.
+    pub fn start_recipe(
+        &self,
+        deck: &Deck,
+        r: &Recipe,
+        picked: Option<&[String]>,
+        only: bool,
+        force: bool,
+    ) -> Result<String> {
         match self {
-            Target::Local => deck.start_recipe(r, only, force),
-            Target::Remote(c) => c.run(&toml::to_string(r)?, only, force),
+            Target::Local => deck.start_recipe(r, picked, only, force),
+            Target::Remote(c) => c.run(&toml::to_string(r)?, picked, only, force),
         }
     }
 
