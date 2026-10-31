@@ -41,12 +41,11 @@ impl Host {
 
     pub fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_lmdeck"));
-        // Every "machine" here is this one: its real CX7 ports would link them all, so
-        // only the hosts.toml [[link]]s do.
         c.env("HOME", self.dir.join("home"))
             .env("LMDECK_HOME", self.dir.join("home"))
             .env("LMDECK_MODELS_DIR", self.dir.join("models"))
             .env("HF_HUB_CACHE", self.dir.join("hf"))
+            // Every "machine" here is this one: only hosts.toml [[link]]s link them, not its CX7 ports.
             .env("LMDECK_NO_FABRIC", "1")
             .env("NO_COLOR", "1")
             .env_remove("HF_HOME")

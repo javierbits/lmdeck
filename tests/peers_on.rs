@@ -1,13 +1,14 @@
 //! Several `lmdeck serve`s on one machine, each with its own LMDECK_HOME,
 //! standing in for separate hosts: a recipe with peers started on another
 //! host (`--on`) takes them from the controller, which holds the host list
-//! and the links, and an upload named like a built-in keeps its log and its
-//! stop by name.
+//! and the links (and runs the launcher for the ring the controller sees),
+//! and an upload named like a built-in keeps its log and its stop by name.
 
 mod common;
 
 use common::*;
 use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// A recipe with peers started on another host takes them from the controller,
@@ -110,4 +111,73 @@ fn an_upload_named_like_a_built_in_keeps_its_log_and_stop_by_name() {
     };
     let err = r.into_string().unwrap();
     assert!(err.contains("was not started"), "{err}");
+}
+
+/// A recipe with peers and a ring launcher (`command_by_fabric`), started on
+/// another host, runs the launcher for the ring the controller sees, though
+/// the run host has no hosts.toml and on its own sees itself alone
+/// (`single`). Without peers a recipe goes as written, and the run host
+/// picks its own launcher, as before.
+#[test]
+fn a_start_on_another_host_runs_the_launcher_for_the_controllers_ring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let names = ["a", "b", "c", "d"];
+    let ring: Vec<Served> = names
+        .iter()
+        .map(|n| {
+            let config = if *n == "a" { "[serve]\naccept_recipes = true\n" } else { "" };
+            serve(Host::new(root, &format!("s{n}"), config), &[])
+        })
+        .collect();
+    assert!(!ring[0].host.dir.join("home/config/hosts.toml").exists(), "a has no host list");
+    // Cabled a-b-c-d-a, the cable after each host on 10.99.<its place>.0.
+    let hosts: Vec<(&str, &str)> = names.iter().zip(&ring).map(|(n, s)| (*n, s.url.as_str())).collect();
+    let links: String = (0..4)
+        .map(|i| {
+            format!(
+                "[[link]]\na = \"{}\"\nb = \"{}\"\na_addr = \"10.99.{n}.1\"\nb_addr = \"10.99.{n}.2\"\nkind = \"cx7\"\n",
+                names[i],
+                names[(i + 1) % 4],
+                n = i + 1
+            )
+        })
+        .collect();
+    let c = Host::new(root, "ctl", "");
+    fs::write(c.dir.join("home/config/hosts.toml"), format!("{}{links}", hosts_toml(&hosts))).unwrap();
+    // Each launcher writes its name and WORKER to `out`, then serves HTTP; `extra` is more TOML.
+    let recipe = |name: &str, extra: &str, out: &Path| {
+        let launcher = |tag: &str| {
+            format!(
+                "[\"sh\", \"-c\", \"echo {tag} $WORKER > {} && exec python3 -u -m http.server {{port}} --bind 127.0.0.1 --directory {}\"]",
+                out.display(),
+                www(root).display()
+            )
+        };
+        format!(
+            "name = \"{name}\"\n[engine]\nname = \"custom\"\nport = {}\nready_timeout = 60\ncommand = {}\n\
+             [engine.command_by_fabric]\nring = {}\n{extra}",
+            free_port(),
+            launcher("single"),
+            launcher("ring")
+        )
+    };
+    let (out, plain_out) = (root.join("ringy.txt"), root.join("plain.txt"));
+    c.add_recipe("ringy", &recipe("ringy", "[engine.env]\nWORKER = \"{peer_addr}\"\n[hardware]\nhosts = 2\n", &out));
+    c.add_recipe("plain", &recipe("plain", "", &plain_out));
+
+    let plan = c.run(&["use", "ringy", "--on", "a", "--dry-run"]);
+    for want in ["env:  WORKER=10.99.1.2", "fabric: ring", "so a runs sh -c", "echo ring"] {
+        assert!(plan.contains(want), "missing {want:?} in\n{plan}");
+    }
+    let up = c.run(&["use", "ringy", "--on", "a"]);
+    assert!(up.contains("ringy is up on a"), "{up}");
+    // a's next cable neighbour is b, at 10.99.1.2 on their cable.
+    assert_eq!(fs::read_to_string(&out).unwrap_or_default().trim(), "ring 10.99.1.2", "{up}");
+    c.run(&["stop", "ringy", "--on", "a"]);
+
+    let up = c.run(&["use", "plain", "--on", "a"]);
+    assert!(up.contains("plain is up on a"), "{up}");
+    assert_eq!(fs::read_to_string(&plain_out).unwrap_or_default().trim(), "single", "{up}");
+    c.run(&["stop", "plain", "--on", "a"]);
 }
