@@ -4,8 +4,8 @@
 //! that answers has exactly what it said, and a host no longer looked at is
 //! forgotten. A push: a host's harnesses get the pushed lanes, then its own
 //! ones the hub didn't list. The record: what the hub knows of every host
-//! survives a save and a load, and a push another one overlapped claims no
-//! host.
+//! survives a save and a load, a host taken out of hosts.toml leaves it, and
+//! a push another one overlapped claims no host.
 
 use lmdeck::harness::Lane;
 use lmdeck::hub::{Exclusive, LastPush, Memory, Pushed, KEEP_MISSES};
@@ -196,4 +196,48 @@ fn an_overlapped_push_claims_no_host() {
         }
         assert!(record.took.is_empty(), "claims {order:?} left {:?}", record.took);
     }
+}
+
+/// Returns a local port nothing listens on (the listener closes on return).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// Runs `lmdeck args` as the machine whose home (and lmdeck home) is `home`,
+/// never the real one, and panics unless it succeeds.
+fn lmdeck(home: &Path, args: &[&str]) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_lmdeck"))
+        .args(args)
+        .env("HOME", home)
+        .env("LMDECK_HOME", home)
+        .env("NO_COLOR", "1")
+        .env_remove("LMDECK_NO_SYNC")
+        .env_remove("LMDECK_DEMO")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "lmdeck {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A host taken out of hosts.toml leaves the hub's record at the next push
+/// instead of counting as one that missed a look, while a host still listed
+/// that doesn't answer adds up its misses there.
+#[test]
+fn a_host_taken_out_of_hosts_toml_leaves_the_hubs_record() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let paths = paths_in(tmp.path());
+    lmdeck(&home, &["harness", "hub", "on"]);
+    // Nothing listens on either port: every look at them fails.
+    let host = |name: &str| format!("[[host]]\nname = \"{name}\"\nurl = \"http://127.0.0.1:{}\"\n\n", free_port());
+    let (a, b) = (host("a"), host("b"));
+    let misses = || -> Vec<(String, u32)> {
+        let record = LastPush::load(&paths).expect("the hub saved its record");
+        record.hosts.hosts.into_iter().map(|(h, s)| (h, s.misses)).collect()
+    };
+    fs::write(paths.config_dir.join("hosts.toml"), format!("{a}{b}")).unwrap();
+    lmdeck(&home, &["harness", "sync"]);
+    assert_eq!(misses(), [("a".to_string(), 1), ("b".to_string(), 1)]);
+    fs::write(paths.config_dir.join("hosts.toml"), &b).unwrap();
+    lmdeck(&home, &["harness", "sync"]);
+    assert_eq!(misses(), [("b".to_string(), 2)], "a is still in the record");
 }

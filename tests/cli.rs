@@ -760,27 +760,3 @@ fn the_hub_flag_survives_the_other_harness_settings() {
     assert!(e.run(&["harness"]).contains("hub: off"));
     e.cmd().args(["harness", "hub", "maybe"]).assert().failure().stderr(predicate::str::contains("'on' or 'off'"));
 }
-
-/// A host taken out of hosts.toml leaves the hub's record at the next push
-/// instead of counting as one that missed a look, while a host still listed
-/// that doesn't answer adds up its misses there.
-#[test]
-fn a_host_taken_out_of_hosts_toml_leaves_the_hubs_record() {
-    let e = Env::new();
-    e.run(&["harness", "hub", "on"]);
-    // Nothing listens on either port: every look at them fails.
-    let host = |name: &str| format!("[[host]]\nname = \"{name}\"\nurl = \"http://127.0.0.1:{}\"\n\n", free_port());
-    let (a, b) = (host("a"), host("b"));
-    let sync = || e.cmd().env_remove("LMDECK_NO_SYNC").args(["harness", "sync"]).assert().success();
-    let misses = || {
-        let text = fs::read_to_string(e.path("home/state/harness-hub.json")).unwrap();
-        let record: lmdeck::hub::LastPush = serde_json::from_str(&text).unwrap();
-        record.hosts.hosts.into_iter().map(|(h, s)| (h, s.misses)).collect::<Vec<_>>()
-    };
-    write(&e.path("home/config"), "hosts.toml", &format!("{a}{b}"));
-    sync();
-    assert_eq!(misses(), [("a".to_string(), 1), ("b".to_string(), 1)]);
-    write(&e.path("home/config"), "hosts.toml", &b);
-    sync();
-    assert_eq!(misses(), [("b".to_string(), 2)], "a is still in the record");
-}
