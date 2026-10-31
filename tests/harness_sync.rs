@@ -91,6 +91,9 @@ fn recipes_that_dont_chat_stay_out_of_the_harnesses() {
     assert!(err.contains("chat"), "{err}");
     c.run(&["stop", "judge"]);
     c.run(&["stop", "clef2"]);
+    // Reason: chat and clef run here, outside any serve, so nothing else stops them.
+    c.run(&["stop", "chat"]);
+    c.run(&["stop", "clef"]);
 }
 
 /// A model this machine starts or stops on another host (`--on`) reaches this
