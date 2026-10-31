@@ -649,6 +649,12 @@ pub fn start(deck: &Deck, r: &Recipe, opts: &Opts, mut progress: impl FnMut(&str
     }
     rec.phase = "up".into();
     rec.save(&deck.paths);
+    // Reason: the head may run on another host, where no sync on this machine ran; on
+    // the hub this also pushes the recipe to every host.
+    let note = crate::harness::sync_note(&deck.paths, &deck.cfg);
+    if !note.is_empty() {
+        progress(note.trim());
+    }
     Ok(lines)
 }
 
@@ -691,10 +697,11 @@ pub fn stop(deck: &Deck, r: &Recipe) -> Result<String> {
         }
     }
     Record::remove(&deck.paths, &r.name);
+    let note = crate::harness::sync_note(&deck.paths, &deck.cfg);
     if !errs.is_empty() {
-        bail!("stopped {}; failed: {}", done.join(", "), errs.join("; "));
+        bail!("stopped {}; failed: {}{note}", done.join(", "), errs.join("; "));
     }
-    Ok(format!("stopped {} (reverse order: {})", r.name, done.join(", ")))
+    Ok(format!("stopped {} (reverse order: {}){note}", r.name, done.join(", ")))
 }
 
 /// Per-node status for snapshots: local nodes from their run records,

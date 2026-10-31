@@ -230,6 +230,11 @@ pub struct HarnessConfig {
     /// copy the Mac's 30 s pull job fetches. Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opencode_export: bool,
+    /// This machine is the hub: after every start or stop it pushes every
+    /// host's running models to every host in hosts.toml, and its serve
+    /// polls for changes made elsewhere (see `crate::hub`). Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hub: bool,
 }
 
 impl HarnessConfig {
@@ -374,6 +379,9 @@ impl Config {
         }
         if harness.opencode_export {
             body.push_str("opencode_export = true\n");
+        }
+        if harness.hub {
+            body.push_str("hub = true\n");
         }
         if !harness.sync.is_empty() {
             let list: Vec<String> = harness.sync.iter().map(|s| format!("\"{s}\"")).collect();
@@ -525,6 +533,7 @@ mod tests {
                 hosts: Some(vec!["spark2".into()]),
                 opencode_export: true,
                 asked: true,
+                hub: true,
             },
         )
         .unwrap();
@@ -537,6 +546,7 @@ mod tests {
         assert_eq!(c.harness.hosts, Some(vec!["spark2".into()]));
         assert!(c.harness.opencode_export);
         assert!(c.harness.asked);
+        assert!(c.harness.hub);
         assert_eq!(c.engines.tabbyapi_dir.as_deref(), Some("~/t"));
     }
     #[test]

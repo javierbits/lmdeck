@@ -21,6 +21,8 @@
 //! - `POST /api/weights/{export,volume,preflight}`  the NFS steps (see `placement`)
 //! - `GET  /api/hosts/{host}/{recipes,status,logs/{recipe}}`, `POST /api/hosts/{host}/{start,stop,switch}/{recipe}`
 //!   proxied to that host with the token from hosts.toml
+//! - `POST /api/harness/lanes` `{"from":"<hub>","lanes":[…]}`  the hub's push: every model running in the
+//!   cluster, stored and synced into this machine's harnesses (see `crate::hub`)
 //!
 //! Auth: bound to loopback, no token is needed and the Host header must be
 //! localhost (DNS rebinding). Bound anywhere else, a token is generated if
@@ -601,6 +603,10 @@ fn post_more(st: &State, req: Request, api: &str, body: &str) -> Option<Request>
                 Ok(json!({"ok": true, "files": files}))
             })()
         }
+        "harness/lanes" => match crate::hub::Push::parse(&v) {
+            Ok(push) => push.apply(&st.deck.paths, &st.deck.cfg).map(|m| json!({"ok": true, "message": m})),
+            Err(e) => return refused(req, 400, &format!("{e:#}")),
+        },
         _ => {
             let Some(rest) = api.strip_prefix("hosts/") else { return Some(req) };
             let mut it = rest.splitn(3, '/');
@@ -610,9 +616,10 @@ fn post_more(st: &State, req: Request, api: &str, body: &str) -> Option<Request>
             if !matches!(verb, "start" | "stop" | "switch") {
                 return refused(req, 404, "unknown action (start, stop, switch)");
             }
-            client_for(st, host)
-                .and_then(|c| c.action(verb, target, b("force")))
-                .map(|m| json!({"ok": true, "message": m}))
+            // The model reaches this machine's harnesses now (on the hub, every host's).
+            client_for(st, host).and_then(|c| c.action(verb, target, b("force"))).map(|m| {
+                json!({"ok": true, "message": format!("{m}{}", crate::harness::sync_note(&st.deck.paths, &st.deck.cfg))})
+            })
         }
     };
     st.invalidate();
@@ -814,6 +821,14 @@ pub fn run(deck: Deck, opts: WebOptions) -> Result<()> {
     }
     println!("  ctrl-c to stop (servers it started keep running)");
     crate::updates::spawn_background(deck.paths.clone(), deck.cfg.clone());
+    if let Some(every) = crate::hub::Poller::spawn(deck.paths.clone()) {
+        if deck.cfg.harness.hub {
+            println!(
+                "  harness hub: every host's models reach every host's harnesses (looks every {} s)",
+                every.as_secs()
+            );
+        }
+    }
     let state = Arc::new(State::new(deck, token, loopback));
     serve(server, state);
     Ok(())

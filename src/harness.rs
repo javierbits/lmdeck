@@ -21,13 +21,21 @@
 //! Which harnesses are enabled lives in `[harness]` in config.toml. Before the
 //! first-run prompt has run (`asked`), every known harness is enabled and the
 //! writers no-op for the ones that are not installed.
+//!
+//! Across hosts, one machine can be the hub (`[harness] hub = true`, see
+//! [`crate::hub`]): after each start or stop it pushes every host's running
+//! models to every host, and its serve polls for changes made elsewhere.
+//! Every other machine syncs with the hub's last push plus its own running
+//! servers the hub didn't list, so a local sync never wipes the pushed lanes.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::catalog::Catalog;
@@ -37,8 +45,9 @@ use crate::paths::{home_dir, Paths};
 use crate::runner::{self, RunRecord, Status};
 use crate::util::hostname;
 
-/// One running server, as the harness configs describe it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One running server, as the harness configs describe it (and as the hub
+/// pushes it to the other hosts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lane {
     /// The served model id (the recipe name: llama.cpp gets `--alias`, vLLM
     /// and SGLang `--served-model-name`).
@@ -131,14 +140,38 @@ pub struct Synced {
     pub error: Option<String>,
 }
 
-/// Syncs every enabled harness with the currently running servers. Best
-/// effort: per-harness write errors are reported, never fatal.
+/// Syncs every enabled harness with the currently running servers (and,
+/// unless this is the hub, the lanes the hub last pushed: see `wanted`).
+/// Best effort: per-harness write errors are reported, never fatal.
 /// `LMDECK_NO_SYNC` disables the whole thing.
 pub fn sync(paths: &Paths, cfg: &Config) -> Vec<Synced> {
     if std::env::var_os("LMDECK_NO_SYNC").is_some() {
         return vec![];
     }
-    let (lanes, managed) = lane_sources(paths, cfg);
+    let held = crate::hub::Exclusive::take(paths);
+    let (lanes, managed) = wanted(paths, cfg);
+    write(cfg, &lanes, &managed, &held)
+}
+
+/// Returns the lanes this machine's harnesses get: its own and its hosts'
+/// running servers, merged (unless it is the hub, which keeps its own view)
+/// into the lanes the hub last pushed here.
+pub(crate) fn wanted(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
+    let own = lane_sources(paths, cfg);
+    match crate::hub::Pushed::load(paths).filter(|_| !cfg.harness.hub) {
+        Some(pushed) => pushed.merge(own),
+        None => own,
+    }
+}
+
+/// Writes `lanes` into every enabled harness; `_held` proves the caller
+/// holds the sync lock.
+pub(crate) fn write(
+    cfg: &Config,
+    lanes: &[Lane],
+    managed: &BTreeSet<String>,
+    _held: &crate::hub::Exclusive,
+) -> Vec<Synced> {
     let home = home_dir();
     enabled(cfg)
         .into_iter()
@@ -151,12 +184,12 @@ pub fn sync(paths: &Paths, cfg: &Config) -> Vec<Synced> {
                     // pull job fetches; off unless [harness] opencode_export.
                     let export =
                         cfg.harness.opencode_export.then(|| home.join(".local/share/opencode-export/opencode.json"));
-                    write_opencode(&path, export.as_deref(), &lanes)
+                    write_opencode(&path, export.as_deref(), lanes)
                 }
-                "omp" => write_omp(&path, &lanes),
-                "grok" => write_grok(&path, &lanes),
-                "pi" => write_pi(&path, &lanes),
-                "hermes" => write_hermes(&path, &lanes, &managed),
+                "omp" => write_omp(&path, lanes),
+                "grok" => write_grok(&path, lanes),
+                "pi" => write_pi(&path, lanes),
+                "hermes" => write_hermes(&path, lanes, managed),
                 _ => Ok(false),
             };
             match write {
@@ -167,20 +200,12 @@ pub fn sync(paths: &Paths, cfg: &Config) -> Vec<Synced> {
         .collect()
 }
 
-/// One-line summary for a start/stop message: ` (synced opencode, omp)`,
-/// or ` (harness sync failed: omp: …)` when a write went wrong.
+/// Syncs and returns the one-line summary for a start/stop message:
+/// ` (synced opencode, omp)`, or ` (harness sync failed: omp: …)` when a
+/// write went wrong. On the hub the sync also pushes to every host (see
+/// [`crate::hub::Hub::sync`]).
 pub fn sync_note(paths: &Paths, cfg: &Config) -> String {
-    let done = sync(paths, cfg);
-    let failed: Vec<String> = done.iter().filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.id))).collect();
-    if !failed.is_empty() {
-        return format!(" (harness sync failed: {})", failed.join("; "));
-    }
-    let changed: Vec<&str> = done.iter().filter(|s| s.changed).map(|s| s.id).collect();
-    if changed.is_empty() {
-        String::new()
-    } else {
-        format!(" (synced {})", changed.join(", "))
-    }
+    crate::hub::Hub::new(paths, cfg).sync().note()
 }
 
 /// The base URL host: `LMDECK_SYNC_HOST`, else the config `host` when it is a
@@ -205,6 +230,14 @@ fn serve_host_with(bind: &str, sync_env: Option<String>, hostname: &str) -> Stri
 /// host's running models (same-name remote lanes are skipped: a local lane
 /// and a remote one share the model id, and the harnesses key on it).
 fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
+    let remote = remote_lanes(paths, cfg.harness.hosts.as_deref(), &cfg.node_name());
+    lane_sources_with(paths, cfg, remote)
+}
+
+/// Returns [`lane_sources`] with the configured hosts' lanes given (the hub
+/// asks with a longer timeout, and its poller remembers them across failed
+/// fetches).
+pub(crate) fn lane_sources_with(paths: &Paths, cfg: &Config, remote: Vec<Lane>) -> (Vec<Lane>, BTreeSet<String>) {
     let host = serve_host(cfg);
     let cat = Catalog::load(paths, cfg);
     let mut managed: BTreeSet<String> = cat.entries.iter().map(|f| f.recipe.name.clone()).collect();
@@ -244,8 +277,7 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
             chat: true,
         });
     }
-    let wanted = cfg.harness.hosts.as_deref();
-    for mut lane in remote_lanes(paths, wanted, &cfg.node_name()) {
+    for mut lane in remote {
         match crate::cluster::node_of(cat.entries.iter().map(|f| &f.recipe), &lane.name) {
             Some((r, crate::cluster::Role::Head)) => {
                 (lane.name, lane.display) = (r.name.clone(), r.display().to_string());
@@ -264,11 +296,25 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
     (lanes, managed)
 }
 
-/// The running models of the configured hosts, fetched in parallel
-/// (best-effort: an unreachable host just contributes nothing). Each lane's
+/// Returns the running models of the configured hosts, fetched in parallel
+/// (best-effort: an unreachable host just contributes nothing).
+fn remote_lanes(paths: &Paths, hosts: Option<&[String]>, node_name: &str) -> Vec<Lane> {
+    remote_fetch(paths, hosts, node_name, FETCH_TIMEOUT)
+        .into_iter()
+        .flat_map(|(_, lanes)| lanes.unwrap_or_default())
+        .collect()
+}
+
+/// Asks every configured host (`hosts` narrows them) for its running models,
+/// in parallel: its name and lanes, `None` when it didn't answer. Each lane's
 /// host is the address part of the host's `hosts.toml` URL, so the written
 /// base URLs resolve wherever the harnesses run.
-fn remote_lanes(paths: &Paths, hosts: Option<&[String]>, node_name: &str) -> Vec<Lane> {
+pub(crate) fn remote_fetch(
+    paths: &Paths,
+    hosts: Option<&[String]>,
+    node_name: &str,
+    timeout: Duration,
+) -> Vec<(String, Option<Vec<Lane>>)> {
     let Ok(file) = HostsFile::load(paths) else { return vec![] };
     let targets: Vec<&HostEntry> = file
         .hosts
@@ -276,23 +322,20 @@ fn remote_lanes(paths: &Paths, hosts: Option<&[String]>, node_name: &str) -> Vec
         .filter(|e| !crate::remote::is_local(&e.name, node_name))
         .filter(|e| hosts.is_none_or(|h| h.iter().any(|n| n == &e.name)))
         .collect();
-    if targets.is_empty() {
-        return vec![];
-    }
     std::thread::scope(|s| {
-        let jobs: Vec<_> = targets.iter().map(|e| s.spawn(move || lanes_from(e))).collect();
-        jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+        let jobs: Vec<_> = targets.iter().map(|e| s.spawn(move || lanes_from(e, timeout))).collect();
+        targets.iter().zip(jobs).map(|(e, j)| (e.name.clone(), j.join().ok().flatten())).collect()
     })
 }
 
-/// One host's running models, from its `/api/snapshot`.
-fn lanes_from(e: &HostEntry) -> Vec<Lane> {
-    let Ok(v) = crate::remote::Client::new(e).get_timeout::<serde_json::Value>("snapshot", FETCH_TIMEOUT) else {
-        return vec![];
-    };
-    let Some(rows) = v.get("recipes").and_then(|r| r.as_array()) else { return vec![] };
-    let Some(host) = url_host(&e.url) else { return vec![] };
-    rows.iter()
+/// Returns one host's running models, from its `/api/snapshot`; `None` when
+/// it doesn't answer with one.
+fn lanes_from(e: &HostEntry, timeout: Duration) -> Option<Vec<Lane>> {
+    let v = crate::remote::Client::new(e).get_timeout::<serde_json::Value>("snapshot", timeout).ok()?;
+    let rows = v.get("recipes").and_then(|r| r.as_array())?;
+    let host = url_host(&e.url)?;
+    let lanes = rows
+        .iter()
         .filter(|r| r.get("status").and_then(|s| s.as_str()).is_some_and(|s| s == "loaded" || s == "loading"))
         .filter_map(|r| {
             let name = r.get("name")?.as_str()?.to_string();
@@ -309,7 +352,8 @@ fn lanes_from(e: &HostEntry) -> Vec<Lane> {
                 chat: r.get("chat").and_then(|c| c.as_bool()).unwrap_or(true),
             })
         })
-        .collect()
+        .collect();
+    Some(lanes)
 }
 
 /// The host part of a serve URL: `http://spark2.lan:7979` → `spark2.lan`.

@@ -741,3 +741,22 @@ fn adding_a_repo_a_builtin_wraps_adds_the_builtin_offline() {
     assert!(text.contains("start-switchless.sh") && text.contains("hosts = 4"), "{text}");
     assert!(!e.path("home/cache/checkouts").join("deepseek-v4.1-flash-1017-4x-spark-tensorfold").exists());
 }
+
+/// `[harness] hub = true` survives every other `lmdeck harness` setting (each
+/// one rewrites the whole `[harness]` table), `lmdeck harness` shows it, off
+/// removes it, and anything but on or off is refused.
+#[test]
+fn the_hub_flag_survives_the_other_harness_settings() {
+    let e = Env::new();
+    let config = || fs::read_to_string(e.path("home/config/config.toml")).unwrap();
+    assert!(e.run(&["harness", "hub", "on"]).contains("hub on"));
+    e.run(&["harness", "enable", "omp"]);
+    e.run(&["harness", "export", "on"]);
+    e.run(&["harness", "hosts", "none"]);
+    assert!(config().contains("hub = true") && config().contains("\"omp\""), "{}", config());
+    assert!(e.run(&["harness"]).contains("hub: on"));
+    assert!(e.run(&["harness", "hub", "off"]).contains("hub off"));
+    assert!(!config().contains("hub ="), "{}", config());
+    assert!(e.run(&["harness"]).contains("hub: off"));
+    e.cmd().args(["harness", "hub", "maybe"]).assert().failure().stderr(predicate::str::contains("'on' or 'off'"));
+}

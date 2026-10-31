@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9314242ab6c020ec9a1e1a7d37d09536bac164f1255274a2537f18453205c47b # shrinks to looks = [[Gone, Answered(["a"]), Gone], [Gone, Failed, Gone], [Gone, Failed, Gone]]

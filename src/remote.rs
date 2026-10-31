@@ -78,9 +78,15 @@ impl Client {
     /// `POST /api/<path>` with a JSON body; returns the reply (an `{"ok":false,"error":…}`
     /// reply becomes an error carrying the host's message).
     pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        self.post_timeout(path, body, WRITE_TIMEOUT)
+    }
+
+    /// Sends [`Client::post`] with its own timeout (a harness push must not
+    /// hold a start or stop up for long).
+    pub fn post_timeout(&self, path: &str, body: &Value, timeout: Duration) -> Result<Value> {
         let url = format!("{}/api/{path}", self.url);
-        let req = self.auth(Self::agent(WRITE_TIMEOUT).post(&url)).set("X-Lmdeck", "1");
-        let resp = req.send_json(body.clone()).map_err(|e| self.describe(e))?;
+        let req = self.auth(Self::agent(timeout).post(&url)).set("X-Lmdeck", "1");
+        let resp = req.send_json(body).map_err(|e| self.describe(e))?;
         resp.into_json().with_context(|| format!("{}: bad reply from {url}", self.name))
     }
 

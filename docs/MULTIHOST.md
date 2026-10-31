@@ -73,15 +73,70 @@ Tokens are never written to the repo or logs.
   test machine has no second interface).
 - No TLS of its own: use Tailscale, a VPN, or an HTTPS reverse proxy.
 - **Harness sync spans hosts.** Each machine writes the harness configs on
-  *itself* for the models it serves (opencode, omp, grok, pi, hermes — see
+  *itself* for the models it serves (opencode, omp, grok, pi, hermes: see
   the README's Harness sync), and every lmdeck also asks its configured
   hosts what *they* are serving: sparkA's opencode lists sparkB's running
   model (base URL pointed at sparkB), no copy involved. `lmdeck harness
   hosts all|none|NAME…` and `[harness] hosts` choose which hosts count. A
+  start or stop with `--on` syncs the machine that ran it at once. A
   `[[nodes]]` recipe syncs as one lane named after the recipe, pointed at
   its head (not `<recipe>.head`); workers get none. A recipe with
   `[harness] chat = false` (not a chat model) is left out wherever it runs:
-  each host's snapshot says so.
+  each host's snapshot says so. With a hub (below), every host's harnesses
+  list every host's models.
+
+### Harness sync from one hub
+
+The hosts don't need to know each other: one machine, the **hub**, does.
+Make the machine with the full hosts.toml the hub (`lmdeck harness hub on`,
+or `[harness] hub = true`); the others just run `lmdeck serve`.
+
+- **Push after every change.** After each start or stop the hub performs
+  (the CLI, `--on` start / stop / switch, a `[[nodes]]` recipe, the TUI,
+  the web dashboard, `lmdeck harness sync`), it works out every model
+  running anywhere (its own, plus each host's snapshot read with the 6 s
+  read timeout; the hub's `[harness] hosts` narrows whose models count)
+  and pushes the list to every host in hosts.toml with
+  `POST /api/harness/lanes`: in parallel, best effort, 5 s per host. The
+  CLI waits for the answers, so `lmdeck use X --on spark2` returns with
+  every host's harnesses written. The hub writes its own harnesses with the
+  same list.
+- **Look for changes made elsewhere.** The hub's `lmdeck serve` looks at
+  every host every `LMDECK_HARNESS_SYNC_SECS` seconds (default 15, `0`
+  turns it off) and pushes when the list changed, or to a host that didn't
+  take the last push (or wasn't in hosts.toml then). Its first look after
+  it starts pushes to every host. A host whose snapshot can't be fetched
+  keeps its last-known models for 2 failed looks in a row and loses them
+  on the 3rd. The serve reads config.toml before every look, so `hub
+  on|off` reaches its looking without a restart; its dashboard buttons
+  follow the flag after a restart.
+- **Receive.** Every serve takes the push under the rules of any write (the
+  token when one is set, `X-Lmdeck: 1`, a non-loopback peer only with a
+  token). A push with a lane no config could hold (a name that isn't a
+  recipe name, quotes, backslashes or control characters in a display
+  name, a host that isn't a host name or address, port 0) is refused
+  whole with 400; the hub leaves such lanes out of what it sends. The
+  serve stores the list in `~/.local/state/lmdeck/harness-lanes.json` and
+  syncs: the pushed models first, then its own running ones the hub didn't
+  list. Every later sync there (a local start or stop, `lmdeck harness
+  sync`) merges the stored push the same way, so it never wipes the other
+  hosts' models. `lmdeck harness` shows what was pushed and when. The hub
+  stores a push it receives but keeps its own view.
+- **Addresses.** A pushed model points at the address the hub's hosts.toml
+  gives its host, on that host too: a pushed model wins over a local one of
+  the same name, and grok tags it with its host. The hub's own models point
+  at its `LMDECK_SYNC_HOST`, else its config `host` when it is a specific
+  address, else `<hostname>.local`: that must resolve from every host.
+- **Off switches.** `LMDECK_NO_SYNC` turns pushing, looking and receiving
+  off (a push is answered, and nothing is written). `LMDECK_DEMO` never
+  pushes. Without a hub, `--on` still syncs the machine that ran it.
+
+What it costs: the hub rewrites every host's harness configs remotely, and
+opencode's `provider` table is replaced wholesale on each. A model stopped
+on a host stays in that host's harnesses (it is in the stored push) until
+the hub's next look. If the hub goes away, or `lmdeck harness hub off`
+turns it off, every host keeps the last push until another one arrives. A
+host's own `[harness] hosts` doesn't narrow what the hub pushed.
 
 
 ## 2. Where the weights live

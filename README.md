@@ -259,6 +259,19 @@ in sparkA's opencode without touching spark2. Each lane gets its own base
 URL; remote lanes are tagged with the host (`glm5.3-flash [Spark2]` in grok).
 An offline host just contributes nothing.
 
+With several machines, make one of them the **hub**: the one whose hosts.toml
+lists every other host (`lmdeck harness hub on`, saved as `[harness] hub =
+true`). After every start or stop it performs (the CLI, `--on`, the TUI, the
+dashboard, `lmdeck harness sync`), the hub pushes the list of every model
+running anywhere to every host in hosts.toml, and its `lmdeck serve` looks
+for models started or stopped elsewhere every `LMDECK_HARNESS_SYNC_SECS`
+seconds (default 15, `0` turns the looking off). The other machines need no
+host list: their serve stores the last push and syncs with it plus their own
+running models, and their own syncs keep the pushed ones. Without a hub,
+`lmdeck use X --on <host>` and `lmdeck stop X --on <host>` sync the machine
+that ran them. Addresses, auth and what it costs:
+[docs/MULTIHOST.md](docs/MULTIHOST.md#harness-sync-from-one-hub).
+
 A multi-node (`[[nodes]]`) recipe is one lane named after the recipe, the
 model its head serves (`--served-model-name <recipe>`, `--alias <recipe>`),
 with the head's address and port, wherever the head runs. Its workers serve
@@ -462,7 +475,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
 | `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |
 | `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
-| `lmdeck harness [list]` / `sync` / `enable <name>` / `disable <name>` | Agent harnesses (OpenCode, omp, Grok, pi, Hermes) lmdeck keeps pointed at served models; see [Harness sync](#harness-sync). |
+| `lmdeck harness [list]` / `sync` / `enable <name>` / `disable <name>` / `hub on` / `hub off` | Agent harnesses (OpenCode, omp, Grok, pi, Hermes) lmdeck keeps pointed at served models; `hub on` makes this machine the one that pushes every host's models to every host; see [Harness sync](#harness-sync). |
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. Off loopback every `/api` route but `/api/health` needs the token (reads too), and a state-changing request from a non-loopback peer without a configured token is refused with 403. Token: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
@@ -892,6 +905,7 @@ timeout_secs = 5      # per ls-remote, 1-120
 | upstream update checks | `~/.cache/lmdeck/update-check.json` |
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
+| harness pushes | `~/.local/state/lmdeck/harness-lanes.json` (the hub's last push to this machine); on the hub, `harness-hub.json` (what it pushed last, and to whom) |
 | harness configs | written into each harness's own file: `~/.config/opencode/opencode.json`, `~/.omp/agent/models.yml`, `~/.grok/config.toml`, `~/.pi/agent/models.json`, `~/.hermes/config.yaml` (see [Harness sync](#harness-sync)) |
 | model weights | the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull` downloads, GGUFs included; `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) for local-only weights and `[model] path` |
 
@@ -930,6 +944,7 @@ spec = "github:someone/recipes"
 asked = true
 sync = ["opencode", "omp"]
 # hosts = ["spark2"]       # whose running models are included (all configured by default)
+# hub = true               # push every host's models to every host (lmdeck harness hub on)
 ```
 
 ## Built-in examples

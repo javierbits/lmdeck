@@ -14,6 +14,7 @@ pub mod fabric;
 pub mod hardware;
 pub mod harness;
 pub mod hosts;
+pub mod hub;
 pub mod icons;
 pub mod index;
 pub mod models;

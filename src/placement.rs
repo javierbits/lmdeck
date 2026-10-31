@@ -624,7 +624,11 @@ pub fn start_on(deck: &Deck, target: &str, host: &str, only: bool, force: bool, 
     }
     let p = plan(&deck.paths, &deck.cfg, &r, host, allow_slow)?;
     let lines = execute(deck, &r, &p, only, force)?;
-    Ok(lines.last().cloned().unwrap_or_else(|| format!("started {} on {host}", r.name)))
+    let started = lines.last().cloned().unwrap_or_else(|| format!("started {} on {host}", r.name));
+    // A start here synced already; one on another host reaches this machine's
+    // harnesses (and, on the hub, every host's) now.
+    let note = if p.run_host == LOCAL { String::new() } else { crate::harness::sync_note(&deck.paths, &deck.cfg) };
+    Ok(format!("{started}{note}"))
 }
 
 #[cfg(test)]

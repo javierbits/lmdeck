@@ -771,3 +771,210 @@ fn a_checkout_at_its_ref_starts_offline_and_a_missing_ref_fails() {
     fs::rename(&up, tmp.path().join("moved")).unwrap();
     assert!(matches!(sync(&src(&v1), &dest, false), Ok(Outcome::Present(c)) if c == v1));
 }
+
+/// The provider ids `home`'s opencode.json lists, read as it is (no sync first).
+fn opencode_providers(home: &Path) -> Vec<String> {
+    let text = fs::read_to_string(home.join(".config/opencode/opencode.json")).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    v["provider"].as_object().map(|p| p.keys().cloned().collect()).unwrap_or_default()
+}
+
+/// Polls `home`'s opencode.json until it lists exactly `want`, or panics after `secs`.
+fn wait_for_providers(home: &Path, want: &[&str], secs: u64) {
+    let t0 = Instant::now();
+    loop {
+        let got = opencode_providers(home);
+        if got == want {
+            return;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(secs),
+            "{}: opencode providers stayed {got:?}, wanted {want:?}",
+            home.display()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The baseURL `home`'s opencode.json gives provider `name`.
+fn opencode_base_url(home: &Path, name: &str) -> String {
+    let text = fs::read_to_string(home.join(".config/opencode/opencode.json")).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    v["provider"][name]["options"]["baseURL"].as_str().unwrap_or_default().to_string()
+}
+
+/// The machine, with the opencode harness installed (its config directory exists).
+fn with_opencode(h: Host) -> Host {
+    fs::create_dir_all(h.dir.join("home/.config/opencode")).unwrap();
+    h
+}
+
+/// A hosts.toml listing each `(name, url)`.
+fn hosts_toml(hosts: &[(&str, &str)]) -> String {
+    hosts.iter().map(|(n, u)| format!("[[host]]\nname = \"{n}\"\nurl = \"{u}\"\n\n")).collect()
+}
+
+/// A model this machine starts or stops on another host (`--on`) reaches this
+/// machine's agent harnesses right away, as a local start or stop does, with
+/// no `lmdeck harness sync` in between. Its base URL is the other host's.
+#[test]
+fn remote_start_and_stop_sync_the_controllers_harnesses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let port = free_port();
+    let a = Host::new(root, "sa", "");
+    a.add_recipe("web", &web_recipe("web", root, port));
+    let a = serve(a, &[]);
+    let c = with_opencode(Host::new(root, "ctl", ""));
+    c.add_recipe("web", &web_recipe("web", root, port));
+    fs::write(c.dir.join("home/config/hosts.toml"), hosts_toml(&[("a", &a.url)])).unwrap();
+    let home = c.dir.join("home");
+
+    let up = c.run(&["use", "web", "--on", "a"]);
+    assert!(up.contains("web is up on a"), "{up}");
+    assert_eq!(opencode_providers(&home), ["web"], "after `use web --on a`:\n{up}");
+    assert_eq!(opencode_base_url(&home, "web"), format!("http://127.0.0.1:{port}/v1"));
+
+    let down = c.run(&["stop", "web", "--on", "a"]);
+    assert!(opencode_providers(&home).is_empty(), "after `stop web --on a`:\n{down}");
+}
+
+/// The hub (the machine with the host list and `[harness] hub = true`) keeps
+/// every host's agent harnesses in step with every model running anywhere. A
+/// start or stop made on another host, not through the hub, reaches a third
+/// host that has no host list of its own, and the hub itself.
+/// `LMDECK_HARNESS_SYNC_SECS` sets how often the hub's serve looks.
+#[test]
+fn the_hub_pushes_every_running_model_to_every_hosts_harnesses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let port = free_port();
+    let a = Host::new(root, "sa", "");
+    a.add_recipe("web", &web_recipe("web", root, port));
+    let a = serve(with_opencode(a), &[]);
+    let b = serve(with_opencode(Host::new(root, "sb", "")), &[]);
+    let mut h = with_opencode(Host::new(root, "hub", "[harness]\nhub = true\n"));
+    fs::write(h.dir.join("home/config/hosts.toml"), hosts_toml(&[("a", &a.url), ("b", &b.url)])).unwrap();
+    h.extra_env = vec![("LMDECK_HARNESS_SYNC_SECS".into(), "1".into())];
+    let h = serve(h, &[]);
+    let homes = [a.host.dir.join("home"), b.host.dir.join("home"), h.host.dir.join("home")];
+
+    // Started on a through a's own API: neither the hub nor b runs anything.
+    let started = code(ureq::post(&format!("{}/api/start/web", a.url)).set("X-Lmdeck", "1").call());
+    assert!((200..300).contains(&started), "start on a: {started}");
+    for home in &homes {
+        wait_for_providers(home, &["web"], 30);
+    }
+    // b and the hub reach it at a's address from the hub's host list.
+    for home in &homes[1..] {
+        assert_eq!(opencode_base_url(home, "web"), format!("http://127.0.0.1:{port}/v1"), "{}", home.display());
+    }
+
+    let stopped = code(ureq::post(&format!("{}/api/stop/web", a.url)).set("X-Lmdeck", "1").call());
+    assert!((200..300).contains(&stopped), "stop on a: {stopped}");
+    for home in &homes {
+        wait_for_providers(home, &[], 30);
+    }
+}
+
+/// A model the hub starts or stops on another host (`--on`) reaches every
+/// host's harnesses right away: the hub pushes after the start and after the
+/// stop, without waiting for its serve's next look (no hub serve runs here).
+#[test]
+fn a_start_from_the_hub_reaches_every_hosts_harnesses_at_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let port = free_port();
+    let a = Host::new(root, "sa", "");
+    a.add_recipe("web", &web_recipe("web", root, port));
+    let a = serve(with_opencode(a), &[]);
+    let b = serve(with_opencode(Host::new(root, "sb", "")), &[]);
+    let h = with_opencode(Host::new(root, "hub", "[harness]\nhub = true\n"));
+    h.add_recipe("web", &web_recipe("web", root, port));
+    fs::write(h.dir.join("home/config/hosts.toml"), hosts_toml(&[("a", &a.url), ("b", &b.url)])).unwrap();
+    let homes = [a.host.dir.join("home"), b.host.dir.join("home"), h.dir.join("home")];
+
+    let up = h.run(&["use", "web", "--on", "a"]);
+    assert!(up.contains("web is up on a"), "{up}");
+    for home in &homes {
+        assert_eq!(opencode_providers(home), ["web"], "{}: after `use web --on a`:\n{up}", home.display());
+    }
+    let down = h.run(&["stop", "web", "--on", "a"]);
+    for home in &homes {
+        assert!(opencode_providers(home).is_empty(), "{}: after `stop web --on a`:\n{down}", home.display());
+    }
+}
+
+/// Returns one lane of a push body: model `name` served at `host:port`.
+fn pushed_lane(name: &str, display: &str, host: &str, port: u16) -> serde_json::Value {
+    serde_json::json!({"name": name, "display": display, "host": host, "port": port, "ctx": 65536,
+                       "vision": false, "remote": true, "chat": true})
+}
+
+/// A push is a write: without the token it is refused (401, a wrong one
+/// too), with the token but without `X-Lmdeck` as well (403), and a refused
+/// push reaches neither the harnesses nor the stored push. One lane a config
+/// couldn't hold refuses the whole push (400). The right request lands.
+#[test]
+fn a_push_needs_the_token_and_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let b = serve(with_opencode(Host::new(tmp.path(), "sb", "")), &["--token", "sekrit-b"]);
+    let home = b.host.dir.join("home");
+    let stored = home.join("state/harness-lanes.json");
+    let url = format!("{}/api/harness/lanes", b.url);
+    let body = |lanes: serde_json::Value| serde_json::json!({"from": "hub", "lanes": lanes});
+    let good = body(serde_json::json!([pushed_lane("glm", "GLM", "10.0.0.7", 8001)]));
+
+    assert_eq!(code(ureq::post(&url).set("X-Lmdeck", "1").send_json(good.clone())), 401, "no token");
+    let wrong = ureq::post(&url).set("X-Lmdeck", "1").set("Authorization", "Bearer nope").send_json(good.clone());
+    assert_eq!(code(wrong), 401, "a wrong token");
+    let bare = ureq::post(&url).set("Authorization", "Bearer sekrit-b").send_json(good.clone());
+    assert_eq!(code(bare), 403, "no X-Lmdeck header");
+    let quoted = body(serde_json::json!([
+        pushed_lane("glm", "GLM", "10.0.0.7", 8001),
+        pushed_lane("evil", "x\"\n[model.evil]", "10.0.0.7", 8002)
+    ]));
+    let r = ureq::post(&url).set("X-Lmdeck", "1").set("Authorization", "Bearer sekrit-b").send_json(quoted);
+    assert_eq!(code(r), 400, "a display name grok's config can't hold");
+    assert!(!stored.exists(), "a refused push was stored");
+    assert!(opencode_providers(&home).is_empty(), "a refused push reached opencode");
+
+    let ok = ureq::post(&url).set("X-Lmdeck", "1").set("Authorization", "Bearer sekrit-b").send_json(good);
+    assert_eq!(code(ok), 200);
+    assert!(stored.exists());
+    assert_eq!(opencode_providers(&home), ["glm"]);
+    assert_eq!(opencode_base_url(&home, "glm"), "http://10.0.0.7:8001/v1");
+}
+
+/// What the hub pushed survives this machine's own syncs: `lmdeck harness
+/// sync`, a local start and a local stop keep the pushed lanes; a local model
+/// the hub didn't list joins them; a pushed lane wins over a local one of the
+/// same name (it carries the address from the hub's host list).
+#[test]
+fn a_local_sync_keeps_what_the_hub_pushed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let (pw, ps) = (free_port(), free_port());
+    let b = with_opencode(Host::new(root, "sb", ""));
+    b.add_recipe("web", &web_recipe("web", root, pw));
+    b.add_recipe("solo", &web_recipe("solo", root, ps));
+    let b = serve(b, &[]);
+    let home = b.host.dir.join("home");
+    let lanes =
+        serde_json::json!([pushed_lane("glm", "GLM", "10.0.0.7", 8001), pushed_lane("web", "web", "10.0.0.8", pw)]);
+    let pushed = ureq::post(&format!("{}/api/harness/lanes", b.url))
+        .set("X-Lmdeck", "1")
+        .send_json(serde_json::json!({"from": "hub", "lanes": lanes}));
+    assert_eq!(code(pushed), 200);
+    assert_eq!(opencode_providers(&home), ["glm", "web"]);
+
+    b.host.run(&["harness", "sync"]);
+    assert_eq!(opencode_providers(&home), ["glm", "web"], "`harness sync` wiped the push");
+    let up = b.host.run(&["use", "web"]);
+    let up2 = b.host.run(&["use", "solo"]);
+    assert_eq!(opencode_providers(&home), ["glm", "web", "solo"], "{up}\n{up2}");
+    assert_eq!(opencode_base_url(&home, "web"), format!("http://10.0.0.8:{pw}/v1"), "the pushed lane wins");
+    b.host.run(&["stop", "solo"]);
+    assert_eq!(opencode_providers(&home), ["glm", "web"], "a local stop wiped the push");
+    assert!(b.host.run(&["harness"]).contains("pushed here: 2 model(s) from hub"));
+}

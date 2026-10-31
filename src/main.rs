@@ -221,6 +221,10 @@ enum HarnessCmd {
     /// Mirror opencode.json to ~/.local/share/opencode-export/ (the copy the
     /// Mac's pull job fetches): `on` or `off`.
     Export { on: String },
+    /// Make this machine the hub, which pushes every host's running models to
+    /// every host in hosts.toml after each start or stop (its serve also
+    /// looks for changes made elsewhere): `on` or `off`.
+    Hub { on: String },
 }
 
 #[derive(Args, Default)]
@@ -610,6 +614,11 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
             dim("opencode-export:"),
             if ctx.cfg.harness.opencode_export { green("on") } else { dim("off") }
         );
+        println!("{} {}", dim("hub:"), if ctx.cfg.harness.hub { green("on") } else { dim("off") });
+        if let Some(p) = lmdeck::hub::Pushed::load(&ctx.paths).filter(|_| !ctx.cfg.harness.hub) {
+            let age = human_duration(now_secs().saturating_sub(p.at));
+            println!("{} {} model(s) from {} ({age} ago)", dim("pushed here:"), p.lanes.len(), p.from);
+        }
         if !ctx.cfg.harness.asked {
             println!("{}", dim("the first-run prompt hasn't run yet; everything detected gets synced."));
         }
@@ -618,11 +627,18 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
     match c {
         Some(HarnessCmd::List) => return list_view(ctx),
         Some(HarnessCmd::Sync) => {
-            let done = lmdeck::harness::sync(&ctx.paths, &ctx.cfg);
-            if done.is_empty() {
+            // On the hub this also pushes to every host.
+            let report = lmdeck::hub::Hub::new(&ctx.paths, &ctx.cfg).sync();
+            if report.synced.is_empty() {
                 println!("{}", dim("harness sync is off (LMDECK_NO_SYNC, or none enabled)"));
             }
-            for s in done {
+            for h in &report.took {
+                println!("{} pushed", dim(&format!("· {h}")));
+            }
+            for m in &report.missed {
+                println!("{} {m}", dim("· push failed:"));
+            }
+            for s in report.synced {
                 let state = if !s.installed {
                     "not installed"
                 } else if let Some(e) = &s.error {
@@ -707,6 +723,30 @@ fn harness_cmd(ctx: &Ctx, c: Option<HarnessCmd>) -> Result<()> {
                 if on { "on" } else { "off" },
                 dim(&where_.display().to_string())
             );
+        }
+        Some(HarnessCmd::Hub { on }) => {
+            let on = match on.to_lowercase().as_str() {
+                "on" | "true" | "yes" | "1" => true,
+                "off" | "false" | "no" | "0" => false,
+                other => bail!("hub is 'on' or 'off' (got '{other}')"),
+            };
+            let mut hc = ctx.cfg.harness.clone();
+            hc.hub = on;
+            Config::save_harness(&ctx.paths, &hc)?;
+            if !on {
+                println!("{} hub off (hosts keep the lanes it pushed last until another push)", green("✓"));
+                return Ok(());
+            }
+            let every = lmdeck::hub::Poller::interval()
+                .map_or("never (LMDECK_HARNESS_SYNC_SECS=0)".to_string(), |d| format!("every {} s", d.as_secs()));
+            println!(
+                "{} hub on: each start or stop here pushes every host's running models to every host in hosts.toml; \
+                 `lmdeck serve` here also looks {every}",
+                green("✓")
+            );
+            if configured_hosts(ctx).is_empty() {
+                println!("{}", dim("no other hosts in hosts.toml yet (`lmdeck host add`)"));
+            }
         }
         None => list_view(ctx)?,
     }
@@ -1505,6 +1545,7 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<
         let m = c.action("stop", t, false)?;
         lmdeck::placement::Record::remove(&ctx.paths, t);
         println!("{} {host}: {m}", dim("○"));
+        println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));
         return Ok(());
     }
     if let (Some(t), false) = (target, all) {
@@ -1520,6 +1561,7 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<
                     let m = c.action("stop", &p.served_as, false)?;
                     lmdeck::placement::Record::remove(&ctx.paths, &f.recipe.name);
                     println!("{} {}: {m}", dim("○"), p.run_host);
+                    println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));
                     return Ok(());
                 }
             }
@@ -1625,6 +1667,11 @@ fn use_on(ctx: &Ctx, r: &Recipe, on: &str, a: &UseArgs) -> Result<()> {
     let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
     for l in lmdeck::placement::execute(&deck, r, &plan, a.only, a.force)? {
         println!("{} {l}", cyan("▶"));
+    }
+    // A start here synced already; one on another host reaches this machine's
+    // harnesses (and, on the hub, every host's) now, loading counts.
+    if plan.run_host != hosts::LOCAL {
+        println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));
     }
     if a.no_wait {
         return Ok(());

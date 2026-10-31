@@ -111,7 +111,8 @@ fn stop_on(deck: &Deck, host: &str, name: &str) -> Result<String> {
         return deck.stop(name);
     }
     let c = crate::remote::Client::named(&deck.paths, host)?;
-    c.action("stop", name, false)
+    let stopped = c.action("stop", name, false)?;
+    Ok(format!("{stopped}{}", crate::harness::sync_note(&deck.paths, &deck.cfg)))
 }
 
 #[derive(Debug, Clone, Default)]
