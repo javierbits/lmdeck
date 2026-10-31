@@ -260,7 +260,8 @@ mod tests {
         assert_eq!(e.ready_timeout, Some(43200));
         assert_eq!(e.ctx, Some(1_048_576));
         // Mia's start.sh ssh's the workers. Setting hardware.nodes without [[nodes]]
-        // makes `lmdeck use` refuse the recipe; hardware.hosts only feeds the fit check.
+        // makes `lmdeck use` refuse the recipe; hardware.hosts feeds the fit check and the
+        // peers that fill WORKER, WORKER2 and WORKER3.
         assert!(r.hardware.nodes.is_none());
         assert_eq!(r.nodes(), 1);
         assert_eq!(r.machines(), 4);

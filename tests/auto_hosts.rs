@@ -394,3 +394,38 @@ fn wrapped_scripts_get_the_sparks_lmdeck_picks() {
     let err = d.fail(&["use", "six", "--dry-run"]);
     assert!(err.contains("only 3") && err.contains("hosts = 6"), "{err}");
 }
+
+/// The built-in DeepSeek-V4.1-Flash-1017 4x recipe wraps Mia's scripts, which
+/// read their workers from WORKER, WORKER2 and WORKER3 (the environment first,
+/// then scripts/local.sh). lmdeck hands them the Sparks it picks, in cabled
+/// order, so the recipe starts without a hand-written scripts/local.sh. It
+/// also points HF_CACHE and NFS_PATH at the head's Hugging Face home, so the
+/// workers mount it by its real path (a plain export, no fsid=0 root).
+#[test]
+fn builtin_four_spark_recipe_hands_mias_scripts_its_workers() {
+    let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
+    // A ring cabled in rack order, and a folded one (1-2-4-3-1); the Spark across
+    // the ring is reached through spark2 either way.
+    let rings =
+        [("ring4", ["10.40.1.2", "10.40.2.2", "10.40.4.1"]), ("fold4", ["10.41.1.2", "10.41.2.2", "10.41.4.1"])];
+    for (topo, want) in rings {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = Demo::new(tmp.path(), topo, 4);
+        let plan = d.run(&["use", name, "--dry-run"]);
+        assert!(plan.contains("run:  ./start-switchless.sh"), "{topo}:\n{plan}");
+        for (var, addr) in ["WORKER", "WORKER2", "WORKER3"].into_iter().zip(want) {
+            let line = format!("env:  {var}={addr}");
+            assert!(plan.contains(&line), "{topo}: missing {line:?} in\n{plan}");
+        }
+        let hf = tmp.path().join("home/.cache/huggingface");
+        for var in ["HF_CACHE", "NFS_PATH"] {
+            let line = format!("env:  {var}={}", hf.display());
+            assert!(plan.contains(&line), "{topo}: missing {line:?} in\n{plan}");
+        }
+    }
+    // Fewer Sparks than the recipe drives: the plan stops and says how many it needs.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = Demo::new(tmp.path(), "tri", 3);
+    let err = d.fail(&["use", name, "--dry-run"]);
+    assert!(err.contains("hosts = 4") && err.contains("3 more Spark"), "{err}");
+}

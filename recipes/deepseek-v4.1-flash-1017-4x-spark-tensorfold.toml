@@ -4,15 +4,18 @@
 # that cache on the workers, `docker run -d`s one rank per Spark, waits until :8888 answers,
 # smoke-tests, and exits. lmdeck applies no patches and builds nothing itself.
 #
-# This is one command on spark1. The script ssh's the other three Sparks itself, so the recipe
-# has no [[nodes]] and no [hardware] nodes. Before the first real start, copy
-# scripts/local.sh.example to scripts/local.sh in the checkout and set WORKER, WORKER2 and
-# WORKER3 (ssh targets; on a ring, in the cabled order: a folded ring cabled 1-2-4-3-1 is
-# WORKER=spark2, WORKER2=spark4, WORKER3=spark3). lmdeck detects the CX7 fabric at start and
+# This is one command on the head (spark1 above). The script ssh's the other three Sparks
+# itself, so the recipe has no [[nodes]] and no [hardware] nodes. lmdeck hands the scripts
+# their three workers: WORKER, WORKER2 and WORKER3 are the hosts.toml Sparks it picks around
+# the head, in cabled order on a ring, as the CX7 addresses the head reaches them on, so it
+# starts without a hand-written scripts/local.sh. lmdeck detects the CX7 fabric at start and
 # runs ./start-switchless.sh on a ring, ./start.sh otherwise; `lmdeck use <name> --dry-run`
-# prints the detected shape and the worker order. Key-based ssh from spark1, Docker with the NVIDIA runtime on
-# every Spark, and a read-only NFS export of spark1's Hugging Face cache are the repo's
-# requirements, not lmdeck's.
+# prints the detected shape and the workers. Key-based ssh from the head to those addresses
+# (their host keys in known_hosts), Docker with the NVIDIA runtime on every Spark, a read-only
+# NFS export of the head's Hugging Face home at its real path (one /etc/exports line such as
+# `/home/me/.cache/huggingface 10.0.0.0/8(ro,no_subtree_check)`; lmdeck passes that path as
+# NFS_PATH instead of Mia's fsid=0 /huggingface), and the head being the Spark that holds the
+# checkpoint are the repo's requirements, not lmdeck's.
 schema = 1
 display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
 description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on spark1, ~80 GiB resident per Spark."
@@ -44,6 +47,14 @@ ready_timeout = 43200
 PORT = "{port}"
 HOST = "{host}"
 CONTAINER_NAME = "{container}"
+# The other three Sparks in cabled order, as the CX7 addresses this Spark reaches them on.
+WORKER = "{peer_addr}"
+WORKER2 = "{peer2_addr}"
+WORKER3 = "{peer3_addr}"
+# Mia's files live in the head's Hugging Face home, and the workers NFS-mount it by its real
+# path: one plain read-only export, no fsid=0 root (which would hide the head's other exports).
+HF_CACHE = "{hf_home}"
+NFS_PATH = "{hf_home}"
 
 # A switchless ring (four Sparks, two CX7 cables each) runs the repo's ring launcher,
 # which sets FABRIC_EXPECT=ring and checks the ranks follow the cables.

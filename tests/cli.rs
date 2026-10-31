@@ -460,6 +460,12 @@ fn lmdeploy_dry_run() {
 fn four_spark_recipe_picks_its_launcher_from_the_fabric() {
     let e = Env::new();
     let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
+    // This machine is spark1; hosts.toml lists the three Sparks the recipe hands Mia's scripts
+    // (never contacted: the demo topologies answer for them).
+    write(&e.path("home/config"), "config.toml", "[node]\nname = \"spark1\"\n");
+    let hosts: String =
+        (2..=4).map(|i| format!("[[host]]\nname = \"spark{i}\"\nurl = \"http://127.0.0.1:9\"\n\n")).collect();
+    write(&e.path("home/config"), "hosts.toml", &hosts);
     let dry = |topo: Option<&str>, fabric: Option<&str>| {
         let mut c = e.cmd();
         if let Some(t) = topo {
@@ -479,13 +485,18 @@ fn four_spark_recipe_picks_its_launcher_from_the_fabric() {
     let plan = dry(Some("ring4"), None);
     assert!(plan.contains("run:  ./start-switchless.sh"), "{plan}");
     assert!(plan.contains("workers in cabled order: spark2, spark3, spark4"), "{plan}");
-    // Four of eight on a switch, and a lone machine: the default launcher.
+    // Four of eight on a switch: the default launcher.
     let plan = dry(Some("switch8"), None);
     assert!(plan.contains("fabric: switch") && plan.contains("run:  ./start.sh"), "{plan}");
-    let plan = dry(None, None);
-    assert!(plan.contains("run:  ./start.sh"), "{plan}");
-    // LMDECK_FABRIC sets the shape by hand.
-    let plan = dry(None, Some("ring"));
+    // A lone machine has no Sparks to hand the scripts: the plan stops and says how many it needs.
+    let lone = Env::new();
+    lone.cmd()
+        .args(["use", name, "--dry-run", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("hosts = 4").and(predicate::str::contains("3 more Spark")));
+    // LMDECK_FABRIC sets the shape by hand, over the switch the demo shows.
+    let plan = dry(Some("switch8"), Some("ring"));
     assert!(plan.contains("run:  ./start-switchless.sh") && plan.contains("set by LMDECK_FABRIC"), "{plan}");
 }
 
