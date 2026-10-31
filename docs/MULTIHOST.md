@@ -105,11 +105,21 @@ or `[harness] hub = true`); the others just run `lmdeck serve`.
   every host every `LMDECK_HARNESS_SYNC_SECS` seconds (default 15, `0`
   turns it off) and pushes when the list changed, or to a host that didn't
   take the last push (or wasn't in hosts.toml then). Its first look after
-  it starts pushes to every host. A host whose snapshot can't be fetched
-  keeps its last-known models for 2 failed looks in a row and loses them
-  on the 3rd. The serve reads config.toml before every look, so `hub
-  on|off` reaches its looking without a restart; its dashboard buttons
-  follow the flag after a restart.
+  it starts pushes to every host. The serve reads config.toml before every
+  look, so `hub on|off` reaches its looking without a restart; its
+  dashboard buttons follow the flag after a restart.
+- **Ride out a blip.** Every push starts with a look at every host, so a
+  start, a stop or `lmdeck harness sync` counts as a look, as each of the
+  serve's does. A host whose snapshot can't be fetched keeps its
+  last-known models for 2 failed looks in a row and loses them on the 3rd;
+  a host taken out of hosts.toml is forgotten at once. The hub keeps each host's last-known models and
+  failed looks in `~/.local/state/lmdeck/harness-hub.json`, with the list
+  it pushed last and the hosts that took it, so the count carries across
+  the CLI, the TUI, the web dashboard and the serve, and across a restart:
+  a host that doesn't answer a restarted serve's first look keeps its
+  models. Two pushes at once (a start while the serve looks) count as two
+  looks; when they overlap, neither marks a host as having taken its list,
+  and the next look pushes to every host again.
 - **Receive.** Every serve takes the push under the rules of any write (the
   token when one is set, `X-Lmdeck: 1`, a non-loopback peer only with a
   token). A push with a lane no config could hold (a name that isn't a
@@ -134,9 +144,12 @@ or `[harness] hub = true`); the others just run `lmdeck serve`.
 What it costs: the hub rewrites every host's harness configs remotely, and
 opencode's `provider` table is replaced wholesale on each. A model stopped
 on a host stays in that host's harnesses (it is in the stored push) until
-the hub's next look. If the hub goes away, or `lmdeck harness hub off`
-turns it off, every host keeps the last push until another one arrives. A
-host's own `[harness] hosts` doesn't narrow what the hub pushed.
+the hub's next look. A host that goes down keeps its models in every
+harness for 2 more looks; after the hub was off for long, so does a host
+that doesn't answer, with the models the record last saw there. If the
+hub goes away, or `lmdeck harness hub off` turns it off, every host keeps
+the last push until another one arrives. A host's own `[harness] hosts`
+doesn't narrow what the hub pushed.
 
 
 ## 2. Where the weights live

@@ -978,3 +978,87 @@ fn a_local_sync_keeps_what_the_hub_pushed() {
     assert_eq!(opencode_providers(&home), ["glm", "web"], "a local stop wiped the push");
     assert!(b.host.run(&["harness"]).contains("pushed here: 2 model(s) from hub"));
 }
+
+/// Polls `url`'s `/api/status` until recipe `name` reports `loaded`, or panics after `secs`.
+fn wait_loaded(url: &str, name: &str, secs: u64) {
+    let t0 = Instant::now();
+    loop {
+        let st: serde_json::Value =
+            ureq::get(&format!("{url}/api/status")).call().ok().and_then(|r| r.into_json().ok()).unwrap_or_default();
+        let loaded =
+            st.as_array().is_some_and(|rows| rows.iter().any(|r| r["name"] == name && r["status"] == "loaded"));
+        if loaded {
+            return;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(secs), "{name} never loaded on {url}: {st}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The hub keeps a host's models through a missed look whatever triggers the
+/// push: a `harness sync` (as a start or a stop) while that host doesn't
+/// answer keeps its last-known models in every harness, and the third miss in
+/// a row drops them, the same rule the serve's poller follows.
+#[test]
+fn a_host_that_misses_a_push_keeps_its_models_for_two_more() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let a = Host::new(root, "sa", "");
+    a.add_recipe("web", &web_recipe("web", root, free_port()));
+    let mut a = serve(a, &[]);
+    let b = serve(with_opencode(Host::new(root, "sb", "")), &[]);
+    let h = with_opencode(Host::new(root, "hub", "[harness]\nhub = true\n"));
+    fs::write(h.dir.join("home/config/hosts.toml"), hosts_toml(&[("a", &a.url), ("b", &b.url)])).unwrap();
+    let home = b.host.dir.join("home");
+
+    let started = code(ureq::post(&format!("{}/api/start/web", a.url)).set("X-Lmdeck", "1").call());
+    assert!((200..300).contains(&started), "start on a: {started}");
+    wait_loaded(&a.url, "web", 60);
+    h.run(&["harness", "sync"]);
+    assert_eq!(opencode_providers(&home), ["web"], "pushed while a answers");
+
+    // a's serve goes away; its model doesn't matter, only that a can't be asked.
+    let _ = a.child.kill();
+    let _ = a.child.wait();
+    h.run(&["harness", "sync"]);
+    assert_eq!(opencode_providers(&home), ["web"], "after a missed one push");
+    h.run(&["harness", "sync"]);
+    assert_eq!(opencode_providers(&home), ["web"], "after a missed two pushes");
+    h.run(&["harness", "sync"]);
+    assert!(opencode_providers(&home).is_empty(), "after a missed three pushes in a row");
+}
+
+/// The hub's serve starts from the hub's record: on its first look after a
+/// (re)start, a host that doesn't answer keeps the models the last push saw
+/// on it, and every host gets them.
+#[test]
+fn the_hubs_first_look_after_a_restart_keeps_a_host_that_doesnt_answer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let a = Host::new(root, "sa", "");
+    a.add_recipe("web", &web_recipe("web", root, free_port()));
+    let mut a = serve(a, &[]);
+    let b = serve(Host::new(root, "sb", ""), &[]);
+    let mut h = Host::new(root, "hub", "[harness]\nhub = true\n");
+    fs::write(h.dir.join("home/config/hosts.toml"), hosts_toml(&[("a", &a.url), ("b", &b.url)])).unwrap();
+    let started = code(ureq::post(&format!("{}/api/start/web", a.url)).set("X-Lmdeck", "1").call());
+    assert!((200..300).contains(&started), "start on a: {started}");
+    wait_loaded(&a.url, "web", 60);
+    h.run(&["harness", "sync"]);
+    let _ = a.child.kill();
+    let _ = a.child.wait();
+    // b forgets the push, so what it stores next is what the serve's first look pushed.
+    let stored = b.host.dir.join("home/state/harness-lanes.json");
+    fs::remove_file(&stored).unwrap();
+    // Reason: an hour between looks leaves the first look the only one this test sees.
+    h.extra_env = vec![("LMDECK_HARNESS_SYNC_SECS".into(), "3600".into())];
+    let _h = serve(h, &[]);
+    let t0 = Instant::now();
+    while !stored.exists() {
+        assert!(t0.elapsed() < Duration::from_secs(30), "the hub's serve never pushed to b");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pushed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&stored).unwrap()).unwrap();
+    let names: Vec<&str> = pushed["lanes"].as_array().unwrap().iter().filter_map(|l| l["name"].as_str()).collect();
+    assert_eq!(names, ["web"], "the first look dropped a's model: {pushed}");
+}

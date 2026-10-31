@@ -1,13 +1,19 @@
-//! The hub's two pure rules. A blip: a host whose snapshot can't be fetched
-//! keeps the lanes it last answered with through `KEEP_MISSES` failed looks
-//! in a row and loses them on the next, a host that answers has exactly what
-//! it said, and a host no longer looked at is forgotten. A push: a host's
-//! harnesses get the pushed lanes, then its own ones the hub didn't list.
+//! The hub's two pure rules and its record. A blip: a host whose snapshot
+//! can't be fetched keeps the lanes it last answered with through
+//! `KEEP_MISSES` failed looks in a row and loses them on the next, a host
+//! that answers has exactly what it said, and a host no longer looked at is
+//! forgotten. A push: a host's harnesses get the pushed lanes, then its own
+//! ones the hub didn't list. The record: what the hub knows of every host
+//! survives a save and a load, and a push another one overlapped claims no
+//! host.
 
 use lmdeck::harness::Lane;
-use lmdeck::hub::{Memory, Pushed, KEEP_MISSES};
+use lmdeck::hub::{Exclusive, LastPush, Memory, Pushed, KEEP_MISSES};
+use lmdeck::paths::Paths;
 use proptest::prelude::*;
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
 
 /// The hosts the hub looks at.
 const HOSTS: [&str; 3] = ["spark2", "spark3", "gigabyte"];
@@ -124,4 +130,70 @@ fn an_empty_push_leaves_the_own_lanes() {
     let own = (vec![lane("mine", "10.0.0.9")], BTreeSet::from(["mine".to_string()]));
     let (lanes, managed) = Pushed::default().merge(own.clone());
     assert_eq!((lanes, managed), own);
+}
+
+/// Returns the directories of an lmdeck home under `root`.
+fn paths_in(root: &Path) -> Paths {
+    let home = root.join("home").display().to_string();
+    Paths::resolve(|k| (k == "LMDECK_HOME").then(|| home.clone()), root.to_path_buf())
+}
+
+/// The record keeps every host's lanes and failed looks in a row, in
+/// hosts.toml order, through a save and a load: what the next push, or a
+/// restarted serve's first look, starts from.
+#[test]
+fn the_record_survives_a_round_trip_with_miss_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_in(tmp.path());
+    let answered = |h: &str, names: &[&str]| (h.to_string(), Some(names.iter().map(|n| lane(n, h)).collect()));
+    let failed = |h: &str| (h.to_string(), None);
+    let hosts = Memory::default()
+        .after(vec![answered("spark2", &[]), answered("spark3", &["qwen"]), failed("gigabyte")])
+        .after(vec![answered("spark2", &["glm"]), failed("spark3"), failed("gigabyte")])
+        .after(vec![failed("spark2"), failed("spark3"), failed("gigabyte")])
+        .after(vec![failed("spark2"), failed("spark3"), answered("gigabyte", &["oss"])]);
+    let record = LastPush { lanes: hosts.lanes(), took: BTreeSet::from(["gigabyte".to_string()]), hosts, round: 4 };
+    record.save(&paths, &Exclusive::take(&paths)).unwrap();
+    let back = LastPush::load(&paths).expect("the saved record reads back");
+    assert_eq!(back, record);
+    let seen: Vec<(&str, u32, usize)> =
+        back.hosts.hosts.iter().map(|(h, s)| (h.as_str(), s.misses, s.lanes.len())).collect();
+    assert_eq!(seen, [("spark2", 2, 1), ("spark3", 3, 0), ("gigabyte", 0, 1)]);
+}
+
+/// A record written before the hub remembered hosts (no `hosts`, no
+/// `round`) still reads: its lanes and claims stay, and the memory starts
+/// empty.
+#[test]
+fn a_record_from_before_the_memory_still_reads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_in(tmp.path());
+    fs::create_dir_all(&paths.state_dir).unwrap();
+    let old = serde_json::json!({"lanes": [lane("glm", "spark2")], "took": ["spark2"]});
+    fs::write(paths.state_dir.join("harness-hub.json"), old.to_string()).unwrap();
+    let want = LastPush {
+        lanes: vec![lane("glm", "spark2")],
+        took: BTreeSet::from(["spark2".to_string()]),
+        ..Default::default()
+    };
+    assert_eq!(LastPush::load(&paths), Some(want));
+}
+
+/// A push claims the hosts that took it while no other push overlapped it.
+/// Once one did, either may land last on a host, so the first of the two to
+/// claim voids every claim and the round, whichever it is: the next look
+/// pushes to every host again.
+#[test]
+fn an_overlapped_push_claims_no_host() {
+    let mut alone = LastPush { round: 7, ..Default::default() };
+    alone.claim(7, &["spark2".into()]);
+    assert_eq!(alone.took, BTreeSet::from(["spark2".to_string()]));
+    // Pushes 6 and 7 overlapped: the record is at round 7 once both started.
+    for order in [[6, 7], [7, 6]] {
+        let mut record = LastPush { round: 7, ..Default::default() };
+        for round in order {
+            record.claim(round, &["spark2".into()]);
+        }
+        assert!(record.took.is_empty(), "claims {order:?} left {:?}", record.took);
+    }
 }

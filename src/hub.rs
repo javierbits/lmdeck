@@ -13,9 +13,14 @@
 //!   at every host every `LMDECK_HARNESS_SYNC_SECS` seconds (default 15, `0`
 //!   turns it off) and pushes when the lanes changed, or to the hosts that
 //!   haven't taken the last push. That catches models started or stopped on a
-//!   host directly. A host whose snapshot can't be fetched keeps its
+//!   host directly.
+//! - **Remembering.** Every push starts with a look at every host, whoever
+//!   makes it, folded into the hub's record (`<state>/harness-hub.json`,
+//!   [`LastPush`]). A host whose snapshot can't be fetched keeps its
 //!   last-known lanes through [`KEEP_MISSES`] failed looks in a row
-//!   ([`Memory::after`]).
+//!   ([`Memory::after`]), counted across the CLI, the TUI, the web dashboard
+//!   and the poller, and across restarts; a host taken out of hosts.toml is
+//!   forgotten.
 //! - **Receiving.** A serve stores the last push (`<state>/harness-lanes.json`,
 //!   [`Pushed`]) and syncs with the pushed lanes plus its own running ones the
 //!   hub didn't list (matched by name). Every later sync there merges them the
@@ -139,15 +144,24 @@ impl Pushed {
     }
 }
 
-/// What the hub pushed last (`<state>/harness-hub.json`), shared by the CLI
-/// and the serve's poller: it pushes again when the lanes change, or to a
-/// host that hasn't taken them.
+/// The hub's record (`<state>/harness-hub.json`): what it pushed last, to
+/// whom, and what every host served at its last looks. Every push the hub
+/// makes reads and updates it (the CLI, the TUI, the web dashboard and the
+/// serve's poller): it pushes again when the lanes change, or to a host that
+/// hasn't taken them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-struct LastPush {
+pub struct LastPush {
     /// The lanes pushed.
-    lanes: Vec<Lane>,
+    pub lanes: Vec<Lane>,
     /// The hosts that took them.
-    took: BTreeSet<String>,
+    pub took: BTreeSet<String>,
+    /// What every host served at the last looks, and its failed looks in a row.
+    #[serde(default)]
+    pub hosts: Memory,
+    /// Counts the pushes: each one starts a new round, and a push whose round
+    /// is over by the time it lands claims no host ([`LastPush::claim`]).
+    #[serde(default)]
+    pub round: u64,
 }
 
 impl LastPush {
@@ -157,8 +171,28 @@ impl LastPush {
     }
 
     /// Reads the record, if there is one and it still parses.
-    fn load(paths: &Paths) -> Option<LastPush> {
+    pub fn load(paths: &Paths) -> Option<LastPush> {
         serde_json::from_str(&fs::read_to_string(Self::path(paths)).ok()?).ok()
+    }
+
+    /// Saves the record; `held` makes this the only writer.
+    pub fn save(&self, paths: &Paths, held: &Exclusive) -> Result<()> {
+        held.write_json(&Self::path(paths), self)
+    }
+
+    /// Records that the hosts in `took` took the push of round `round`. A
+    /// push whose round is over claims nothing and voids every claim, so the
+    /// next look pushes to every host again.
+    pub fn claim(&mut self, round: u64, took: &[String]) {
+        if self.round == round {
+            self.took.extend(took.iter().cloned());
+            return;
+        }
+        // Reason: another push overlapped this one, and either can land last on a host,
+        // so neither may say what that host holds. Ending the round voids the other
+        // push's claims as well, whichever of the two claims first.
+        self.took.clear();
+        self.round = self.round.wrapping_add(1);
     }
 }
 
@@ -241,8 +275,8 @@ impl Push {
     }
 }
 
-/// What the poller knows of one host.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// What the hub knows of one host.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Seen {
     /// The host's lanes as last fetched (none once they are dropped).
     pub lanes: Vec<Lane>,
@@ -250,9 +284,10 @@ pub struct Seen {
     pub misses: u32,
 }
 
-/// The poller's memory: what every host served at its last looks, in
-/// hosts.toml order.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The hub's memory, kept in its record ([`LastPush`]): what every host
+/// served at the hub's last looks, in hosts.toml order.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Memory {
     /// Each host's name and what is known of it.
     pub hosts: Vec<(String, Seen)>,
@@ -356,16 +391,55 @@ impl<'a> Hub<'a> {
 
     /// Syncs this machine's harnesses after a start or stop. The hub first
     /// works out the cluster's lanes, writes its own harnesses with them,
-    /// then pushes them to every host in hosts.toml.
+    /// then pushes them to every host in hosts.toml ([`Hub::look`]).
     pub fn sync(&self) -> Report {
         if !self.active() {
             return Report { synced: crate::harness::sync(self.paths, self.cfg), ..Default::default() };
         }
-        let remote = self.fetch().into_iter().flat_map(|(_, lanes)| lanes.unwrap_or_default()).collect();
-        let (lanes, managed) = crate::harness::lane_sources_with(self.paths, self.cfg, remote);
-        let synced = crate::harness::write(self.cfg, &lanes, &managed, &Exclusive::take(self.paths));
-        let (took, missed) = self.push(&lanes, &self.targets());
-        self.record(&LastPush { lanes, took: took.iter().cloned().collect() });
+        self.look(true)
+    }
+
+    /// Takes one look as the hub: asks every host for its running models,
+    /// folds the answers into the record's memory ([`Memory::after`]) and
+    /// works out the cluster's lanes from it. When they changed, or `fresh`
+    /// is set, it writes this machine's harnesses with them and pushes them
+    /// to every host; otherwise only to the hosts that haven't taken them.
+    /// The sync lock covers reading and writing the record and the
+    /// harnesses, never a fetch or a push.
+    fn look(&self, fresh: bool) -> Report {
+        let polled = self.fetch();
+        let targets = self.targets();
+        let held = Exclusive::take(self.paths);
+        let mut last = LastPush::load(self.paths).unwrap_or_default();
+        last.hosts = std::mem::take(&mut last.hosts).after(polled);
+        let (lanes, managed) = crate::harness::lane_sources_with(self.paths, self.cfg, last.hosts.lanes());
+        let synced = if fresh || last.lanes != lanes {
+            let synced = crate::harness::write(self.cfg, &lanes, &managed, &held);
+            (last.lanes, last.took) = (lanes, BTreeSet::new());
+            synced
+        } else {
+            vec![]
+        };
+        // Reason: a host taken out of hosts.toml leaves the record too, so it gets a push
+        // again if it comes back.
+        last.took.retain(|h| targets.iter().any(|e| e.name == *h));
+        let to: Vec<HostEntry> = targets.into_iter().filter(|e| !last.took.contains(&e.name)).collect();
+        if !to.is_empty() {
+            last.round = last.round.wrapping_add(1);
+        }
+        // Reason: saved even when nothing is pushed, or a host's misses would never
+        // add up while the lanes it keeps look unchanged.
+        last.save(self.paths, &held).unwrap_or_else(|e| Self::debug(&format!("{e:#}")));
+        drop(held);
+        if to.is_empty() {
+            return Report { synced, ..Default::default() };
+        }
+        let (took, missed) = self.push(&last.lanes, &to);
+        let held = Exclusive::take(self.paths);
+        if let Some(mut now) = LastPush::load(self.paths) {
+            now.claim(last.round, &took);
+            now.save(self.paths, &held).unwrap_or_else(|e| Self::debug(&format!("{e:#}")));
+        }
         Report { synced, took, missed }
     }
 
@@ -413,15 +487,6 @@ impl<'a> Hub<'a> {
         (took, missed)
     }
 
-    /// Saves what was pushed for the next look (a failed save costs only a
-    /// repeated push).
-    fn record(&self, last: &LastPush) {
-        let held = Exclusive::take(self.paths);
-        if let Err(e) = held.write_json(&LastPush::path(self.paths), last) {
-            Self::debug(&format!("{e:#}"));
-        }
-    }
-
     /// Prints `msg` on stderr when `LMDECK_DEBUG` is set (the serve's poller
     /// has no one else to tell, and a host that is down would flood the
     /// journal).
@@ -432,13 +497,12 @@ impl<'a> Hub<'a> {
     }
 }
 
-/// The serve's hub loop: what every host served at its last looks, and
-/// whether this serve has pushed yet.
+/// The serve's hub loop: whether this serve has looked yet. What every host
+/// served lives in the hub's record ([`LastPush`]), so a restarted serve
+/// starts from it.
 #[derive(Debug, Default)]
 pub struct Poller {
-    /// What every host served at its last looks.
-    memory: Memory,
-    /// Set once this serve has pushed as the hub; until then a look pushes
+    /// Set once this serve has looked as the hub; until then a look pushes
     /// to every host, whatever they had.
     started: bool,
 }
@@ -477,37 +541,18 @@ impl Poller {
         (secs > 0).then(|| Duration::from_secs(secs))
     }
 
-    /// Takes one look as the hub (a machine that isn't the hub only forgets):
-    /// asks every host, folds the answers into memory, and pushes when the
-    /// lanes changed (to every host, after syncing this machine's harnesses)
-    /// or to the hosts that haven't taken the last push.
+    /// Takes one look as the hub ([`Hub::look`]); the first one this serve
+    /// takes pushes to every host. A machine that isn't the hub only forgets
+    /// that it looked.
     fn tick(&mut self, paths: &Paths, cfg: &Config) {
         let hub = Hub::new(paths, cfg);
         if !hub.active() {
             *self = Poller::default();
             return;
         }
-        self.memory = std::mem::take(&mut self.memory).after(hub.fetch());
-        let (lanes, managed) = crate::harness::lane_sources_with(paths, cfg, self.memory.lanes());
-        let last = if self.started { LastPush::load(paths) } else { None };
-        self.started = true;
-        let changed = last.as_ref().is_none_or(|l| l.lanes != lanes);
-        let mut took = match last {
-            Some(l) if !changed => l.took,
-            _ => BTreeSet::new(),
-        };
-        let to: Vec<HostEntry> = hub.targets().into_iter().filter(|e| !took.contains(&e.name)).collect();
-        if to.is_empty() && !changed {
-            return;
-        }
-        if changed {
-            crate::harness::write(cfg, &lanes, &managed, &Exclusive::take(paths));
-        }
-        let (ok, missed) = hub.push(&lanes, &to);
-        for m in &missed {
+        let fresh = !std::mem::replace(&mut self.started, true);
+        for m in &hub.look(fresh).missed {
             Hub::debug(m);
         }
-        took.extend(ok);
-        hub.record(&LastPush { lanes, took });
     }
 }

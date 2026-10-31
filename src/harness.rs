@@ -235,8 +235,7 @@ fn lane_sources(paths: &Paths, cfg: &Config) -> (Vec<Lane>, BTreeSet<String>) {
 }
 
 /// Returns [`lane_sources`] with the configured hosts' lanes given (the hub
-/// asks with a longer timeout, and its poller remembers them across failed
-/// fetches).
+/// asks with a longer timeout, and remembers them across failed fetches).
 pub(crate) fn lane_sources_with(paths: &Paths, cfg: &Config, remote: Vec<Lane>) -> (Vec<Lane>, BTreeSet<String>) {
     let host = serve_host(cfg);
     let cat = Catalog::load(paths, cfg);
