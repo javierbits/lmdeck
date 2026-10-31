@@ -60,6 +60,10 @@ pub fn plan_rows(deck: &Deck, reference: &str) -> Vec<RunOnRow> {
                             let h = if h == crate::hosts::LOCAL { node.clone() } else { h.clone() };
                             format!("weights on {h} → NFS ro")
                         }
+                        ("none", Some(h)) => {
+                            let h = if h == crate::hosts::LOCAL { node.clone() } else { h.clone() };
+                            format!("weights on {h} · its scripts fetch them")
+                        }
                         _ => "weights nowhere yet".to_string(),
                     }];
                     if let Some(l) = &p.link {
@@ -309,8 +313,8 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                     spawn_job(&deck, &msg_tx, &work_tx, name.clone(), move |d| stop_on(d, &host, &name));
                     continue;
                 }
-                Action::Start(r) => (r.clone(), Box::new(move |d| d.start(&r, false, false))),
-                Action::Switch(r) => (r.clone(), Box::new(move |d| d.start(&r, true, false))),
+                Action::Start(r) => (r.clone(), Box::new(move |d| crate::placement::start_auto(d, &r, false, false))),
+                Action::Switch(r) => (r.clone(), Box::new(move |d| crate::placement::start_auto(d, &r, true, false))),
                 Action::Stop(r) => (r.clone(), Box::new(move |d| d.stop(&r))),
                 Action::Pull(r) => (r.clone(), Box::new(move |d| d.pull(&r, false))),
                 Action::Update(r) => (r.clone(), Box::new(move |d| d.pull(&r, true))),

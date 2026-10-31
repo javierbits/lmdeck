@@ -167,6 +167,11 @@ pub struct ModelSpec {
     /// the first host that does (`lmdeck weights`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+    /// `false`: the recipe's own scripts fetch these weights where it runs (a
+    /// wrapped recipe), so lmdeck never pulls them or mounts them from another
+    /// host; `repo` and `revision` only say which host holds them. Unset: lmdeck pulls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull: Option<bool>,
     /// Set by lmdeck when a recipe runs away from its weights: a Docker
     /// volume (an NFS mount of the home's HF cache, read-only) mounted in
     /// place of the local Hugging Face cache. Not for hand-written recipes.
@@ -187,6 +192,11 @@ impl ModelSpec {
     /// No repo and no path: the recipe names no weights of its own.
     pub fn is_empty(&self) -> bool {
         self.repo.as_deref().unwrap_or("").is_empty() && self.path.as_deref().unwrap_or("").is_empty()
+    }
+
+    /// `pull = false`: the recipe's own scripts fetch these weights, not lmdeck.
+    pub fn fetched_by_scripts(&self) -> bool {
+        self.pull == Some(false)
     }
 }
 

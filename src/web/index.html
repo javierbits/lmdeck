@@ -1085,7 +1085,8 @@ $("#grid").addEventListener("click", e => {
   const ref = b.dataset.ref, a = b.dataset.act;
   if (a === "logs") return openLogs(ref);
   if (a === "copy") { navigator.clipboard?.writeText(b.dataset.url).then(() => toast("copied " + b.dataset.url)); return; }
-  act(a, ref, b.dataset.latest ? {latest:true} : {});
+  // Start and Switch name no host: the server runs the model where its weights are.
+  act(a, ref, b.dataset.latest ? {latest:true} : a === "start" || a === "switch" ? {auto:true} : {});
 });
 $("#grid").addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details.checks")) { d.open ? st.open.add(d.dataset.ref) : st.open.delete(d.dataset.ref); } }, true);
 $("#q").addEventListener("input", e => { st.q = e.target.value.trim(); render(); });

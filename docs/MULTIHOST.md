@@ -173,6 +173,38 @@ that serves them to others.
 
 ## 3. Choosing where a model runs (`--on`)
 
+**Without `--on`, a start goes where the weights are.** On a machine with
+hosts in `hosts.toml`, when this machine doesn't hold a recipe's weights and
+another host does, `lmdeck use <recipe>` runs it on that host, the weights
+home (`[model] home`, else the first host holding them, by name), exactly as
+`--on <that host>` would: the same plan, the peers picked around that host,
+and `stop` and `logs` find it there. When this machine holds them too, or no
+host does, it runs here as before. A model already running here stays here.
+The plan and the start output say where and why:
+
+```sh
+$ lmdeck use deepseek-v4.1-flash-1017-4x-spark-tensorfold --dry-run   # on spark
+plan for deepseek-v4.1-flash-1017-4x-spark-tensorfold
+  deepseek-v4.1-flash-1017-4x-spark-tensorfold on ember
+  why: weights on ember, not here (--on local runs it here)
+  weights: on the run host's disk
+  …
+```
+
+- **Run it here anyway:** `--on local` (or this machine's `[node] name`)
+  runs it here the way `use` did before: nothing is placed or mounted, and
+  the engine or the recipe's scripts fetch the weights if they need them.
+  Its plan says where the weights are (`where: here, as --on says (weights
+  on ember, not here)`).
+- **TUI and dashboard:** the TUI's Start and Switch and the dashboard's
+  ▶ Start and ⇄ Switch follow the same rule. The dashboard asks for it with
+  `{"auto": true}` on `POST /api/start/{recipe}`; a start without it runs on
+  that machine, which is how a controller starts a recipe on the host it
+  picked, so a run host never sends it on to a third. Their Stop (and
+  `POST /api/stop/{recipe}`) finds a run placed on another host and stops it
+  there, as `lmdeck stop` does.
+- Demo data (`LMDECK_DEMO`) never moves a start: its weights are made up.
+
 ```sh
 lmdeck start qwen3.6-35b-a3b-nvfp4-spark --on spark1 --dry-run   # show the plan
 lmdeck start qwen3.6-35b-a3b-nvfp4-spark --on spark1
@@ -202,7 +234,11 @@ mode. If the weights are on another host, the plan is Mia's
 
 This works for Docker recipes (vLLM, SGLang, LMDeploy in Docker). For a
 native engine, or weights under `models_dir` rather than the HF cache, the
-plan refuses and says to run on the home or mount by hand.
+plan refuses and says to run on the home or mount by hand. A recipe whose
+own scripts fetch its weights (`[model] pull = false`, a wrapped recipe such
+as the built-in DeepSeek 4x) isn't refused and gets nothing mounted: the
+plan says where the weights are (`weights: on ember, not mounted`) and warns
+that the scripts fetch their own copy on the run host.
 
 **No ConnectX-7 link, no streaming.** Without a CX7 link between the two
 hosts the plan is refused. `--allow-slow-link` (or the web/TUI equivalent)
@@ -241,7 +277,7 @@ others run `lmdeck serve` with no `hosts.toml`:
 $ lmdeck use deepseek-v4.1-flash-1017-4x-spark-tensorfold --on spark3 --dry-run
 plan for deepseek-v4.1-flash-1017-4x-spark-tensorfold
   deepseek-v4.1-flash-1017-4x-spark-tensorfold on spark3
-  weights: not on any known host
+  weights: on the run host's disk
   env:  WORKER=10.40.3.2
   env:  WORKER2=10.40.1.1
   env:  WORKER3=10.40.2.1

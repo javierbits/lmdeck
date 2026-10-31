@@ -140,6 +140,9 @@ pub fn memory_need_gb(r: &Recipe, hw: &Hardware, p: &Presence) -> Option<f64> {
 
 /// The command that downloads a recipe's weights.
 pub fn pull_argv(cfg: &Config, r: &Recipe) -> Result<Vec<String>> {
+    if r.model.fetched_by_scripts() {
+        bail!("{}'s own scripts fetch its weights ([model] pull = false); lmdeck doesn't download them", r.name);
+    }
     let repo = r.model.repo.clone().ok_or_else(|| anyhow!("{} has no Hugging Face repo to pull", r.name))?;
     if r.engine.name == Engine::LmStudio {
         // LM Studio keeps its own model library; let it download.
@@ -611,6 +614,15 @@ impl Deck {
             Err(_) if self.is_run_name(&cat, target) => target.to_string(),
             Err(e) => return Err(e),
         };
+        // Reason: the TUI's and the dashboard's starts go to the host holding the weights
+        // now, so their stop goes there too, as the CLI's `stop` does for any placed run.
+        if let Some(p) = crate::placement::Record::load(&self.paths, &name) {
+            if p.run_host != crate::hosts::LOCAL && RunRecord::load(&self.paths, &name).is_none() {
+                let m = crate::remote::Client::named(&self.paths, &p.run_host)?.action("stop", &p.served_as, false)?;
+                crate::placement::Record::remove(&self.paths, &name);
+                return Ok(format!("{}: {m}{}", p.run_host, crate::harness::sync_note(&self.paths, &self.cfg)));
+            }
+        }
         if runner::stop(&self.paths, &name, &self.docker())? {
             Ok(format!("stopped {name}{}", crate::harness::sync_note(&self.paths, &self.cfg)))
         } else {
@@ -630,7 +642,7 @@ impl Deck {
         }
         // A wrapped recipe's `[source]` is updated in place; its scripts fetch their own weights.
         if let Some(msg) = update_source(&self.paths, &self.cfg, found, latest)? {
-            if r.model.repo.is_none() {
+            if r.model.repo.is_none() || r.model.fetched_by_scripts() {
                 return Ok(format!("{}: {msg}", r.name));
             }
         }

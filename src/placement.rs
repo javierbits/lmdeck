@@ -24,10 +24,11 @@ use std::process::Command;
 use crate::config::Config;
 use crate::deck::Deck;
 use crate::fabric::{Link, LinkKind};
-use crate::hosts::LOCAL;
+use crate::hosts::{HostsFile, LOCAL};
 use crate::ops::Target;
 use crate::paths::Paths;
 use crate::recipe::{Engine, NfsMount, Recipe};
+use crate::runner::RunRecord;
 use crate::weights::Index;
 
 /// CX7 line rate when the port speed couldn't be read (labelled nominal).
@@ -139,7 +140,8 @@ pub struct Nfs {
 pub struct Plan {
     pub recipe: String,
     pub run_host: String,
-    /// `local` (weights on the run host), `nfs`, or `none` (no host has them).
+    /// `local` (weights on the run host), `nfs`, or `none` (nothing mounted:
+    /// no host has them, or `home` does and the recipe's own scripts fetch them).
     pub mode: String,
     pub home: Option<String>,
     pub link: Option<Link>,
@@ -168,6 +170,9 @@ impl Plan {
         match (&self.mode[..], &self.home) {
             ("local", _) => out.push("weights: on the run host's disk".into()),
             ("nfs", Some(h)) => out.push(format!("weights: home {}, streamed read-only over NFS (no copy)", show(h))),
+            ("none", Some(h)) => {
+                out.push(format!("weights: on {}, not mounted (the recipe's own scripts fetch them)", show(h)))
+            }
             _ => out.push("weights: not on any known host".into()),
         }
         if let Some(l) = &self.link {
@@ -501,6 +506,19 @@ pub fn plan(paths: &Paths, cfg: &Config, r: &Recipe, run_host: &str, allow_slow:
         p.warnings.push("no host has these weights; the run host will download them if the engine does".into());
         return Ok(p);
     };
+    if r.model.fetched_by_scripts() {
+        // Reason: `pull = false` says the recipe's own scripts fetch its weights where it
+        // runs, as they did before it named them: lmdeck mounts nothing and only says so.
+        let name = |h: &str| if h == LOCAL { node.clone() } else { h.to_string() };
+        p.warnings.push(format!(
+            "{} doesn't hold the weights ({} has them, {}): the recipe's own scripts fetch them there",
+            name(&run_key),
+            name(&home.host),
+            crate::util::human_bytes(home.size)
+        ));
+        p.home = Some(home.host);
+        return Ok(p);
+    }
     if home.kind != "hf" || r.model.repo.is_none() {
         bail!(
             "{}'s weights on {} are in the models dir ({}); NFS placement streams the Hugging Face cache only. Mount it by hand or run on {}",
@@ -669,7 +687,9 @@ pub fn execute(deck: &Deck, r: &Recipe, plan: &Plan, only: bool, force: bool) ->
     Record {
         recipe: r.name.clone(),
         run_host: plan.run_host.clone(),
-        home: plan.home.clone().unwrap_or_default(),
+        // Reason: topology draws home → run host as an NFS stream; a copy elsewhere
+        // that nothing mounts (`pull = false`) isn't one.
+        home: plan.home.clone().filter(|h| *h == plan.run_host).unwrap_or_default(),
         served_as: r.name.clone(),
         volume: String::new(),
     }
@@ -692,6 +712,77 @@ pub fn start_on(deck: &Deck, target: &str, host: &str, only: bool, force: bool, 
     // harnesses (and, on the hub, every host's) now.
     let note = if p.run_host == LOCAL { String::new() } else { crate::harness::sync_note(&deck.paths, &deck.cfg) };
     Ok(format!("{started}{note}"))
+}
+
+/// Where a start that names no host runs a recipe, and why: on the host that
+/// holds its weights when this machine doesn't, else here (`lmdeck use`
+/// without `--on`, and the TUI's and the dashboard's Start and Switch).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pick {
+    /// `local`, or the hosts.toml name of the host it runs on.
+    pub host: String,
+    /// Why it runs there, as the plan and the start output say it (`weights on a, not here`).
+    pub why: String,
+}
+
+impl Pick {
+    /// Picks for `r` from the weights index (asked again when older than
+    /// [`crate::weights::INDEX_TTL`]). `None` when there is nothing to pick:
+    /// this machine knows no other host, the recipe names no weights or has
+    /// `[[nodes]]`, or the index is demo data.
+    pub fn of(paths: &Paths, cfg: &Config, r: &Recipe) -> Option<Pick> {
+        // Reason: demo weights are made up, and a start must never follow them to a real host.
+        if crate::telemetry::demo_mode() || r.model.is_empty() || !r.nodes.is_empty() {
+            return None;
+        }
+        let hosts = HostsFile::load(paths).ok().filter(|f| !f.hosts.is_empty())?;
+        // Reason: a model already running here stays, so its start says so instead of
+        // loading a second copy on the weights home.
+        if RunRecord::load(paths, &r.name).is_some() {
+            return Some(Pick::here("it runs here already"));
+        }
+        let idx = Index::fresh(paths, cfg, crate::weights::INDEX_TTL);
+        Some(Pick::from_index(&idx, &hosts, r, &cfg.node_name()))
+    }
+
+    /// Picks for `r` from `idx`: here when this machine holds the weights; the
+    /// weights home ([`Index::home`]) when `hosts` lists it; else here.
+    pub fn from_index(idx: &Index, hosts: &HostsFile, r: &Recipe, node: &str) -> Pick {
+        let locs = idx.locate(r);
+        if locs.iter().any(|l| l.host == LOCAL) {
+            return Pick::here("weights here");
+        }
+        match (idx.home(r, node), r.model.home.as_deref()) {
+            (Some(h), _) if hosts.get(&h.host).is_some() => {
+                let quiet = idx.hosts.get(&h.host).is_some_and(|w| !w.online);
+                let note = if quiet { format!("; {} didn't answer just now", h.host) } else { String::new() };
+                Pick { why: format!("weights on {}, not here{note}", h.host), host: h.host }
+            }
+            // Reason: a cached index can still name a host just taken out of hosts.toml.
+            (Some(h), _) => Pick::here(&format!("weights on {}, which hosts.toml doesn't list", h.host)),
+            (None, Some(home)) if !locs.is_empty() => {
+                Pick::here(&format!("[model] home {home} doesn't hold the weights"))
+            }
+            (None, _) => Pick::here("no known host has the weights"),
+        }
+    }
+
+    /// This machine, for `why`.
+    fn here(why: &str) -> Pick {
+        Pick { host: LOCAL.into(), why: why.into() }
+    }
+}
+
+/// Starts a recipe (by reference) where a start that names no host runs it
+/// ([`Pick`]): through [`start_on`] on the host holding its weights, else
+/// here. The TUI's and the dashboard's Start and Switch.
+pub fn start_auto(deck: &Deck, target: &str, only: bool, force: bool) -> Result<String> {
+    let cat = deck.catalog();
+    let r = &crate::deck::resolve(&cat, target)?.recipe;
+    match Pick::of(&deck.paths, &deck.cfg, r).filter(|p| p.host != LOCAL) {
+        Some(p) => Ok(format!("on {} ({}): {}", p.host, p.why, start_on(deck, target, &p.host, only, force, false)?)),
+        None => deck.start(target, only, force),
+    }
 }
 
 #[cfg(test)]

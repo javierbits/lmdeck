@@ -1351,9 +1351,20 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     if r.nodes() > 1 {
         bail!("{} spans {} nodes; give it [[nodes]] entries to launch it across hosts", r.name, r.nodes());
     }
-    if let Some(on) = &a.on {
-        return use_on(ctx, r, on, a);
+    // `--on local` (or this machine's name) runs it here, as a start without `--on` did
+    // before it went where the weights are.
+    let node = ctx.cfg.node_name();
+    if let Some(on) = a.on.as_deref().filter(|h| !lmdeck::remote::is_local(h, &node)) {
+        return use_on(ctx, r, on, a, None);
     }
+    let pick = lmdeck::placement::Pick::of(&ctx.paths, &ctx.cfg, r);
+    if let Some(p) = pick.as_ref().filter(|p| a.on.is_none() && p.host != hosts::LOCAL) {
+        return use_on(ctx, r, &p.host, a, Some(&p.why));
+    }
+    let here = pick.map(|p| match a.on {
+        Some(_) => format!("here, as --on says ({})", p.why),
+        None => format!("here ({})", p.why),
+    });
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
     let p = ctx.presence(r);
@@ -1377,6 +1388,9 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
             cyan(&format!("{}/{}", found.origin, r.name)),
             dim(&format!("({})", r.engine.name))
         );
+        if let Some(h) = &here {
+            println!("  where: {h}");
+        }
         print_report(&rep);
         for pre in &plan.pre {
             println!("  pre:  {}", shlex::try_join(pre.iter().map(String::as_str)).unwrap_or_default());
@@ -1436,6 +1450,9 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         return Ok(());
     }
 
+    if let Some(h) = &here {
+        println!("  {}", dim(&format!("where: {h}")));
+    }
     match runner::status(&ctx.paths, &r.name, plan.port) {
         Status::Loaded | Status::External => {
             println!("{} {} is already up at http://localhost:{}/v1", green("●"), bold(&r.name), plan.port);
@@ -1650,18 +1667,23 @@ fn host_label(h: &str, node: &str) -> String {
     }
 }
 
-/// `lmdeck use <recipe> --on <host>`.
-fn use_on(ctx: &Ctx, r: &Recipe, on: &str, a: &UseArgs) -> Result<()> {
+/// `lmdeck use <recipe> --on <host>`, and a start without `--on` that goes to
+/// the host holding the weights (`why` says so, under the plan's first line).
+fn use_on(ctx: &Ctx, r: &Recipe, on: &str, a: &UseArgs, why: Option<&str>) -> Result<()> {
     let node = ctx.cfg.node_name();
     let plan = lmdeck::placement::plan(&ctx.paths, &ctx.cfg, r, on, a.allow_slow_link)?;
+    let mut lines = plan.describe(&node);
+    if let Some(w) = why {
+        lines.insert(1, format!("why: {w} (--on local runs it here)"));
+    }
     if a.dry_run {
         println!("{} {}", bold("plan for"), cyan(&r.name));
-        for l in plan.describe(&node) {
+        for l in lines {
             println!("  {l}");
         }
         return Ok(());
     }
-    for l in plan.describe(&node).iter().take(4) {
+    for l in lines.iter().take(if why.is_some() { 5 } else { 4 }) {
         println!("  {}", dim(l));
     }
     let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
@@ -1806,7 +1828,7 @@ fn pull(ctx: &Ctx, target: &str, dry_run: bool, latest: bool) -> Result<()> {
         bail!("--latest is for wrapped recipes (with a [source]); {} has none", r.name);
     }
     // A wrapped recipe: update its checkout. Its scripts fetch their own weights,
-    // so there is nothing more to do unless it also names an HF repo.
+    // so there is nothing more to do unless it also names an HF repo lmdeck pulls.
     if let Some(src) = &r.source {
         let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &r.name);
         if dry_run {
@@ -1833,7 +1855,7 @@ fn pull(ctx: &Ctx, target: &str, dry_run: bool, latest: bool) -> Result<()> {
                 }
             }
         }
-        if r.model.repo.is_none() {
+        if r.model.repo.is_none() || r.model.fetched_by_scripts() {
             return Ok(());
         }
     }

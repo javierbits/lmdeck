@@ -16,7 +16,8 @@
 //! - `GET  /api/topology`              hosts + links as this controller sees them
 //! - `GET  /api/probe?port=`           does a TCP port answer on this machine
 //! - `GET  /api/plan/{recipe}?on=<host>`  where weights come from and the NFS steps (dry run)
-//! - `POST /api/start/{recipe}` body `{"on":"<host>","allow_slow_link":false}` runs it on another host
+//! - `POST /api/start/{recipe}` body `{"on":"<host>","allow_slow_link":false}` runs it on another host;
+//!   `{"auto":true}` runs it where its weights are (`crate::placement::Pick`), as the dashboard's Start does
 //! - `POST /api/run` `{"recipe":"<toml>","only":false,"force":false}`  needs `[serve] accept_recipes`;
 //!   `"peers":["<host>",…]` says the controller filled in the recipe's peers (they count as this machine's Sparks)
 //! - `POST /api/weights/{export,volume,preflight}`  the NFS steps (see `placement`)
@@ -236,6 +237,11 @@ struct ActionBody {
     /// `start` / `switch`: run on this host instead (weights stay on their home).
     #[serde(default)]
     on: Option<String>,
+    /// `start` / `switch` without `on`: run it where its weights are, as `lmdeck
+    /// use` without `--on` does (the dashboard's buttons). Without it a start runs
+    /// here: a controller starting a recipe on the host it picked must not move it.
+    #[serde(default)]
+    auto: bool,
     #[serde(default)]
     allow_slow_link: bool,
 }
@@ -406,6 +412,9 @@ fn handle(st: &State, mut req: Request) {
             let elsewhere = opts.on.as_deref().filter(|h| !crate::remote::is_local(h, &node));
             let result = match (verb, elsewhere) {
                 ("start" | "switch", Some(host)) => place(st, target, host, verb == "switch", &opts),
+                ("start" | "switch", None) if opts.auto && opts.on.is_none() => {
+                    crate::placement::start_auto(&st.deck, target, verb == "switch", opts.force)
+                }
                 _ => match verb {
                     "start" => st.deck.start(target, false, opts.force),
                     "switch" => st.deck.start(target, true, opts.force),

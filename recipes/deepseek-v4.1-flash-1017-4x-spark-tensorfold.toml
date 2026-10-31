@@ -15,7 +15,8 @@
 # NFS export of the head's Hugging Face home at its real path (one /etc/exports line such as
 # `/home/me/.cache/huggingface 10.0.0.0/8(ro,no_subtree_check)`; lmdeck passes that path as
 # NFS_PATH instead of Mia's fsid=0 /huggingface), and the head being the Spark that holds the
-# checkpoint are the repo's requirements, not lmdeck's.
+# checkpoint are the repo's requirements, not lmdeck's. [model] names that checkpoint, so
+# `lmdeck use` without --on runs the recipe on the Spark whose Hugging Face cache holds it.
 schema = 1
 display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
 description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on spark1, ~80 GiB resident per Spark."
@@ -25,6 +26,14 @@ tags = ["deepseek", "fp8", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrappe
 repo = "https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"
 # Pinned to the commit this recipe was written against; use "main" to follow the repo.
 ref = "476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"
+
+# The checkpoint Mia's scripts load on the head. They download it there themselves, so
+# lmdeck never pulls or mounts it (pull = false); it reads repo and revision only to find
+# the Spark that holds it.
+[model]
+repo = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+revision = "1bae0e1088993b9b82de08f59de5be5a34e42170"
+pull = false
 
 [quant]
 format = "fp8"

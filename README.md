@@ -300,7 +300,9 @@ lmdeck serve --host 0.0.0.0 --token "$(openssl rand -hex 16)"   # see the warnin
 
 `lmdeck serve` runs the same controls in a browser: a card for each recipe
 with status, fit, size, a memory bar, checks and the launch command; Start /
-Stop / Switch / Pull buttons (wrapped recipes with new upstream commits get a
+Stop / Switch / Pull buttons (Start and Switch run a recipe on the host that
+holds its weights when this machine doesn't, as `lmdeck use` does; wrapped
+recipes with new upstream commits get a
 `⬆ update` badge and an `⬆ Update` button); search and filters (fits, running, on disk);
 machine, engine and source panels; a live log drawer; and a Hosts row with
 one card per host (memory, temperature, power, tok/s, sparklines, the
@@ -346,7 +348,7 @@ API (JSON unless noted):
 | `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry` and `history` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
 | `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
-| `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks; `{"latest": true}` on `pull` moves a pinned wrapped recipe to the upstream head (`pull --latest`). |
+| `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks; `{"latest": true}` on `pull` moves a pinned wrapped recipe to the upstream head (`pull --latest`). On `start` / `switch`, `{"on": "<host>"}` runs it on that host, and `{"auto": true}` runs it where its weights are, as `lmdeck use` without `--on` does (the dashboard's Start and Switch send it); without either it runs on this machine, which is how a controller starts a recipe on the host it picked. |
 
 `{recipe}` is a name or an `origin/name` reference. Start and switch return as
 soon as the server process is launched; poll `/api/status` to see it come up.
@@ -401,8 +403,9 @@ Design:
   it has by name unless it sets `[serve] accept_recipes = true`. A recipe
   that uses peer placeholders (`{peer_addr}`, …) always goes uploaded, with
   the peers the controller picked filled in.
-- **Multi-host** (weights on another host, running a model where its weights
-  aren't, `[[nodes]]` recipes across Sparks, CX7 detection, topology): see
+- **Multi-host** (weights on another host, a start without `--on` going to
+  the host that holds them, running a model where its weights aren't,
+  `[[nodes]]` recipes across Sparks, CX7 detection, topology): see
   **[docs/MULTIHOST.md](docs/MULTIHOST.md)**. A `[[nodes]]` worker with
   `host = "auto"` gets its machine from the head's CX7 fabric (on a ring,
   the head's cable neighbours first), so a recipe needn't name your hosts.
@@ -456,16 +459,16 @@ column and Machine panel there still describe that VM.
 | command | what it does |
 |---|---|
 | `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache; a cache repo holding GGUFs shows as `gguf`). |
-| `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. Then it waits until `GET /v1/models` answers 2xx: any other answer is a server still loading (llama-server says 503 until its model is in memory), and the status reads loading (◐) meanwhile. A server behind a key gets its own: an `--api-key` in the command, or TabbyAPI's `api_key` from `api_tokens.yml` in its checkout. `--dry-run` prints the exact command and runs nothing. |
+| `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. Then it waits until `GET /v1/models` answers 2xx: any other answer is a server still loading (llama-server says 503 until its model is in memory), and the status reads loading (◐) meanwhile. A server behind a key gets its own: an `--api-key` in the command, or TabbyAPI's `api_key` from `api_tokens.yml` in its checkout. `--dry-run` prints the exact command and runs nothing. With other hosts in `hosts.toml`, a recipe whose weights this machine lacks but another host holds runs on that host (its weights home), exactly as `--on <that host>` would; when this machine holds them too, or no host does, it runs here. The plan and the start output say where and why (`why: weights on ember, not here`, or `where: here (weights here)`); `--on local` runs it here anyway. See [docs/MULTIHOST.md](docs/MULTIHOST.md#3-choosing-where-a-model-runs---on). |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
-| `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`) into the Hugging Face cache, passing `--revision` and `--include` as needed; a recipe with a `[model] path` (any engine: that is where it runs from) gets them there instead (`--local-dir`). `hf download` keeps a file's place in the repo, so a llama.cpp path (the GGUF itself) must end with its first `files` entry, e.g. `…/UD-IQ4_NL/X-00001-of-00005.gguf`. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo). `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
+| `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`) into the Hugging Face cache, passing `--revision` and `--include` as needed; a recipe with a `[model] path` (any engine: that is where it runs from) gets them there instead (`--local-dir`). `hf download` keeps a file's place in the repo, so a llama.cpp path (the GGUF itself) must end with its first `files` entry, e.g. `…/UD-IQ4_NL/X-00001-of-00005.gguf`. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo without `pull = false`). A recipe with `pull = false` is never downloaded: its own scripts fetch its weights. `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
 | `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
 | `lmdeck browse [words] [-t TAG]… [--sort name\|sparks\|speed] [--fits] [--refresh\|--offline] [--json]` | Lists the [recipe index](#recipe-index) with installed state, update badge, fit and the speed each repo reports. Words match name, description and tags; `-t exl3` or `-t sparks=2` filters by tag. |
 | `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
 | `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
-| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. |
+| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. `--on local` (or this machine's `[node] name`) runs it here, the way `use` without `--on` did before it followed the weights: nothing is placed or mounted, and the engine or the recipe's scripts fetch the weights if they need them. |
 | `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
 | `lmdeck hosts topology [--json] [--no-verify]` | Hosts and the links between them: CX7 cables, LAN, Tailscale, with a ping / TCP check. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
@@ -594,6 +597,7 @@ revision = "4.0bpw"                        # branch / tag / commit
 files    = []                              # files or globs (GGUF: first = file to load)
 # path   = "turboderp/Qwen3-30B-A3B-exl3-4.0bpw"  # weights here, not in the HF cache (`pull` too): relative to models_dir, or absolute
 size_gb  = 16.0                            # used for memory estimates
+# pull   = false                           # its own scripts fetch them: lmdeck never pulls or mounts them, only finds the host holding them
 
 [quant]
 format = "exl3"                            # gguf, exl3, exl2, nvfp4, mxfp4, fp8, awq, gptq, mlx, bf16 …
@@ -847,7 +851,11 @@ CONTAINER_NAME = "{container}"
 ```
 
 - `[model]` is optional for `custom` recipes; leave it out when the scripts fetch
-  their own weights.
+  their own weights, or name them with `pull = false`. Then lmdeck never pulls
+  or mounts them, but finds the host whose Hugging Face cache holds them, and
+  `lmdeck use` without `--on` runs the recipe there (the built-in DeepSeek 4x
+  recipe does this: its head must hold the checkpoint). With `--on` to a host
+  without them, the plan warns that the scripts fetch their own copy there.
 - `[source]` is cloned on the first `use`. A later `use` fetches only when the
   checkout isn't at `ref` (you changed `ref`, or it names a commit not fetched
   yet) and then checks `ref` out. `lmdeck pull` fetches and checks out `ref`
@@ -979,7 +987,7 @@ is empty. Every Hugging Face id below was checked against the Hub.
 | `qwen3.5-2b-tensorfold` | `mlx-community/Qwen3.5-2B-MLX-4bit` @ `93760be` | tensorfold | Apple Silicon or NVIDIA (TensorFold's quick-start model) |
 | `qwen3.6-35b-a3b-mtp-tensorfold-spark` | `TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP` @ `81169a9` | tensorfold | NVIDIA / DGX Spark (CUDA only) |
 | `ornith-1.5-122b-tensorfold` | wraps [MiaAI-Lab/Ornith-1.5-122B-TensorFold](https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold) @ `0c8fd6a` (its scripts fetch the EXL3 weights) | custom (wrapped, detached) | DGX Spark, ~100 GB |
-| `deepseek-v4.1-flash-1017-4x-spark-tensorfold` | wraps [MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) @ `476bbc7` (spark1's `start.sh` fetches the FP8 checkpoint and ssh's the other three; a switchless ring runs `start-switchless.sh`) | custom (wrapped, detached) | 4x DGX Spark, ~100 GB free each |
+| `deepseek-v4.1-flash-1017-4x-spark-tensorfold` | wraps [MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) @ `476bbc7` (spark1's `start.sh` fetches the FP8 checkpoint and ssh's the other three; a switchless ring runs `start-switchless.sh`; `[model]` names the checkpoint with `pull = false`, so `lmdeck use` runs it on the Spark that holds it) | custom (wrapped, detached) | 4x DGX Spark, ~100 GB free each |
 
 [`examples/`](examples/) has recipes that aren't built in, such as
 `ornith-122b-awq-lmdeploy.toml` (LMDeploy in Docker; its model repo is a
