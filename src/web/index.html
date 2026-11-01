@@ -400,7 +400,8 @@ function card(r){
   const size = r.downloaded && r.size_bytes ? bytes(r.size_bytes) : (r.size_gb ? "~" + gb(r.size_gb) : "size ?");
   const need = r.need_gb ? `<div class="need"><span>needs ${gb(r.need_gb)}</span><div class="bar ${r.need_gb/total>.9?"err":r.need_gb/total>.7?"warn":""}"><i style="width:${Math.min(100, r.need_gb/total*100).toFixed(1)}%"></i></div><span>${Math.round(r.need_gb/total*100)}%</span></div>` : "";
   const checks = (r.checks||[]).map(c => `<span class="${c.level}">${c.level==="ok"?"✓":c.level==="warn"?"!":"✗"}</span><span class="muted">${esc(c.what)}</span><span>${esc(c.detail)}</span>`).join("");
-  const cmd = r.command ? `<div class="cmd"><b>$</b> ${esc(r.command)}</div>` : r.plan_error ? `<div class="cmd" style="color:var(--err)">${esc(r.plan_error)}</div>` : "";
+  const placeErr = !(r.nodes || []).length && r.cluster_error ? `<div class="cmd" style="color:var(--err)">✗ ${esc(r.cluster_error)}</div>` : "";
+  const cmd = placeErr + (r.command ? `<div class="cmd"><b>$</b> ${esc(r.command)}</div>` : r.plan_error ? `<div class="cmd" style="color:var(--err)">${esc(r.plan_error)}</div>` : "");
   const ref = esc(r.reference);
   const u = r.update, sh = x => x ? x.slice(0, 7) : "?";
   // Wrapped recipes whose scripts fetch their own weights: show the repo, not weights.

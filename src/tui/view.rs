@@ -417,6 +417,9 @@ fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
     if let Some(h) = &r.placed_on {
         tags.push(format!("→{h}"));
     }
+    if r.nodes.is_empty() && r.cluster_error.is_some() {
+        tags.push("✗ failed".into());
+    }
     if !r.weights_on.is_empty() && (r.weights_on.len() > 1 || !r.downloaded) {
         tags.push(format!("⛁{}", r.weights_on.join(",")));
     }
@@ -566,6 +569,9 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some(h) = &r.placed_on {
         lines.push(kv("running", format!("on {h} (weights read over NFS from their home)"), t));
+    }
+    if let (true, Some(e)) = (r.nodes.is_empty(), &r.cluster_error) {
+        lines.push(Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(t.err))));
     }
     if !r.nodes.is_empty() {
         let phase = r.cluster_phase.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();

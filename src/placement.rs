@@ -77,6 +77,11 @@ impl Record {
     pub fn remove(paths: &Paths, recipe: &str) {
         let _ = fs::remove_file(dir(paths).join(format!("{recipe}.json")));
     }
+
+    /// How long ago this placement was written (the start that sent it away).
+    pub fn age(paths: &Paths, recipe: &str) -> Option<std::time::Duration> {
+        fs::metadata(dir(paths).join(format!("{recipe}.json"))).ok()?.modified().ok()?.elapsed().ok()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -98,6 +98,152 @@ pub fn planned_port(ports: &BTreeMap<String, u16>, f: &Found) -> u16 {
     ports.get(&reference(f)).copied().unwrap_or_else(|| f.recipe.port())
 }
 
+/// Whether a server answering `/v1/models` with `ids` serves this recipe: by
+/// its name, its model repo, or the repo's last part, ignoring case (wrapped
+/// recipes serve under the upstream model name).
+pub fn serves(ids: &[String], r: &Recipe) -> bool {
+    let mut want = vec![r.name.to_lowercase()];
+    if let Some(repo) = &r.model.repo {
+        want.push(repo.to_lowercase());
+        want.extend(repo.rsplit('/').next().map(str::to_lowercase));
+    }
+    ids.iter().any(|id| {
+        let id = id.to_lowercase();
+        let base = id.rsplit('/').next().unwrap_or(&id).to_string();
+        want.iter().any(|w| *w == id || *w == base)
+    })
+}
+
+/// A recipe's status on this machine, adopting servers lmdeck didn't start:
+/// the recipe's container running, or its port answering with its model,
+/// make it [`Status::External`].
+pub fn local_status(paths: &Paths, docker: &str, r: &Recipe, port: u16, cache: &mut HashMap<u16, Probe>) -> Status {
+    let s = runner::status_cached(paths, &r.name, port, cache);
+    if s.is_up() || !r.nodes.is_empty() {
+        return s;
+    }
+    match cache.get(&port) {
+        Some(Probe::Up(ids)) if serves(ids, r) => return Status::External,
+        // Reason: the port answers for another model, so a container of this
+        // name belongs to a recipe sharing it (a variant), not this one.
+        Some(Probe::Up(ids)) if !ids.is_empty() => return s,
+        _ => {}
+    }
+    // Reason: a recipe spanning several hosts runs a container of the same name on
+    // every worker too; only its head, the one answering on the port, serves it.
+    let spans_hosts = r.hardware.hosts.unwrap_or(1) > 1;
+    if std::env::var_os("LMDECK_NO_PROBE").is_none() && !spans_hosts {
+        if let Some(c) = r.engine.container.as_deref().filter(|c| !c.is_empty()) {
+            if runner::container_running(docker, c) {
+                return Status::External;
+            }
+        }
+    }
+    s
+}
+
+/// The other host running `name` as the sampler last saw it, with its state there.
+pub fn remote_status(live: &crate::hosts::LiveFile, name: &str) -> Option<(String, Status)> {
+    let (host, _) = live
+        .hosts
+        .iter()
+        .filter(|(h, _)| h.as_str() != crate::hosts::LOCAL)
+        .find(|(_, (online, names))| *online && names.iter().any(|n| n == name))?;
+    let state = live.states.get(host).and_then(|m| m.get(name)).map(String::as_str);
+    let status = match state {
+        Some("loading") => Status::Loading,
+        Some("external") => Status::External,
+        _ => Status::Loaded,
+    };
+    Some((host.clone(), status))
+}
+
+/// A recipe's status as this machine sees it: here (adopting what lmdeck
+/// didn't start), else on the other host the sampler last saw it running on.
+pub fn seen_status(
+    paths: &Paths,
+    docker: &str,
+    r: &Recipe,
+    port: u16,
+    cache: &mut HashMap<u16, Probe>,
+    live: Option<&crate::hosts::LiveFile>,
+) -> (Status, Option<String>) {
+    let s = local_status(paths, docker, r, port, cache);
+    if s.is_up() || !r.nodes.is_empty() {
+        return (s, None);
+    }
+    match live.and_then(|l| remote_status(l, &r.name)) {
+        Some((h, rs)) => (rs, Some(h)),
+        None => (s, None),
+    }
+}
+
+/// The endpoint of a server on `host` (a hosts.toml name; `None` for here).
+pub fn endpoint_on(paths: &Paths, host: Option<&str>, port: u16) -> String {
+    let url = host.and_then(|h| crate::hosts::HostsFile::load(paths).ok()?.get(h).map(|e| e.url.clone()));
+    match url {
+        Some(u) => format!("http://{}:{port}/v1", url_host(&u)),
+        None => format!("http://localhost:{port}/v1"),
+    }
+}
+
+/// The host part of a serve URL (`http://10.0.0.2:7979` → `10.0.0.2`).
+pub fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split('/').next().unwrap_or(rest);
+    if let Some(v6) = rest.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or(v6);
+    }
+    rest.rsplit_once(':').map(|(h, _)| h).unwrap_or(rest)
+}
+
+/// Why a start sent to `host` isn't running there: the last lines of its log
+/// on that host, asked at most every 30 s per recipe.
+fn remote_failure(paths: &Paths, host: &str, name: &str) -> String {
+    static SEEN: Mutex<BTreeMap<String, (Instant, String)>> = Mutex::new(BTreeMap::new());
+    let key = format!("{host}/{name}");
+    if let Some((at, msg)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if at.elapsed() < Duration::from_secs(30) {
+            return msg.clone();
+        }
+    }
+    let tail = crate::remote::Client::named(paths, host)
+        .and_then(|c| c.logs(name, 40))
+        .map(|lines| failure_lines(&lines))
+        .unwrap_or_default();
+    let msg = if tail.is_empty() {
+        format!("started on {host}, but it isn't running there now; see `lmdeck logs {name}`")
+    } else {
+        format!("started on {host}, but it stopped: {tail}  (more: `lmdeck logs {name}`)")
+    };
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (Instant::now(), msg.clone()));
+    msg
+}
+
+/// The lines of a log tail that say why a server stopped: the last error-ish
+/// lines, else the last line.
+pub fn failure_lines(lines: &[String]) -> String {
+    let lines: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let bad = |l: &str| {
+        let l = l.to_lowercase();
+        ["error", "fatal", "failed", "traceback", "exception", "killed", "no such", "not found", "denied", "exit"]
+            .iter()
+            .any(|w| l.contains(w))
+    };
+    let errs: Vec<&str> = lines.iter().copied().filter(|l| bad(l)).collect();
+    let pick: Vec<&str> = if errs.is_empty() {
+        lines.iter().rev().take(1).copied().collect()
+    } else {
+        errs.into_iter().rev().take(2).rev().collect()
+    };
+    let s = pick.join(" | ");
+    if s.chars().count() > 300 {
+        s.chars().take(300).collect::<String>() + "…"
+    } else {
+        s
+    }
+}
+
 /// The recipes `list` numbers: the deck, or the built-ins while the deck is empty.
 pub fn listed(cat: &Catalog) -> Vec<&Found> {
     let deck: Vec<&Found> = cat.deck().collect();
@@ -405,6 +551,10 @@ impl Deck {
         }
         let show = |k: &str| if k == crate::hosts::LOCAL { node.clone() } else { k.to_string() };
         let live = crate::hosts::read_live(&self.paths, Duration::from_secs(15));
+        let host_urls: BTreeMap<String, String> = crate::hosts::HostsFile::load(&self.paths)
+            .map(|f| f.hosts.into_iter().map(|h| (h.name, h.url)).collect())
+            .unwrap_or_default();
+        let docker = self.docker();
         let fleet = std::cell::OnceCell::new();
         for f in &cat.entries {
             let r = &f.recipe;
@@ -421,7 +571,7 @@ impl Deck {
                     Ok(plan) => (Some(plan.command_line()), None),
                     Err(e) => (None, Some(format!("{e:#}"))),
                 };
-            let mut status = runner::status_cached(&self.paths, &r.name, planned, &mut cache);
+            let mut status = local_status(&self.paths, &docker, r, planned, &mut cache);
             let nodes = if r.nodes.is_empty() { vec![] } else { crate::cluster::views(&self.paths, r, &node) };
             let crec = (!r.nodes.is_empty()).then(|| crate::cluster::Record::load(&self.paths, &r.name)).flatten();
             if !nodes.is_empty() {
@@ -443,7 +593,32 @@ impl Deck {
                     live.as_ref().and_then(|l| l.hosts.get(&p.run_host)).is_some_and(|(_, v)| v.contains(&p.served_as));
                 running.then(|| p.run_host.clone())
             });
+            // A run on another host (placed there, or started there) shows its state there.
+            let mut remote_on = None;
+            if !status.is_up() && r.nodes.is_empty() {
+                let names = [Some(r.name.as_str()), placed.as_ref().map(|p| p.served_as.as_str())];
+                if let Some((h, s)) =
+                    live.as_ref().and_then(|l| names.iter().flatten().find_map(|n| remote_status(l, n)))
+                {
+                    status = s;
+                    remote_on = Some(h);
+                }
+            }
+            // Reason: a start the TUI or dashboard sent to another host returns once it is
+            // spawned there; when it dies while loading, say so instead of a silent "stopped".
+            let placement_error = placed.as_ref().filter(|_| !status.is_up()).and_then(|p| {
+                let host_up = live.as_ref().and_then(|l| l.hosts.get(&p.run_host)).is_some_and(|(on, _)| *on);
+                let settled =
+                    crate::placement::Record::age(&self.paths, &r.name).is_some_and(|a| a > Duration::from_secs(20));
+                (host_up && settled).then(|| remote_failure(&self.paths, &p.run_host, &p.served_as))
+            });
+            let placed_on = placed_on.or(remote_on.clone());
             let rec = if status.is_up() { RunRecord::load(&self.paths, &r.name) } else { None };
+            let port = rec.as_ref().map(|x| x.port).unwrap_or(planned);
+            let endpoint = match remote_on.as_ref().and_then(|h| host_urls.get(h)) {
+                Some(url) => format!("http://{}:{port}/v1", url_host(url)),
+                None => format!("http://localhost:{port}/v1"),
+            };
             let locs = widx.locate(r);
             recipes.push(RecipeView {
                 index,
@@ -458,9 +633,9 @@ impl Deck {
                 quant: r.quant_short(),
                 model: r.model.repo.clone().or(r.model.path.clone()),
                 revision: r.model.revision.clone(),
-                port: rec.as_ref().map(|x| x.port).unwrap_or(planned),
+                port,
                 ctx: r.engine.ctx,
-                endpoint: format!("http://localhost:{}/v1", rec.as_ref().map(|x| x.port).unwrap_or(planned)),
+                endpoint,
                 listed: index > 0,
                 status,
                 pid: rec.as_ref().and_then(|r| r.pid),
@@ -483,7 +658,7 @@ impl Deck {
                 nodes,
                 placed_on,
                 cluster_phase: crec.as_ref().map(|c| c.phase.clone()),
-                cluster_error: crec.and_then(|c| c.error),
+                cluster_error: crec.and_then(|c| c.error).or(placement_error),
                 chat: r.harness.chat,
             });
         }
@@ -559,7 +734,7 @@ impl Deck {
         let peers = crate::pick::peers(&self.paths, &self.cfg, r, crate::hosts::LOCAL)?;
         let ctx = PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric);
         let plan = engine::plan(r, &ctx.with_vars(crate::vars::peer_vars(&peers.hosts)))?;
-        match runner::status(&self.paths, &r.name, plan.port) {
+        match local_status(&self.paths, &self.docker(), r, plan.port, &mut HashMap::new()) {
             Status::Loaded | Status::External => return Ok(format!("{} is already up on :{}", r.name, plan.port)),
             Status::Loading => return Ok(format!("{} is still loading", r.name)),
             Status::PortBusy if !only => {
@@ -624,10 +799,69 @@ impl Deck {
             }
         }
         if runner::stop(&self.paths, &name, &self.docker())? {
-            Ok(format!("stopped {name}{}", crate::harness::sync_note(&self.paths, &self.cfg)))
-        } else {
-            bail!("{name} was not started by lmdeck")
+            return Ok(format!("stopped {name}{}", crate::harness::sync_note(&self.paths, &self.cfg)));
         }
+        if let Ok(f) = resolve(&cat, &name) {
+            if let Some(m) = self.stop_adopted(&cat, &f.recipe)? {
+                return Ok(format!("{m}{}", crate::harness::sync_note(&self.paths, &self.cfg)));
+            }
+        }
+        // Started on another host (by hand, or by another controller): stop it there.
+        if let Some((host, _)) =
+            crate::hosts::read_live(&self.paths, Duration::from_secs(60)).and_then(|l| remote_status(&l, &name))
+        {
+            let m = crate::remote::Client::named(&self.paths, &host)?.action("stop", &name, false)?;
+            return Ok(format!("{host}: {m}{}", crate::harness::sync_note(&self.paths, &self.cfg)));
+        }
+        bail!("{name} isn't running here or on any host lmdeck knows")
+    }
+
+    /// Stops a server lmdeck didn't start but recognises as `r` (see
+    /// [`local_status`]): with the recipe's own stop command when it has one,
+    /// else `docker stop` on its container. `None` when it isn't running here.
+    fn stop_adopted(&self, cat: &Catalog, r: &Recipe) -> Result<Option<String>> {
+        let docker = self.docker();
+        let port = planned_for(cat, &self.paths, &self.cfg, r);
+        if local_status(&self.paths, &docker, r, port, &mut HashMap::new()) != Status::External {
+            return Ok(None);
+        }
+        let p = self.presence(r);
+        let fabric = crate::topology::fabric_for(&self.paths, &self.cfg, r).map(|f| f.kind.as_str().to_string());
+        let plan = crate::pick::peers(&self.paths, &self.cfg, r, crate::hosts::LOCAL).and_then(|peers| {
+            let ctx = PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric);
+            engine::plan(r, &ctx.with_vars(crate::vars::peer_vars(&peers.hosts)))
+        });
+        let (stop, cwd, env, planned) = match plan {
+            Ok(plan) => (plan.stop, plan.cwd, plan.env, plan.container),
+            Err(_) => (None, None, BTreeMap::new(), None),
+        };
+        let container = planned.or(r.engine.container.clone()).filter(|c| !c.is_empty());
+        if stop.as_ref().is_none_or(|s| s.is_empty()) && container.is_none() {
+            bail!(
+                "{} is served on :{port} by a process lmdeck didn't start and can't stop; stop it where it runs",
+                r.name
+            );
+        }
+        // A record for what is running, so `runner::stop` stops it the usual way.
+        let rec = RunRecord {
+            name: r.name.clone(),
+            engine: r.engine.name.as_str().into(),
+            pid: None,
+            container,
+            port,
+            started_at: now_secs(),
+            log: self.paths.log_dir().join(format!("{}.log", r.name)),
+            argv: vec![],
+            stop,
+            oneshot: false,
+            cwd,
+            env,
+            detached: true,
+            exit_file: None,
+        };
+        rec.save(&self.paths)?;
+        runner::stop(&self.paths, &r.name, &docker)?;
+        Ok(Some(format!("stopped {} (it was running outside lmdeck)", r.name)))
     }
 
     /// Downloads a recipe's weights in the background, logging to [`Deck::pull_log`].
@@ -791,6 +1025,51 @@ pub fn tail_lines(path: &Path, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_serves_a_recipe_by_name_repo_or_repo_basename() {
+        let r = found("deck", "ds-tf", None).recipe;
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(serves(&ids(&["ds-tf"]), &r));
+        assert!(serves(&ids(&["x/y"]), &r));
+        assert!(serves(&ids(&["Y"]), &r), "the upstream model name, any case");
+        assert!(serves(&ids(&["/models/y"]), &r), "a path ending in the repo name");
+        assert!(!serves(&ids(&["other", "x/yy"]), &r));
+        assert!(!serves(&[], &r));
+    }
+
+    #[test]
+    fn remote_status_reads_the_hosts_state_and_skips_this_machine() {
+        let mut live = crate::hosts::LiveFile::default();
+        live.hosts.insert("local".into(), (true, vec!["m".into()]));
+        assert_eq!(remote_status(&live, "m"), None, "a local run isn't remote");
+        live.hosts.insert("ember".into(), (true, vec!["m".into()]));
+        assert_eq!(remote_status(&live, "m"), Some(("ember".into(), Status::Loaded)), "older hosts say no state");
+        live.states.insert("ember".into(), [("m".to_string(), "loading".to_string())].into());
+        assert_eq!(remote_status(&live, "m"), Some(("ember".into(), Status::Loading)));
+        live.hosts.insert("ember".into(), (false, vec!["m".into()]));
+        assert_eq!(remote_status(&live, "m"), None, "an offline host's last list doesn't count");
+    }
+
+    #[test]
+    fn url_host_takes_the_address_of_a_serve_url() {
+        assert_eq!(url_host("http://10.100.132.2:7979"), "10.100.132.2");
+        assert_eq!(url_host("http://ember.local:7979/"), "ember.local");
+        assert_eq!(url_host("http://[fe80::1]:7979"), "fe80::1");
+        assert_eq!(url_host("ember"), "ember");
+    }
+
+    #[test]
+    fn failure_lines_prefer_the_last_errors() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(failure_lines(&l(&["loading", "[4/5] Loading weights", ""])), "[4/5] Loading weights");
+        assert_eq!(
+            failure_lines(&l(&["ok", "ERROR: no NVFP4 weights at /x", "cleanup", "worker exited 1"])),
+            "ERROR: no NVFP4 weights at /x | worker exited 1"
+        );
+        assert_eq!(failure_lines(&[]), "");
+        assert!(failure_lines(&l(&[&"error ".repeat(100)])).ends_with('…'));
+    }
 
     fn found(origin: &str, name: &str, port: Option<u16>) -> Found {
         let engine = match port {

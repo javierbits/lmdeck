@@ -1087,10 +1087,12 @@ fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out
     let ports = deck::planned_ports(&ctx.catalog(), &ctx.paths, &ctx.cfg);
     let has_hosts = hosts::HostsFile::load(&ctx.paths).map(|f| !f.hosts.is_empty()).unwrap_or(false);
     let idx = has_hosts.then(|| lmdeck::weights::Index::fresh(&ctx.paths, &ctx.cfg, lmdeck::weights::INDEX_TTL));
+    let live = has_hosts.then(|| hosts::read_live(&ctx.paths, Duration::from_secs(30))).flatten();
+    let docker = ctx.cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
     for (i, f) in entries.iter().enumerate() {
         let r = &f.recipe;
         let port = deck::planned_port(&ports, f);
-        let st = runner::status_cached(&ctx.paths, &r.name, port, &mut cache);
+        let (st, running_on) = deck::seen_status(&ctx.paths, &docker, r, port, &mut cache, live.as_ref());
         let weights_on: Vec<String> = match &idx {
             Some(idx) => {
                 let mut v: Vec<String> = idx.locate(r).into_iter().map(|l| l.host).collect();
@@ -1116,7 +1118,7 @@ fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out
             "quant": r.quant_short(), "port": port, "status": status_word(&st), "family": r.family(),
             "downloaded": p.present(), "size_bytes": p.size, "model": r.model.repo.clone().or(r.model.path.clone()),
             "update": update_json(ups.get(&r.name)),
-            "weights_on": weights_on, "nodes": nodes,
+            "weights_on": weights_on, "nodes": nodes, "running_on": running_on,
             "other_platform": lmdeck::compat::other_platform(r, std::env::consts::OS, std::env::consts::ARCH),
         }));
         let glyph = match st {
@@ -1133,6 +1135,9 @@ fn deck_table_grouped(ctx: &Ctx, entries: &[&Found], loaded_only: bool, json_out
         };
         if st != Status::Stopped {
             name = format!("{name} {}", status_tag(&st));
+        }
+        if let Some(h) = &running_on {
+            name = format!("{name} {}", dim(&format!("on {h}")));
         }
         let up = update_tag(ups.get(&r.name));
         if !up.is_empty() {
@@ -1256,22 +1261,30 @@ fn list_loaded(ctx: &Ctx, cat: &Catalog, json_out: bool) -> Result<()> {
             ep,
         ]);
     }
-    // Servers lmdeck didn't start but that serve a deck recipe's name.
+    // Servers lmdeck didn't start here but that serve a deck recipe, and deck
+    // recipes running on other hosts.
     let ports = deck::planned_ports(cat, &ctx.paths, &ctx.cfg);
     let mut cache = HashMap::new();
+    let live = hosts::read_live(&ctx.paths, Duration::from_secs(30));
+    let docker = ctx.cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
     for f in listed(cat) {
-        if seen.contains(&f.recipe.name) {
+        if seen.contains(&f.recipe.name) || !f.recipe.nodes.is_empty() {
             continue;
         }
+        seen.push(f.recipe.name.clone());
         let ext_port = deck::planned_port(&ports, f);
-        let st = runner::status_cached(&ctx.paths, &f.recipe.name, ext_port, &mut cache);
-        if st == Status::External {
-            let ep = format!("http://localhost:{}/v1", ext_port);
+        let (st, on) = deck::seen_status(&ctx.paths, &docker, &f.recipe, ext_port, &mut cache, live.as_ref());
+        if st.is_up() {
+            let ep = deck::endpoint_on(&ctx.paths, on.as_deref(), ext_port);
             rows.push(json!({"name": f.recipe.name, "engine": f.recipe.engine.name.as_str(), "port": ext_port,
-                "status": "external", "endpoint": ep}));
+                "status": status_word(&st), "endpoint": ep, "running_on": on}));
+            let name = match &on {
+                Some(h) => format!("{} {}", bold(&f.recipe.name), dim(&format!("on {h}"))),
+                None => format!("{} {}", bold(&f.recipe.name), dim("(not started by lmdeck)")),
+            };
             t.row(vec![
                 status_cell(&st),
-                bold(&f.recipe.name),
+                name,
                 f.recipe.engine.name.as_str().into(),
                 ext_port.to_string(),
                 "-".into(),
@@ -1453,7 +1466,8 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     if let Some(h) = &here {
         println!("  {}", dim(&format!("where: {h}")));
     }
-    match runner::status(&ctx.paths, &r.name, plan.port) {
+    let docker = ctx.cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
+    match deck::local_status(&ctx.paths, &docker, r, plan.port, &mut HashMap::new()) {
         Status::Loaded | Status::External => {
             println!("{} {} is already up at http://localhost:{}/v1", green("●"), bold(&r.name), plan.port);
             return Ok(());

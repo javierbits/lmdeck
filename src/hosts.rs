@@ -439,6 +439,10 @@ pub struct LiveFile {
     /// host key → its platform ("NVIDIA DGX Spark (GB10)", "Apple M4 Max", …).
     #[serde(default)]
     pub platforms: BTreeMap<String, String>,
+    /// host key → recipe → its state there (`loaded`, `loading`, `external`),
+    /// for hosts new enough to say.
+    #[serde(default)]
+    pub states: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// The Sparks online now (see [`crate::compat::Fleet`]): this machine when
@@ -485,6 +489,19 @@ pub fn write_live(paths: &Paths, views: &[HostView]) {
         platforms: views
             .iter()
             .filter_map(|v| Some((v.name.clone(), v.telemetry.as_ref()?.platform.clone())))
+            .collect(),
+        states: views
+            .iter()
+            .filter_map(|v| {
+                let states: BTreeMap<String, String> = v
+                    .telemetry
+                    .as_ref()?
+                    .models
+                    .iter()
+                    .filter_map(|m| Some((m.name.clone(), m.status.clone()?)))
+                    .collect();
+                (!states.is_empty()).then(|| (v.name.clone(), states))
+            })
             .collect(),
     };
 

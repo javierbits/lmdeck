@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::hardware::Hardware;
 use crate::paths::Paths;
-use crate::runner::RunRecord;
+use crate::runner::{probe, Probe, RunRecord, Status};
 use crate::util::run_with_timeout;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -34,6 +34,38 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 pub const HISTORY_LEN: usize = 180;
 /// Sampling period used by `lmdeck serve` and the TUI.
 pub const SAMPLE_EVERY: Duration = Duration::from_secs(2);
+
+/// How often the sampler looks for recipes running outside lmdeck.
+pub const ADOPT_EVERY: Duration = Duration::from_secs(10);
+
+/// The catalog's recipes running here without a run record (started by hand,
+/// or by an older lmdeck), as [`crate::deck::local_status`] recognises them.
+fn find_adopted(paths: &Paths) -> Vec<ModelTel> {
+    let cfg = crate::config::Config::load(paths).unwrap_or_default();
+    let docker = cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
+    let cat = crate::catalog::Catalog::load(paths, &cfg);
+    let ports = crate::deck::planned_ports(&cat, paths, &cfg);
+    let mut cache = HashMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = vec![];
+    for f in &cat.entries {
+        let r = &f.recipe;
+        if !r.nodes.is_empty() || !seen.insert(r.name.clone()) || RunRecord::load(paths, &r.name).is_some() {
+            continue;
+        }
+        let port = crate::deck::planned_port(&ports, f);
+        if crate::deck::local_status(paths, &docker, r, port, &mut cache) == Status::External {
+            out.push(ModelTel {
+                name: r.name.clone(),
+                engine: r.engine.name.as_str().into(),
+                port,
+                status: Some("external".into()),
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GpuTel {
@@ -72,6 +104,9 @@ pub struct ModelTel {
     pub requests_running: Option<f64>,
     /// Where `tokens_per_s` came from, e.g. `vllm /metrics`.
     pub metrics: Option<String>,
+    /// `loaded`, `loading`, or `external` (running, but not started by lmdeck).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -568,6 +603,8 @@ pub struct Collector {
     prev_cpu: Option<(u64, u64)>,
     prev_tokens: HashMap<String, (f64, Instant)>,
     nvidia_smi: Option<bool>,
+    /// The last [`find_adopted`] result and when it ran.
+    adopted: Option<(Instant, Vec<ModelTel>)>,
     hw: Option<Hardware>,
     pub sys_root: std::path::PathBuf,
     pub demo: bool,
@@ -585,6 +622,7 @@ impl Collector {
             prev_cpu: None,
             prev_tokens: HashMap::new(),
             nvidia_smi: None,
+            adopted: None,
             hw: None,
             sys_root: "/sys".into(),
             demo: demo_mode(),
@@ -716,10 +754,23 @@ impl Collector {
         }
     }
 
+    /// Deck recipes running here that lmdeck didn't start, re-checked every
+    /// [`ADOPT_EVERY`] (a port probe or `docker inspect` per recipe).
+    fn adopted(&mut self, paths: &Paths, skip: &[String]) -> Vec<ModelTel> {
+        if self.adopted.as_ref().is_none_or(|(at, _)| at.elapsed() >= ADOPT_EVERY) {
+            self.adopted = Some((Instant::now(), find_adopted(paths)));
+        }
+        let found = self.adopted.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+        found.into_iter().filter(|m| !skip.contains(&m.name)).collect()
+    }
+
     fn collect_models(&mut self, t: &mut Telemetry, paths: &Paths) {
         let recs: Vec<RunRecord> = RunRecord::all(paths).into_iter().filter(|r| r.alive()).collect();
+        let names: Vec<String> = recs.iter().map(|r| r.name.clone()).collect();
+        let adopted = self.adopted(paths, &names);
         if recs.is_empty() {
             self.prev_tokens.clear();
+            t.models.extend(adopted);
             return;
         }
         let procs = run_with_timeout(Command::new("ps").args(["-A", "-o", "pid=,ppid=,rss="]), Duration::from_secs(3))
@@ -752,8 +803,11 @@ impl Collector {
                 m.gpu_mem_gb = (g > 0.0).then_some(g);
             }
             self.engine_rate(&mut m);
+            let ready = probe(r.port, Duration::from_millis(500), r.api_key().as_deref());
+            m.status = Some(if matches!(ready, Probe::Up(_)) { "loaded" } else { "loading" }.into());
             t.models.push(m);
         }
+        t.models.extend(adopted);
         let names: Vec<String> = t.models.iter().map(|m| m.name.clone()).collect();
         self.prev_tokens.retain(|k, _| names.contains(k));
     }
@@ -810,6 +864,7 @@ pub mod demo {
                 tokens_per_s: Some((38.0 + 30.0 * load + 3.0 * wave(t, 5.0, seed)).max(0.0)),
                 requests_running: Some((load * 6.0).round()),
                 metrics: Some("vllm /metrics".into()),
+                status: Some("loaded".into()),
             }]
         } else {
             vec![]
