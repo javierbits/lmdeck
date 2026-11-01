@@ -285,6 +285,24 @@ pub fn run_wizard(
             .collect();
         println!("  {} hosts.toml: {}", crate::ui::green("✓"), listed.join(", "));
     }
+    // Every host lists the whole cluster, so any of them can start, stop and list
+    // across it; rerunning setup repairs a host that lost its list.
+    if !hosts.hosts.is_empty() {
+        println!("{}", crate::ui::dim("  making every host's hosts.toml list the whole cluster..."));
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        let own = crate::mesh::own_entry(paths, &home, &cfg.node_name());
+        match crate::mesh::sync(paths, &mut *net.ssh, own, false) {
+            Ok(rep) => {
+                for l in &rep.lines {
+                    println!("    {} {l}", crate::ui::green("✓"));
+                }
+                for l in &rep.failed {
+                    println!("    {} {l} (rerun `lmdeck host sync` once it's reachable)", crate::ui::yellow("!"));
+                }
+            }
+            Err(e) => println!("    {} {e:#}", crate::ui::yellow("!")),
+        }
+    }
 
     // Recipe sources: collections of recipe files. No default; the built-ins are free.
     println!("\n{}", crate::ui::bold("recipe sources"));
@@ -370,10 +388,18 @@ fn cluster_step(p: &mut dyn Prompt, net: &mut Net, fab: &fabric::Fabric, hosts: 
             continue;
         }
         let Some(name) = ask_name(p, pr) else { continue };
-        let token = p
-            .line("    token (printed by `lmdeck serve` there) [none] > ")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        // Its token, from its serve.env over ssh when that logs in; else asked.
+        let out = net.ssh.run(pr.ip(), crate::mesh::TOKEN_CMD, None);
+        let token = match out.ok.then(|| out.stdout.trim().to_string()).filter(|t| !t.is_empty()) {
+            Some(t) => {
+                println!("    {}", crate::ui::dim("token read over ssh from its serve.env"));
+                Some(t)
+            }
+            None => p
+                .line("    token (printed by `lmdeck serve` there) [none] > ")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        };
         if add_host(hosts, &name, &url, token, pr) && !added.contains(&name) {
             added.push(name);
         }

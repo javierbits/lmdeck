@@ -389,6 +389,7 @@ lmdeck host add spark2 http://spark2:7979 --token <…>
 lmdeck host add mac    http://mac-studio:7979 --token <…>
 lmdeck host list          # polls each one: ● online 4 ms / ○ offline · timed out
 lmdeck host remove mac
+lmdeck host sync          # every host's hosts.toml lists the whole cluster (over ssh; safe to rerun)
 ```
 
 Design:
@@ -479,7 +480,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck init [--models-dir DIR]` | Writes `~/.config/lmdeck/config.toml`. |
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
 | `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |
-| `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once. |
+| `lmdeck host add <name> <url> [--token T] [--no-check]` / `list [--json]` / `remove <name>` / `sync [--dry-run]` | Manages the other machines to watch (see below). `add` checks the host answers unless `--no-check`; `list` polls every host once; `sync` pushes the full host list (with tokens, read over ssh when missing) to every host's hosts.toml, adding or updating only. `lmdeck setup` runs it too. |
 | `lmdeck harness [list]` / `sync` / `enable <name>` / `disable <name>` / `hub on` / `hub off` | Agent harnesses (OpenCode, omp, Grok, pi, Hermes) lmdeck keeps pointed at served models; `hub on` makes this machine the one that pushes every host's models to every host; see [Harness sync](#harness-sync). |
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. Off loopback every `/api` route but `/api/health` needs the token (reads too), and a state-changing request from a non-loopback peer without a configured token is refused with 403. Token: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`. |
 

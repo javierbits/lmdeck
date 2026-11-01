@@ -177,6 +177,54 @@ impl HostsFile {
         self.hosts.retain(|h| h.name != name);
         self.hosts.len() != n
     }
+
+    /// Takes in hosts another machine lists (`lmdeck host import`): a host
+    /// already here by name, or by URL under another name, gets the new URL
+    /// and token; the rest are added. Nothing is removed, `skip` (this
+    /// machine's names) is left out, and bad entries are ignored, so merging
+    /// the same list again changes nothing. Returns (added, updated) names.
+    pub fn merge(&mut self, incoming: &[HostEntry], skip: &[String]) -> (Vec<String>, Vec<String>) {
+        let (mut added, mut updated) = (vec![], vec![]);
+        for inc in incoming {
+            if inc.name == LOCAL || skip.contains(&inc.name) || !crate::recipe::valid_name(&inc.name) {
+                continue;
+            }
+            let Ok(url) = normalize_url(&inc.url) else { continue };
+            let token = inc.token.clone().filter(|t| !t.is_empty());
+            let slot = match self.hosts.iter().position(|h| h.name == inc.name) {
+                Some(i) => Some(i),
+                None => self.hosts.iter().position(|h| h.url == url),
+            };
+            match slot {
+                Some(i) => {
+                    let h = &mut self.hosts[i];
+                    let mut changed = false;
+                    if h.url != url {
+                        h.url = url;
+                        changed = true;
+                    }
+                    if token.is_some() && h.token != token {
+                        h.token = token;
+                        changed = true;
+                    }
+                    if changed {
+                        updated.push(h.name.clone());
+                    }
+                }
+                None => {
+                    self.hosts.push(HostEntry {
+                        name: inc.name.clone(),
+                        url,
+                        token,
+                        token_env: None,
+                        link_addr: inc.link_addr.clone(),
+                    });
+                    added.push(inc.name.clone());
+                }
+            }
+        }
+        (added, updated)
+    }
 }
 
 /// One host as the UIs show it.
@@ -617,6 +665,40 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn merge_adds_and_updates_but_never_removes_and_is_idempotent() {
+        let e = |name: &str, url: &str, token: Option<&str>| HostEntry {
+            name: name.into(),
+            url: url.into(),
+            token: token.map(str::to_string),
+            ..Default::default()
+        };
+        let mut f = HostsFile::default();
+        f.add("ember", "http://10.0.0.2:7979", None).unwrap();
+        f.add("old-name", "http://10.0.0.3:7979", Some("t-old".into())).unwrap();
+        f.add("mine-only", "http://10.0.0.9:7979", Some("x".into())).unwrap();
+        let incoming = vec![
+            e("ember", "http://10.0.0.2:7979/", Some("t-ember")),
+            e("faraday", "http://10.0.0.3:7979", Some("t-faraday")),
+            e("spark", "http://10.0.0.1:7979", Some("t-spark")),
+            e("gigabyte", "http://10.0.0.4:7979", Some("t-gig")),
+            e("local", "http://10.0.0.5:7979", None),
+            e("bad url", "nope", None),
+        ];
+        let (added, updated) = f.merge(&incoming, &["gigabyte".to_string()]);
+        assert_eq!(added, vec!["spark"]);
+        assert_eq!(updated, vec!["ember", "old-name"], "same URL under another name keeps the local name");
+        assert_eq!(f.get("ember").unwrap().token.as_deref(), Some("t-ember"));
+        assert_eq!(f.get("old-name").unwrap().token.as_deref(), Some("t-faraday"));
+        assert!(f.get("mine-only").is_some() && f.get("gigabyte").is_none() && f.get("local").is_none());
+        let before = f.clone();
+        assert_eq!(f.merge(&incoming, &["gigabyte".to_string()]), (vec![], vec![]));
+        assert_eq!(f, before);
+        // A token-less entry never wipes a known token.
+        f.merge(&[e("ember", "http://10.0.0.2:7979", None)], &[]);
+        assert_eq!(f.get("ember").unwrap().token.as_deref(), Some("t-ember"));
+    }
 
     fn paths(dir: &std::path::Path) -> Paths {
         Paths { config_dir: dir.join("cfg"), cache_dir: dir.join("cache"), state_dir: dir.join("state") }

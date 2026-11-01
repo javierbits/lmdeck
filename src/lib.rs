@@ -17,6 +17,7 @@ pub mod hosts;
 pub mod hub;
 pub mod icons;
 pub mod index;
+pub mod mesh;
 pub mod models;
 pub mod ops;
 pub mod paths;

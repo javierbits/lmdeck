@@ -412,6 +412,22 @@ enum HostCmd {
     /// Forget a host.
     #[command(visible_alias = "rm")]
     Remove { name: String },
+    /// Make every host's hosts.toml list the whole cluster: reads missing
+    /// tokens over ssh, then pushes each host the others and this machine.
+    /// Only adds or updates entries; safe to rerun.
+    Sync {
+        /// Show what each host would get; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Merge hosts (a hosts.toml read from stdin) into this machine's
+    /// hosts.toml; what `host sync` runs on each peer.
+    #[command(hide = true)]
+    Import {
+        /// This machine's name(s) as the sender knows it; never added.
+        #[arg(long)]
+        skip: Vec<String>,
+    },
     /// How the hosts are cabled: CX7 / LAN / Tailscale links, detected from each host's NICs.
     #[command(visible_alias = "topo")]
     Topology {
@@ -829,6 +845,50 @@ fn host_cmd(ctx: &Ctx, c: HostCmd) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&t)?);
             } else {
                 print!("{}", lmdeck::topology::render_text(&t));
+            }
+            Ok(())
+        }
+        HostCmd::Import { mut skip } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            let incoming: HostsFile = toml::from_str(&text).context("parsing the hosts on stdin")?;
+            skip.push(ctx.cfg.node_name());
+            let (added, updated) = file.merge(&incoming.hosts, &skip);
+            if added.is_empty() && updated.is_empty() {
+                println!("up to date");
+                return Ok(());
+            }
+            file.save(&ctx.paths)?;
+            let mut said = vec![];
+            if !added.is_empty() {
+                said.push(format!("added {}", added.join(", ")));
+            }
+            if !updated.is_empty() {
+                said.push(format!("updated {}", updated.join(", ")));
+            }
+            println!("{}", said.join("; "));
+            Ok(())
+        }
+        HostCmd::Sync { dry_run } => {
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let own = lmdeck::mesh::own_entry(&ctx.paths, &home, &ctx.cfg.node_name());
+            if own.is_none() {
+                println!(
+                    "{}",
+                    yellow(
+                        "! this machine has no `lmdeck serve` service on a network address; the others won't list it"
+                    )
+                );
+            }
+            let rep = lmdeck::mesh::sync(&ctx.paths, &mut lmdeck::ssh::System::default(), own, dry_run)?;
+            for l in &rep.lines {
+                println!("  {} {l}", green("✓"));
+            }
+            for l in &rep.failed {
+                println!("  {} {l}", red("✗"));
+            }
+            if !rep.failed.is_empty() {
+                bail!("{} host(s) not updated", rep.failed.len());
             }
             Ok(())
         }
