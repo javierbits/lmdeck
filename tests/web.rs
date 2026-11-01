@@ -494,3 +494,36 @@ fn wrapped_recipe_updates_show_and_pull_clears() {
     wait_for(&s, "pinned", "current");
     assert!(s.path("home/cache/checkouts/pinned/two.txt").exists());
 }
+
+#[test]
+fn a_peers_deck_shows_in_list_and_resolves_to_it() {
+    let tiny = "[model]\nrepo = \"x/peer-model\"\nfiles = [\"a.gguf\"]\n[engine]\nname = \"llama.cpp\"\nport = 18999\n";
+    let a = serve(&["--token", "tok-a"], |root| {
+        let deck = root.join("home/config/recipes");
+        fs::create_dir_all(&deck).unwrap();
+        fs::write(deck.join("peer-only.toml"), tiny).unwrap();
+    });
+    // A's own deck over the API, with its file's TOML.
+    let url = format!("{}/api/deck", a.base);
+    assert_eq!(status(ureq::get(&url).call().unwrap_err()), 401);
+    let deck: serde_json::Value =
+        ureq::get(&url).set("Authorization", "Bearer tok-a").call().unwrap().into_json().unwrap();
+    assert_eq!(deck, serde_json::json!([{"name": "peer-only", "toml": tiny}]));
+
+    // B lists A as a host: `list` shows A's recipe, from A, after B's own (empty) deck.
+    let root = tempfile::tempdir().unwrap();
+    let cfg = root.path().join("home/config");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(cfg.join("hosts.toml"), format!("[[host]]\nname = \"a\"\nurl = \"{}\"\ntoken = \"tok-a\"\n", a.base))
+        .unwrap();
+    let out = lmdeck_cmd(root.path()).args(["list", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "a peer deck replaces the built-in examples: {rows:?}");
+    assert_eq!((rows[0]["name"].as_str(), rows[0]["origin"].as_str()), (Some("peer-only"), Some("@a")));
+    // Its dry run goes to A, the host whose deck has it.
+    let out = lmdeck_cmd(root.path()).args(["use", "peer-only", "--dry-run"]).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("a's deck"), "{text}");
+}

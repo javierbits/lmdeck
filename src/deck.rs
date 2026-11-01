@@ -38,7 +38,8 @@ pub fn planned_ports(cat: &Catalog, paths: &Paths, cfg: &Config) -> BTreeMap<Str
         // Built-ins are samples: they never take counted ports, and their own
         // ports don't reserve anything. Multi-node recipes plan one port per
         // node; only their base is reserved.
-        if f.origin == BUILTIN {
+        // Reason: another host's deck recipe runs there, on its own planning.
+        if f.origin == BUILTIN || crate::catalog::is_peer(f) {
             continue;
         }
         if !f.recipe.nodes.is_empty() || f.recipe.engine.port.is_some() {
@@ -244,9 +245,10 @@ pub fn failure_lines(lines: &[String]) -> String {
     }
 }
 
-/// The recipes `list` numbers: the deck, or the built-ins while the deck is empty.
+/// The recipes `list` numbers: the deck and the other hosts' decks, or the
+/// built-ins while those are empty.
 pub fn listed(cat: &Catalog) -> Vec<&Found> {
-    let deck: Vec<&Found> = cat.deck().collect();
+    let deck: Vec<&Found> = cat.deck().chain(cat.peers()).collect();
     if deck.is_empty() {
         cat.entries.iter().filter(|f| f.origin == BUILTIN).collect()
     } else {

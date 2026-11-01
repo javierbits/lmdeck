@@ -310,6 +310,8 @@ fn handle(st: &State, mut req: Request) {
         Method::Get => match api {
             "snapshot" => json_reply(req, 200, &json!(*st.snapshot())),
             "recipes" => json_reply(req, 200, &json!(st.snapshot().recipes)),
+            // This machine's own deck, for the other hosts' cluster-wide deck.
+            "deck" => json_reply(req, 200, &json!(crate::peerdeck::local(&st.deck.paths))),
             "status" if query_param(&query, "name").is_some() => {
                 // One recipe, without building a whole snapshot (controllers poll this while waiting).
                 let name = query_param(&query, "name").unwrap_or_default();

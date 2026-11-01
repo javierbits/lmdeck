@@ -439,6 +439,7 @@ impl Ctx {
     }
 
     fn catalog(&self) -> Catalog {
+        lmdeck::peerdeck::PeerDecks::fresh(&self.paths, lmdeck::peerdeck::TTL);
         Catalog::load(&self.paths, &self.cfg)
     }
 
@@ -1373,6 +1374,13 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let pick = lmdeck::placement::Pick::of(&ctx.paths, &ctx.cfg, r);
     if let Some(p) = pick.as_ref().filter(|p| a.on.is_none() && p.host != hosts::LOCAL) {
         return use_on(ctx, r, &p.host, a, Some(&p.why));
+    }
+    // Another host's deck recipe runs there, unless its weights are here.
+    if let Some(owner) = lmdeck::peerdeck::host_of(&found.origin).filter(|_| a.on.is_none()) {
+        if !pick.as_ref().is_some_and(|p| p.why == lmdeck::placement::WEIGHTS_HERE) {
+            let why = format!("it's in {owner}'s deck");
+            return use_on(ctx, r, owner, a, Some(&why));
+        }
     }
     let here = pick.map(|p| match a.on {
         Some(_) => format!("here, as --on says ({})", p.why),

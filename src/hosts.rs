@@ -545,6 +545,7 @@ impl Sampler {
             let _ = std::thread::Builder::new().name("lmdeck-weights".into()).spawn(move || loop {
                 let cfg = crate::config::Config::load(&paths).unwrap_or_default();
                 crate::weights::Index::refresh(&paths, &cfg);
+                crate::peerdeck::PeerDecks::refresh(&paths);
                 std::thread::sleep(crate::weights::INDEX_TTL);
             });
         }

@@ -92,6 +92,8 @@ pub struct Catalog {
 impl Catalog {
     pub fn load(paths: &Paths, cfg: &Config) -> Catalog {
         let (mut entries, mut errors) = deck(paths);
+        let peers = peer_entries(&crate::peerdeck::PeerDecks::load(paths), &entries);
+        entries.extend(peers);
         entries.extend(builtin());
         let (remote, _) = plain_dir(REMOTE, &remote_dir(paths));
         entries.extend(remote);
@@ -112,7 +114,8 @@ impl Catalog {
             }
         }
         let matches: Vec<&Found> = self.entries.iter().filter(|f| f.recipe.name == reference).collect();
-        if let Some(f) = matches.iter().find(|f| f.origin == DECK) {
+        // The deck, then a peer's deck (at most one peer has each name), then the rest.
+        if let Some(f) = matches.iter().find(|f| f.origin == DECK).or_else(|| matches.iter().find(|f| is_peer(f))) {
             return Ok(f);
         }
         match matches.len() {
@@ -141,6 +144,37 @@ impl Catalog {
     pub fn deck(&self) -> impl Iterator<Item = &Found> {
         self.entries.iter().filter(|f| f.origin == DECK)
     }
+
+    /// The other hosts' deck recipes this machine's deck doesn't have.
+    pub fn peers(&self) -> impl Iterator<Item = &Found> {
+        self.entries.iter().filter(|f| is_peer(f))
+    }
+}
+
+/// Whether `f` comes from another host's deck (origin `@host`).
+pub fn is_peer(f: &Found) -> bool {
+    crate::peerdeck::host_of(&f.origin).is_some()
+}
+
+/// Catalog entries for the peers' decks: the first host (by name) to have a
+/// name wins, and names in `deck` are skipped. A peer recipe that doesn't
+/// parse here is left out (its own host reports it).
+pub fn peer_entries(decks: &crate::peerdeck::PeerDecks, deck: &[Found]) -> Vec<Found> {
+    let mut seen: std::collections::BTreeSet<String> = deck.iter().map(|f| f.recipe.name.clone()).collect();
+    let mut out = vec![];
+    for (host, shared) in &decks.hosts {
+        for s in shared {
+            let Ok(recipe) = Recipe::parse(&s.toml, &s.name) else { continue };
+            if seen.insert(recipe.name.clone()) {
+                out.push(Found {
+                    recipe,
+                    origin: crate::peerdeck::origin(host),
+                    file: format!("{host}:{}.toml", s.name),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Saves a recipe into the deck as TOML. Fails if it exists unless `force`.
@@ -213,6 +247,44 @@ mod tests {
         assert!(err.contains("did you mean"), "{err}");
         assert!(remove_from_deck(&paths, &r.name).unwrap());
         assert!(!remove_from_deck(&paths, &r.name).unwrap());
+    }
+
+    #[test]
+    fn peer_decks_join_the_catalog_after_this_deck() {
+        use crate::peerdeck::{PeerDecks, Shared};
+        let (_d, paths) = tmp();
+        let cfg = Config { sources: vec![], ..Config::default() };
+        let b = builtin();
+        let mine = b[0].recipe.clone();
+        add_to_deck(&paths, &mine, false).unwrap();
+        let share = |name: &str, i: usize| {
+            let mut r = b[i].recipe.clone();
+            r.name = name.into();
+            Shared { name: name.into(), toml: r.to_toml().unwrap() }
+        };
+        let decks = PeerDecks {
+            at: 1,
+            hosts: [
+                ("ember".to_string(), vec![share(&mine.name, 1), share("peer-only", 1), share(&b[2].recipe.name, 2)]),
+                (
+                    "faraday".to_string(),
+                    vec![share("peer-only", 3), Shared { name: "broken".into(), toml: "not = [toml".into() }],
+                ),
+            ]
+            .into(),
+        };
+        std::fs::create_dir_all(&paths.cache_dir).unwrap();
+        std::fs::write(paths.cache_dir.join("peer-decks.json"), serde_json::to_string(&decks).unwrap()).unwrap();
+        let cat = Catalog::load(&paths, &cfg);
+        assert_eq!(cat.resolve(&mine.name).unwrap().origin, DECK, "this deck wins over a peer's");
+        let p = cat.resolve("peer-only").unwrap();
+        assert_eq!((p.origin.as_str(), p.recipe.name.as_str()), ("@ember", "peer-only"), "the first host wins");
+        assert_eq!(cat.entries.iter().filter(|f| f.recipe.name == "peer-only").count(), 1);
+        assert_eq!(cat.resolve(&b[2].recipe.name).unwrap().origin, "@ember", "a peer's deck wins over a built-in");
+        assert_eq!(cat.resolve(&format!("builtin/{}", b[2].recipe.name)).unwrap().origin, BUILTIN);
+        assert!(cat.resolve("broken").is_err(), "a peer recipe that doesn't parse is left out");
+        let listed: Vec<&str> = crate::deck::listed(&cat).iter().map(|f| f.recipe.name.as_str()).collect();
+        assert_eq!(listed, vec![mine.name.as_str(), "peer-only", b[2].recipe.name.as_str()]);
     }
 
     #[test]

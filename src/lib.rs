@@ -23,6 +23,7 @@ pub mod paths;
 pub mod peers;
 pub mod pick;
 
+pub mod peerdeck;
 pub mod placement;
 pub mod recipe;
 pub mod remote;

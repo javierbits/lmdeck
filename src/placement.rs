@@ -37,6 +37,9 @@ pub const NOMINAL_CX7_GBPS: f64 = 200.0;
 /// Mia's mount options, verbatim.
 pub const NFS_OPTS: &str = "nfsvers=4.2,ro,nconnect=8,rsize=1048576,wsize=1048576,hard,timeo=600";
 
+/// [`Pick::why`] when this machine holds the weights.
+pub const WEIGHTS_HERE: &str = "weights here";
+
 /// A placement that is (or was) running: what topology highlights.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
@@ -755,7 +758,7 @@ impl Pick {
     pub fn from_index(idx: &Index, hosts: &HostsFile, r: &Recipe, node: &str) -> Pick {
         let locs = idx.locate(r);
         if locs.iter().any(|l| l.host == LOCAL) {
-            return Pick::here("weights here");
+            return Pick::here(WEIGHTS_HERE);
         }
         match (idx.home(r, node), r.model.home.as_deref()) {
             (Some(h), _) if hosts.get(&h.host).is_some() => {
@@ -784,9 +787,18 @@ impl Pick {
 pub fn start_auto(deck: &Deck, target: &str, only: bool, force: bool) -> Result<String> {
     let cat = deck.catalog();
     let r = &crate::deck::resolve(&cat, target)?.recipe;
-    match Pick::of(&deck.paths, &deck.cfg, r).filter(|p| p.host != LOCAL) {
+    let found = crate::deck::resolve(&cat, target)?;
+    let pick = Pick::of(&deck.paths, &deck.cfg, r);
+    match pick.as_ref().filter(|p| p.host != LOCAL) {
         Some(p) => Ok(format!("on {} ({}): {}", p.host, p.why, start_on(deck, target, &p.host, only, force, false)?)),
-        None => deck.start(target, only, force),
+        // Another host's deck recipe runs there, unless its weights are here.
+        None => match crate::peerdeck::host_of(&found.origin) {
+            Some(owner) if !pick.is_some_and(|p| p.why == WEIGHTS_HERE) => Ok(format!(
+                "on {owner} (it's in {owner}'s deck): {}",
+                start_on(deck, target, owner, only, force, false)?
+            )),
+            _ => deck.start(target, only, force),
+        },
     }
 }
 
