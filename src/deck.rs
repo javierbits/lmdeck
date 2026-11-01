@@ -117,8 +117,15 @@ pub fn serves(ids: &[String], r: &Recipe) -> bool {
 
 /// A recipe's status on this machine, adopting servers lmdeck didn't start:
 /// the recipe's container running, or its port answering with its model,
-/// make it [`Status::External`].
-pub fn local_status(paths: &Paths, docker: &str, r: &Recipe, port: u16, cache: &mut HashMap<u16, Probe>) -> Status {
+/// make it [`Status::External`]. With `docker` `None` only the port is asked
+/// (the serve sampler's periodic scan, which shouldn't spawn docker per recipe).
+pub fn local_status(
+    paths: &Paths,
+    docker: Option<&str>,
+    r: &Recipe,
+    port: u16,
+    cache: &mut HashMap<u16, Probe>,
+) -> Status {
     let s = runner::status_cached(paths, &r.name, port, cache);
     if s.is_up() || !r.nodes.is_empty() {
         return s;
@@ -133,7 +140,7 @@ pub fn local_status(paths: &Paths, docker: &str, r: &Recipe, port: u16, cache: &
     // Reason: a recipe spanning several hosts runs a container of the same name on
     // every worker too; only its head, the one answering on the port, serves it.
     let spans_hosts = r.hardware.hosts.unwrap_or(1) > 1;
-    if std::env::var_os("LMDECK_NO_PROBE").is_none() && !spans_hosts {
+    if let (Some(docker), None, false) = (docker, std::env::var_os("LMDECK_NO_PROBE"), spans_hosts) {
         if let Some(c) = r.engine.container.as_deref().filter(|c| !c.is_empty()) {
             if runner::container_running(docker, c) {
                 return Status::External;
@@ -169,7 +176,7 @@ pub fn seen_status(
     cache: &mut HashMap<u16, Probe>,
     live: Option<&crate::hosts::LiveFile>,
 ) -> (Status, Option<String>) {
-    let s = local_status(paths, docker, r, port, cache);
+    let s = local_status(paths, Some(docker), r, port, cache);
     if s.is_up() || !r.nodes.is_empty() {
         return (s, None);
     }
@@ -573,7 +580,7 @@ impl Deck {
                     Ok(plan) => (Some(plan.command_line()), None),
                     Err(e) => (None, Some(format!("{e:#}"))),
                 };
-            let mut status = local_status(&self.paths, &docker, r, planned, &mut cache);
+            let mut status = local_status(&self.paths, Some(&docker), r, planned, &mut cache);
             let nodes = if r.nodes.is_empty() { vec![] } else { crate::cluster::views(&self.paths, r, &node) };
             let crec = (!r.nodes.is_empty()).then(|| crate::cluster::Record::load(&self.paths, &r.name)).flatten();
             if !nodes.is_empty() {
@@ -736,7 +743,7 @@ impl Deck {
         let peers = crate::pick::peers(&self.paths, &self.cfg, r, crate::hosts::LOCAL)?;
         let ctx = PlanCtx::new(&self.cfg, p.local).with_port(Some(port)).with_fabric(fabric);
         let plan = engine::plan(r, &ctx.with_vars(crate::vars::peer_vars(&peers.hosts)))?;
-        match local_status(&self.paths, &self.docker(), r, plan.port, &mut HashMap::new()) {
+        match local_status(&self.paths, Some(&self.docker()), r, plan.port, &mut HashMap::new()) {
             Status::Loaded | Status::External => return Ok(format!("{} is already up on :{}", r.name, plan.port)),
             Status::Loading => return Ok(format!("{} is still loading", r.name)),
             Status::PortBusy if !only => {
@@ -824,7 +831,7 @@ impl Deck {
     fn stop_adopted(&self, cat: &Catalog, r: &Recipe) -> Result<Option<String>> {
         let docker = self.docker();
         let port = planned_for(cat, &self.paths, &self.cfg, r);
-        if local_status(&self.paths, &docker, r, port, &mut HashMap::new()) != Status::External {
+        if local_status(&self.paths, Some(&docker), r, port, &mut HashMap::new()) != Status::External {
             return Ok(None);
         }
         let p = self.presence(r);

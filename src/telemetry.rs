@@ -42,7 +42,6 @@ pub const ADOPT_EVERY: Duration = Duration::from_secs(10);
 /// or by an older lmdeck), as [`crate::deck::local_status`] recognises them.
 fn find_adopted(paths: &Paths) -> Vec<ModelTel> {
     let cfg = crate::config::Config::load(paths).unwrap_or_default();
-    let docker = cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
     let cat = crate::catalog::Catalog::load(paths, &cfg);
     let ports = crate::deck::planned_ports(&cat, paths, &cfg);
     let mut cache = HashMap::new();
@@ -54,7 +53,7 @@ fn find_adopted(paths: &Paths) -> Vec<ModelTel> {
             continue;
         }
         let port = crate::deck::planned_port(&ports, f);
-        if crate::deck::local_status(paths, &docker, r, port, &mut cache) == Status::External {
+        if crate::deck::local_status(paths, None, r, port, &mut cache) == Status::External {
             out.push(ModelTel {
                 name: r.name.clone(),
                 engine: r.engine.name.as_str().into(),

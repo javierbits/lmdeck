@@ -1535,7 +1535,7 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         println!("  {}", dim(&format!("where: {h}")));
     }
     let docker = ctx.cfg.engines.docker.clone().unwrap_or_else(|| "docker".into());
-    match deck::local_status(&ctx.paths, &docker, r, plan.port, &mut HashMap::new()) {
+    match deck::local_status(&ctx.paths, Some(&docker), r, plan.port, &mut HashMap::new()) {
         Status::Loaded | Status::External => {
             println!("{} {} is already up at http://localhost:{}/v1", green("●"), bold(&r.name), plan.port);
             return Ok(());
@@ -1684,8 +1684,15 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<
     for n in names {
         if runner::stop(&ctx.paths, &n, &ctx.docker())? {
             println!("{} stopped {}", dim("○"), bold(&n));
-        } else {
+        } else if all {
             println!("{} {n} was not started by lmdeck", dim("○"));
+        } else {
+            // Not started here by lmdeck: a server it recognises as this recipe (adopted)
+            // or a run on another host is stopped where it is.
+            match deck.stop(&n) {
+                Ok(m) => println!("{} {}", dim("○"), m.lines().next().unwrap_or_default()),
+                Err(e) => println!("{} {e:#}", dim("○")),
+            }
         }
     }
     println!("  {}", dim(&lmdeck::harness::sync_note(&ctx.paths, &ctx.cfg)));

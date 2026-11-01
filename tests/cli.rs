@@ -760,3 +760,36 @@ fn the_hub_flag_survives_the_other_harness_settings() {
     assert!(e.run(&["harness"]).contains("hub: off"));
     e.cmd().args(["harness", "hub", "maybe"]).assert().failure().stderr(predicate::str::contains("'on' or 'off'"));
 }
+
+#[test]
+fn stop_stops_a_server_lmdeck_did_not_start_with_the_recipes_stop_command() {
+    let e = Env::new();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut s = s;
+            let mut buf = [0u8; 2048];
+            let _ = std::io::Read::read(&mut s, &mut buf);
+            let body = r#"{"object":"list","data":[{"id":"adoptme"}]}"#;
+            let _ = std::io::Write::write_all(
+                &mut s,
+                format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(),
+            );
+        }
+    });
+    let marker = e.path("stopped-by-recipe");
+    write(
+        &e.path("home/config/recipes"),
+        "adoptme.toml",
+        &format!(
+            "[engine]\nname = \"custom\"\ncommand = [\"true\"]\nstop = [\"touch\", \"{}\"]\nport = {port}\n",
+            marker.display()
+        ),
+    );
+    let list = e.run(&["list"]);
+    assert!(list.contains("adoptme external"), "{list}");
+    let out = e.run(&["stop", "adoptme"]);
+    assert!(out.contains("stopped adoptme (it was running outside lmdeck)"), "{out}");
+    assert!(marker.exists(), "the recipe's stop command ran");
+}

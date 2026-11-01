@@ -218,9 +218,6 @@ fn weights_index_and_nfs_placement_with_fake_docker() {
     let tiny = list.as_array().unwrap().iter().find(|r| r["name"] == "tiny").unwrap().clone();
     assert_eq!(tiny["weights_on"], serde_json::json!(["a"]), "{tiny}");
 
-    // `list` may ask docker whether a built-in's container runs (a server lmdeck didn't
-    // start); only the dry run below must leave docker alone.
-    let _ = fs::remove_file(&log);
     // Dry run: the exact commands, mirroring WORKER_WEIGHTS=nfs.
     let plan = c.run(&["use", "tiny", "--on", "b", "--dry-run"]);
     let hf_a = a.host.dir.join("hf");
