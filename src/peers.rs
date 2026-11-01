@@ -366,9 +366,11 @@ fn background_cmd(exec: &str) -> String {
 
 /// The user unit: the token comes from serve.env, never the command line.
 /// `Restart=always` also covers a boot where the CX7 address isn't up yet.
+/// `KillMode=process`: the model servers `serve` starts for a controller live in
+/// its cgroup, and restarting or upgrading `serve` must not kill them mid-load.
 pub fn unit_file(exec: &str, home: &str) -> String {
     format!(
-        "[Unit]\nDescription=lmdeck serve (ConnectX-7)\nAfter=network.target\n\n[Service]\nEnvironmentFile=%h/.config/lmdeck/serve.env\nEnvironment=PATH={home}/.local/bin:{home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart={exec}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=lmdeck serve (ConnectX-7)\nAfter=network.target\n\n[Service]\nEnvironmentFile=%h/.config/lmdeck/serve.env\nEnvironment=PATH={home}/.local/bin:{home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart={exec}\nRestart=always\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
@@ -450,6 +452,7 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("EnvironmentFile=%h/.config/lmdeck/serve.env"));
+        assert!(unit.contains("\nKillMode=process\n"), "restarting serve leaves the models it started running");
         assert!(!unit.contains(&r.token), "the token stays out of the unit");
         // The password only ever goes to sudo's stdin.
         let sudo = ssh.calls.iter().find(|(_, c, _)| c.contains("sudo -S")).unwrap();
