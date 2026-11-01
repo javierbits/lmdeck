@@ -815,7 +815,7 @@ impl Deck {
             let m = crate::remote::Client::named(&self.paths, &host)?.action("stop", &name, false)?;
             return Ok(format!("{host}: {m}{}", crate::harness::sync_note(&self.paths, &self.cfg)));
         }
-        bail!("{name} isn't running here or on any host lmdeck knows")
+        bail!("{name} was not started by lmdeck, and isn't running here or on any host lmdeck knows")
     }
 
     /// Stops a server lmdeck didn't start but recognises as `r` (see
