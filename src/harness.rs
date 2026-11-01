@@ -331,11 +331,23 @@ pub(crate) fn remote_fetch(
 /// it doesn't answer with one.
 fn lanes_from(e: &HostEntry, timeout: Duration) -> Option<Vec<Lane>> {
     let v = crate::remote::Client::new(e).get_timeout::<serde_json::Value>("snapshot", timeout).ok()?;
+    snapshot_lanes(&v, &url_host(&e.url)?)
+}
+
+/// Returns the models a host's snapshot says it serves itself, each at
+/// `host` (the address this machine reaches that host at).
+///
+/// A host's deck also shows runs that live on another host as loaded (a
+/// multi-host run started with `--on`, or seen in the live fleet), with that
+/// host's address in `endpoint`. Those rows are skipped: the serving host
+/// reports the run itself, from its own snapshot, so its lane gets its own
+/// address and not the address of whichever host answered first.
+fn snapshot_lanes(v: &serde_json::Value, host: &str) -> Option<Vec<Lane>> {
     let rows = v.get("recipes").and_then(|r| r.as_array())?;
-    let host = url_host(&e.url)?;
     let lanes = rows
         .iter()
         .filter(|r| r.get("status").and_then(|s| s.as_str()).is_some_and(|s| s == "loaded" || s == "loading"))
+        .filter(|r| r.get("endpoint").and_then(|e| e.as_str()).is_none_or(served_here))
         .filter_map(|r| {
             let name = r.get("name")?.as_str()?.to_string();
             let display = r.get("display_name").and_then(|d| d.as_str()).unwrap_or(&name).to_string();
@@ -344,7 +356,7 @@ fn lanes_from(e: &HostEntry, timeout: Duration) -> Option<Vec<Lane>> {
                 remote: true,
                 name,
                 display,
-                host: host.clone(),
+                host: host.to_string(),
                 port: r.get("port")?.as_u64()? as u16,
                 ctx: r.get("ctx").and_then(|c| c.as_u64()).unwrap_or(65_536),
                 // A host on an older lmdeck doesn't say: a chat model.
@@ -353,6 +365,14 @@ fn lanes_from(e: &HostEntry, timeout: Duration) -> Option<Vec<Lane>> {
         })
         .collect();
     Some(lanes)
+}
+
+/// Whether a snapshot row's `endpoint` is on the host that sent it: a
+/// loopback address (the deck writes `localhost` for its own runs and the
+/// serving host's address for a run that lives elsewhere).
+fn served_here(endpoint: &str) -> bool {
+    let h = url_host(endpoint).unwrap_or_default();
+    h == "localhost" || h == "::1" || h.starts_with("127.") || h == "0.0.0.0"
 }
 
 /// The host part of a serve URL: `http://spark2.lan:7979` → `spark2.lan`.
@@ -875,6 +895,27 @@ mod tests {
         assert_eq!(url_host("http://10.0.0.5:7979/").as_deref(), Some("10.0.0.5"));
         assert_eq!(url_host("http://[::1]:7979").as_deref(), Some("::1"));
         assert_eq!(url_host("spark.lan").as_deref(), Some("spark.lan"));
+    }
+
+    #[test]
+    fn a_host_mirroring_a_run_on_another_host_gives_no_lane() {
+        // gigabyte (a worker) shows the 4-Spark run served by ember as loaded,
+        // with ember's address as its endpoint; ember reports it with localhost.
+        let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4";
+        let row = |endpoint: &str| {
+            serde_json::json!({"recipes": [
+                {"name": name, "status": "loaded", "port": 8888, "endpoint": endpoint, "ctx": 1_048_576},
+                {"name": "idle", "status": "stopped", "port": 8000, "endpoint": "http://localhost:8000/v1"},
+            ]})
+        };
+        let gigabyte = snapshot_lanes(&row("http://10.100.132.2:8888/v1"), "10.100.128.1").unwrap();
+        assert!(gigabyte.is_empty(), "{gigabyte:?}");
+        let ember = snapshot_lanes(&row("http://localhost:8888/v1"), "10.100.132.2").unwrap();
+        assert_eq!(ember.len(), 1);
+        assert_eq!(ember[0].base_url(), "http://10.100.132.2:8888/v1");
+        // An older lmdeck sends no endpoint: its loaded rows are its own.
+        let old = serde_json::json!({"recipes": [{"name": "m", "status": "loaded", "port": 9000}]});
+        assert_eq!(snapshot_lanes(&old, "10.0.0.9").unwrap()[0].base_url(), "http://10.0.0.9:9000/v1");
     }
 
     fn lane_ctx(name: &str, port: u16, ctx: u64) -> Lane {
