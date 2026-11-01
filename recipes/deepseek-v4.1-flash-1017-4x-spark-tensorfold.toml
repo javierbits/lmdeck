@@ -17,6 +17,11 @@
 # NFS_PATH instead of Mia's fsid=0 /huggingface), and the head being the Spark that holds the
 # checkpoint are the repo's requirements, not lmdeck's. [model] names that checkpoint, so
 # `lmdeck use` without --on runs the recipe on the Spark whose Hugging Face cache holds it.
+#
+# NVIDIA's NVFP4 release of the same model is the -nvfp4 recipe (NVFP4=1). Two opt-ins of
+# Mia's are left at her defaults here: RANK_LOCAL=1 copies each worker's ~80 GB weight file to
+# its own disk (faster loads; needs the space), TF_DS_LOAD_PREFETCH=0 turns the loader's
+# read-ahead off. Add either under [engine.env] in the deck copy to change it.
 schema = 1
 display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
 description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on whichever Spark holds it (lmdeck runs it there), ~80 GiB resident per Spark."
@@ -25,7 +30,7 @@ tags = ["deepseek", "fp8", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrappe
 [source]
 repo = "https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"
 # Pinned to the commit this recipe was written against; use "main" to follow the repo.
-ref = "476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"
+ref = "fcef6cf2117460f8453714d4ee756537c1a29995"
 
 # The checkpoint Mia's scripts load on the head. They download it there themselves, so
 # lmdeck never pulls or mounts it (pull = false); it reads repo and revision only to find
@@ -64,6 +69,8 @@ WORKER3 = "{peer3_addr}"
 # path: one plain read-only export, no fsid=0 root (which would hide the head's other exports).
 HF_CACHE = "{hf_home}"
 NFS_PATH = "{hf_home}"
+# DeepSeek's own FP8 / MXFP4 checkpoint, even when scripts/local.sh says NVFP4=1.
+NVFP4 = "0"
 
 # A switchless ring (four Sparks, two CX7 cables each) runs the repo's ring launcher,
 # which sets FABRIC_EXPECT=ring and checks the ranks follow the cables.

@@ -130,7 +130,7 @@ fn doctor_json_reports_hardware_and_recipes() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
     assert!(v["inventory"]["engines"]["llama.cpp"].is_object());
-    assert_eq!(v["recipes"].as_array().unwrap().len(), 10);
+    assert_eq!(v["recipes"].as_array().unwrap().len(), lmdeck::catalog::BUILTIN_RECIPES.len());
     assert!(v["paths"]["config"].as_str().unwrap().ends_with("config/config.toml"));
     // Human output too.
     assert!(e.run(&["doctor"]).contains("engines"));

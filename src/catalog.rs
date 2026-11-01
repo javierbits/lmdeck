@@ -43,6 +43,10 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
         "deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml",
         include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml"),
     ),
+    (
+        "deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml",
+        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml"),
+    ),
 ];
 
 pub fn builtin() -> Vec<Found> {
@@ -342,7 +346,30 @@ mod tests {
         assert_eq!(r.family(), "DeepSeek");
         let src = r.source.unwrap();
         assert!(src.repo.contains("MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"));
-        assert_eq!(src.git_ref.as_deref(), Some("476bbc77c4e1d1abe45b1cd095526a9ea0d36da4"));
+        assert_eq!(src.git_ref.as_deref(), Some("fcef6cf2117460f8453714d4ee756537c1a29995"));
+        assert_eq!(r.engine.env.get("NVFP4").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn deepseek_v41_nvfp4_is_the_same_wrapper_with_nvidias_checkpoint() {
+        let find = |n: &str| builtin().into_iter().find(|f| f.recipe.name == n).unwrap().recipe;
+        let fp8 = find("deepseek-v4.1-flash-1017-4x-spark-tensorfold");
+        let nv = find("deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4");
+        assert_eq!(nv.engine.env.get("NVFP4").map(String::as_str), Some("1"));
+        let m = &nv.model;
+        assert_eq!(m.repo.as_deref(), Some("nvidia/DeepSeek-V4.1-Flash-1017-NVFP4"));
+        assert_eq!(m.revision.as_deref(), Some("480550d349ede47a048eb65a276c5c01a06256e2"));
+        // Same scripts, commit, container, port and launch shape: only the checkpoint differs.
+        assert_eq!(nv.source, fp8.source);
+        assert_eq!(nv.engine.command, fp8.engine.command);
+        assert_eq!(nv.engine.command_by_fabric, fp8.engine.command_by_fabric);
+        assert_eq!(nv.engine.container, fp8.engine.container);
+        assert_eq!(nv.port(), fp8.port());
+        assert_eq!(nv.machines(), 4);
+        let (mut a, mut b) = (fp8.engine.env.clone(), nv.engine.env.clone());
+        a.remove("NVFP4");
+        b.remove("NVFP4");
+        assert_eq!(a, b);
     }
 
     #[test]

@@ -1,0 +1,96 @@
+# NVIDIA's NVFP4 release (nvidia/DeepSeek-V4.1-Flash-1017-NVFP4, ~430 GB) through the same scripts
+# with NVFP4=1 (Mia's patch 0037): routed experts NVFP4 with 4-bit activations on GB10's
+# block-scaled MMA, Engram tables MXFP4, the rest DeepSeek's bytes; prefill +4-6 %, decode +0-6 %
+# against FP8 in her README. The first start writes four new ~75 GB weight files on the head and
+# copies ~98 GiB of Engram tables to each worker; the FP8 recipe's files stay. Both recipes use
+# the same container and port, so stop one before starting the other.
+#
+# Below: the FP8 recipe's notes, all of which hold here.
+# Wraps Mia's AI Lab repo as-is. ./start.sh (a RoCE switch) or ./start-switchless.sh (a
+# cabled ring, the path the README's numbers were measured on) builds the image, downloads
+# the ~510 GB FP8 / MXFP4 checkpoint once on spark1, writes four ~80 GB rank files, NFS-mounts
+# that cache on the workers, `docker run -d`s one rank per Spark, waits until :8888 answers,
+# smoke-tests, and exits. lmdeck applies no patches and builds nothing itself.
+#
+# This is one command on the head (spark1 above). The script ssh's the other three Sparks
+# itself, so the recipe has no [[nodes]] and no [hardware] nodes. lmdeck hands the scripts
+# their three workers: WORKER, WORKER2 and WORKER3 are the hosts.toml Sparks it picks around
+# the head, in cabled order on a ring, as the CX7 addresses the head reaches them on, so it
+# starts without a hand-written scripts/local.sh. lmdeck detects the CX7 fabric at start and
+# runs ./start-switchless.sh on a ring, ./start.sh otherwise; `lmdeck use <name> --dry-run`
+# prints the detected shape and the workers. Key-based ssh from the head to those addresses
+# (their host keys in known_hosts), Docker with the NVIDIA runtime on every Spark, a read-only
+# NFS export of the head's Hugging Face home at its real path (one /etc/exports line such as
+# `/home/me/.cache/huggingface 10.0.0.0/8(ro,no_subtree_check)`; lmdeck passes that path as
+# NFS_PATH instead of Mia's fsid=0 /huggingface), and the head being the Spark that holds the
+# checkpoint are the repo's requirements, not lmdeck's. [model] names that checkpoint, so
+# `lmdeck use` without --on runs the recipe on the Spark whose Hugging Face cache holds it.
+#
+# Two opt-ins of
+# Mia's are left at her defaults here: RANK_LOCAL=1 copies each worker's ~80 GB weight file to
+# its own disk (faster loads; needs the space), TF_DS_LOAD_PREFETCH=0 turns the loader's
+# read-ahead off. Add either under [engine.env] in the deck copy to change it.
+schema = 1
+display_name = "DeepSeek V4.1 Flash 1017 (NVFP4, TensorFold, 4x Spark)"
+description = "DeepSeek-V4.1-Flash-1017, NVIDIA's NVFP4 release (NVFP4=1), on four DGX Sparks (TP4) via Mia's start.sh. ~430 GB checkpoint on whichever Spark holds it (lmdeck runs it there), ~80 GiB resident per Spark."
+tags = ["deepseek", "nvfp4", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrapped"]
+
+[source]
+repo = "https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"
+# Pinned to the commit this recipe was written against; use "main" to follow the repo.
+ref = "fcef6cf2117460f8453714d4ee756537c1a29995"
+
+# The checkpoint Mia's scripts load on the head. They download it there themselves, so
+# lmdeck never pulls or mounts it (pull = false); it reads repo and revision only to find
+# the Spark that holds it.
+[model]
+repo = "nvidia/DeepSeek-V4.1-Flash-1017-NVFP4"
+revision = "480550d349ede47a048eb65a276c5c01a06256e2"
+pull = false
+
+[quant]
+format = "nvfp4"
+label = "NVFP4 experts / MXFP4 Engram"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "dsv41-1017-tf"
+logs = ["docker", "logs", "-f", "dsv41-1017-tf"]
+port = 8888
+ctx = 1048576
+# The first run downloads ~430 GB and writes the rank files before the port opens.
+# Later starts are the script's own ~2.5 minutes, inside this same ceiling.
+ready_timeout = 43200
+
+[engine.env]
+PORT = "{port}"
+HOST = "{host}"
+CONTAINER_NAME = "{container}"
+# The other three Sparks in cabled order, as the CX7 addresses this Spark reaches them on.
+WORKER = "{peer_addr}"
+WORKER2 = "{peer2_addr}"
+WORKER3 = "{peer3_addr}"
+# Mia's files live in the head's Hugging Face home, and the workers NFS-mount it by its real
+# path: one plain read-only export, no fsid=0 root (which would hide the head's other exports).
+HF_CACHE = "{hf_home}"
+NFS_PATH = "{hf_home}"
+# NVIDIA's NVFP4 checkpoint and its revision (scripts/config.sh pins it).
+NVFP4 = "1"
+
+# A switchless ring (four Sparks, two CX7 cables each) runs the repo's ring launcher,
+# which sets FABRIC_EXPECT=ring and checks the ranks follow the cables.
+[engine.command_by_fabric]
+ring = ["./start-switchless.sh"]
+
+[hardware]
+# Mia's scripts drive all four Sparks from this one.
+hosts = 4
+min_memory_gb = 100
+
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"
