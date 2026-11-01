@@ -936,6 +936,24 @@ impl Deck {
         }
     }
 
+    /// Where `name`'s log is when its run lives on another host: that host and
+    /// the name the run goes by there (a start placed on the weights home).
+    /// `None` when this machine has the log worth showing: a run or a pull
+    /// here, or a log written here after the placement.
+    pub fn remote_log(&self, name: &str) -> Option<(String, String)> {
+        let p = crate::placement::Record::load(&self.paths, name).filter(|p| p.run_host != crate::hosts::LOCAL)?;
+        if RunRecord::load(&self.paths, name).is_some() || self.pulling(name) {
+            return None;
+        }
+        let placed = crate::placement::Record::age(&self.paths, name)?;
+        let local =
+            std::fs::metadata(self.log_for(name)).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if local.is_some_and(|age| age < placed) {
+            return None;
+        }
+        Some((p.run_host, p.served_as))
+    }
+
     /// Resolves `target` to a recipe name (also accepts names of running
     /// servers, and a name several recipes share).
     pub fn name_of(&self, target: &str) -> Result<String> {
@@ -1009,6 +1027,60 @@ fn reference(f: &Found) -> String {
 
 /// The last `n` lines of a log, ANSI codes stripped and `\r` progress bars
 /// collapsed (only the last 256 KiB is read).
+/// A follower's read of a log: whole lines, and the byte offset the next
+/// read starts at. `reset` says the file got shorter than the offset asked
+/// for (a new run rewrote it), so these lines are its tail again.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
+pub struct LogChunk {
+    pub lines: Vec<String>,
+    pub offset: u64,
+    #[serde(default)]
+    pub reset: bool,
+}
+
+/// Lines of `path` from byte `offset` on (at most 1 MiB a read), or with no
+/// offset its last `n` lines. Only whole lines are returned: a line still
+/// being written comes with the next read.
+pub fn log_since(path: &Path, offset: Option<u64>, n: usize) -> LogChunk {
+    const MAX: u64 = 1 << 20;
+    let Ok(mut f) = File::open(path) else { return LogChunk::default() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let reset = offset.is_some_and(|o| o > len);
+    let tail = offset.is_none() || reset;
+    let start = match offset {
+        Some(o) if !reset => o,
+        _ => len.saturating_sub(256 * 1024),
+    };
+    let end = if tail { len } else { (start + MAX).min(len) };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return LogChunk { offset: start, reset, ..LogChunk::default() };
+    }
+    let mut buf = Vec::new();
+    let _ = (&mut f).take(end - start).read_to_end(&mut buf);
+    let full = buf.len() as u64 == MAX && !tail;
+    let cut = match buf.iter().rposition(|b| *b == b'\n') {
+        Some(i) => i + 1,
+        // Reason: a line longer than a whole read would never end; hand it over in pieces.
+        None if full => buf.len(),
+        None => 0,
+    };
+    buf.truncate(cut);
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<String> = text
+        .split('\n')
+        .skip(usize::from(tail && start > 0))
+        .map(|l| crate::ui::strip_ansi(l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("")))
+        .collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    if tail {
+        let skip = lines.len().saturating_sub(n);
+        lines.drain(..skip);
+    }
+    LogChunk { lines, offset: start + cut as u64, reset }
+}
+
 pub fn tail_lines(path: &Path, n: usize) -> Vec<String> {
     let Ok(mut f) = File::open(path) else { return vec![] };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
@@ -1034,6 +1106,26 @@ pub fn tail_lines(path: &Path, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_since_follows_whole_lines_and_resets_on_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.log");
+        std::fs::write(&p, "a\nb\nc\npart").unwrap();
+        let first = log_since(&p, None, 2);
+        assert_eq!(first.lines, ["b", "c"]);
+        assert_eq!(first.offset, 6);
+        assert!(!first.reset);
+        std::fs::write(&p, "a\nb\nc\npartial\nd\n").unwrap();
+        let next = log_since(&p, Some(first.offset), 2);
+        assert_eq!(next.lines, ["partial", "d"]);
+        assert_eq!(log_since(&p, Some(next.offset), 2).lines, Vec::<String>::new());
+        std::fs::write(&p, "new\n").unwrap();
+        let again = log_since(&p, Some(next.offset), 10);
+        assert!(again.reset);
+        assert_eq!(again.lines, ["new"]);
+        assert_eq!(log_since(&dir.path().join("none.log"), Some(3), 5), LogChunk::default());
+    }
 
     #[test]
     fn a_server_serves_a_recipe_by_name_repo_or_repo_basename() {

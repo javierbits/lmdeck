@@ -6,7 +6,7 @@
 //! - `GET  /api/snapshot`              everything below in one document
 //! - `GET  /api/recipes` · `/api/status` · `/api/doctor` · `/api/sources`
 //! - `POST /api/{start,stop,switch,pull}/{recipe}`  body optional `{"force":true}` (`pull`: `{"latest":true}`)
-//! - `GET  /api/logs/{recipe}?n=200`
+//! - `GET  /api/logs/{recipe}?n=200[&offset=B]` its tail, or the whole lines after byte B (a follower's poll)
 //! - `GET  /api/logs/{recipe}/stream`  Server-Sent Events, one `data:` per line
 //! - `GET  /api/telemetry[?history=1&since=<unix ms>]`  this machine, live
 //! - `GET  /api/hosts`                 this machine plus every `hosts.toml` entry
@@ -381,8 +381,12 @@ fn handle(st: &State, mut req: Request) {
                     };
                     let n = query_param(&query, "n").and_then(|v| v.parse().ok()).unwrap_or(200usize).min(5000);
                     let path = st.deck.log_for(&name);
-                    let lines = tail_lines(&path, n);
-                    return json_reply(req, 200, &json!({"name": name, "path": path, "lines": lines}));
+                    // `offset` (from the last reply) makes this a follower's poll: only the lines since.
+                    let offset = query_param(&query, "offset").and_then(|v| v.parse().ok());
+                    let c = crate::deck::log_since(&path, offset, n);
+                    let reply =
+                        json!({"name": name, "path": path, "lines": c.lines, "offset": c.offset, "reset": c.reset});
+                    return json_reply(req, 200, &reply);
                 }
                 error(req, 404, "not found")
             }
@@ -523,7 +527,8 @@ fn get_more(st: &State, req: Request, api: &str, query: &str) -> Option<Request>
                 let path = match what {
                     "recipes" | "status" | "snapshot" => what.to_string(),
                     w if w.starts_with("logs/") => {
-                        format!("{}?n={}", crate::remote::encode(w), q("n").unwrap_or_else(|| "200".to_string()))
+                        let at = q("offset").map(|o| format!("&offset={o}")).unwrap_or_default();
+                        format!("{}?n={}{at}", crate::remote::encode(w), q("n").unwrap_or_else(|| "200".to_string()))
                     }
                     _ => return refused(req, 404, "not found"),
                 };

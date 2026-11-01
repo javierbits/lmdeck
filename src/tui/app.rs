@@ -152,6 +152,10 @@ pub struct App {
     pub model_cursor: usize,
     /// The log pane shows this (host, server) instead of the selected recipe's.
     pub remote_log: Option<(String, String)>,
+    /// The (host, server) whose log the pane shows when it is fetched from a
+    /// host's `lmdeck serve`: `remote_log`, or the selected recipe's run on
+    /// another host.
+    pub log_from: Option<(String, String)>,
 }
 
 impl Default for App {
@@ -182,6 +186,7 @@ impl Default for App {
             run_on: None,
             model_cursor: 0,
             remote_log: None,
+            log_from: None,
         }
     }
 }

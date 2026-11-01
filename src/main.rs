@@ -131,6 +131,9 @@ enum Cmd {
         /// Multi-node recipes: this node's log (default: the head).
         #[arg(long)]
         node: Option<String>,
+        /// Keep printing new lines as they are written (also from another host).
+        #[arg(short, long)]
+        follow: bool,
     },
     /// Which host holds which model's weights (asks every host).
     Weights {
@@ -523,7 +526,9 @@ fn run(cli: Cli) -> Result<()> {
             browse(&ctx, query.as_deref().unwrap_or(""), &tags, &sort, refresh, offline, fits, json)
         }
         Some(Cmd::Outdated { targets, fetch, json }) => outdated(&ctx, &targets, fetch, json),
-        Some(Cmd::Logs { target, lines, on, node }) => logs(&ctx, &target, lines, on.as_deref(), node.as_deref()),
+        Some(Cmd::Logs { target, lines, on, node, follow }) => {
+            logs(&ctx, &target, lines, on.as_deref(), node.as_deref(), follow)
+        }
         Some(Cmd::Weights { refresh, json }) => weights_cmd(&ctx, refresh, json),
         Some(Cmd::Recipe(c)) => recipe_cmd(&ctx, c),
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
@@ -1699,7 +1704,7 @@ fn stop(ctx: &Ctx, target: Option<&str>, all: bool, on: Option<&str>) -> Result<
     Ok(())
 }
 
-fn logs(ctx: &Ctx, target: &str, lines: usize, on: Option<&str>, node: Option<&str>) -> Result<()> {
+fn logs(ctx: &Ctx, target: &str, lines: usize, on: Option<&str>, node: Option<&str>, follow: bool) -> Result<()> {
     let cat = ctx.catalog();
     let me = ctx.cfg.node_name();
     let found = resolve(&cat, target).ok();
@@ -1725,24 +1730,90 @@ fn logs(ctx: &Ctx, target: &str, lines: usize, on: Option<&str>, node: Option<&s
         }
         on = Some(host.to_string());
     } else if on.is_none() {
-        if let Some(p) = lmdeck::placement::Record::load(&ctx.paths, &name).filter(|p| p.run_host != hosts::LOCAL) {
-            if !ctx.paths.log_dir().join(format!("{name}.log")).exists() {
-                on = Some(p.run_host);
-            }
+        // A run placed on another host (the weights home) logs there.
+        if let Some((host, served_as)) = Deck::new(ctx.paths.clone(), ctx.cfg.clone()).remote_log(&name) {
+            on = Some(host);
+            name = served_as;
         }
     }
     if let Some(host) = on.filter(|h| !lmdeck::remote::is_local(h, &me)) {
         let c = lmdeck::remote::Client::named(&ctx.paths, &host)?;
-        for l in c.logs(&name, lines)? {
-            println!("{l}");
+        eprintln!("{}", dim(&format!("── logs from {host} ({name}) ──")));
+        if !follow {
+            for l in c.logs(&name, lines)? {
+                println!("{l}");
+            }
+            return Ok(());
         }
-        return Ok(());
+        return follow_remote(&c, &name, lines);
     }
-    let path = ctx.paths.log_dir().join(format!("{name}.log"));
+    let deck = Deck::new(ctx.paths.clone(), ctx.cfg.clone());
+    let path = deck.log_for(&name);
     if !path.exists() {
         bail!("no log for {name} at {}", path.display());
     }
-    println!("{}", runner::tail(&path, lines));
+    if !follow {
+        println!("{}", runner::tail(&path, lines));
+        return Ok(());
+    }
+    let mut at: Option<(PathBuf, u64)> = None;
+    loop {
+        let path = deck.log_for(&name);
+        let offset = at.as_ref().filter(|(p, _)| *p == path).map(|(_, o)| *o);
+        let c = deck::log_since(&path, offset, lines);
+        if c.reset || (offset.is_none() && at.is_some()) {
+            eprintln!("{}", dim(&format!("── {} started over ──", path.display())));
+        }
+        print_lines(&c.lines)?;
+        at = Some((path, c.offset));
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// `lmdeck logs -f` of a run on another host: polls its `lmdeck serve` for
+/// the lines written since the last poll, riding out a host that is slow to answer.
+fn follow_remote(c: &lmdeck::remote::Client, name: &str, lines: usize) -> Result<()> {
+    let (mut path, first) = c.logs_since(name, None, lines)?;
+    print_lines(&first.lines)?;
+    let mut offset = Some(first.offset);
+    let mut failing = false;
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        match c.logs_since(name, offset, lines) {
+            Ok((p, _)) if p != path && offset.is_some() => {
+                // A new log file there (the pull finished, or a new run): its tail, from the top.
+                eprintln!("{}", dim(&format!("── {}: now {p} ──", c.name)));
+                (path, offset) = (p, None);
+            }
+            Ok((p, chunk)) => {
+                if failing {
+                    eprintln!("{}", dim(&format!("── {} answers again ──", c.name)));
+                    failing = false;
+                }
+                if chunk.reset {
+                    eprintln!("{}", dim(&format!("── {}: the log started over ──", c.name)));
+                }
+                print_lines(&chunk.lines)?;
+                (path, offset) = (p, Some(chunk.offset));
+            }
+            Err(e) if !failing => {
+                eprintln!("{}", yellow(&format!("{e:#} (still trying)")));
+                failing = true;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Prints log lines; a closed pipe (`| head`) ends the follow quietly.
+fn print_lines(lines: &[String]) -> Result<()> {
+    let mut out = std::io::stdout().lock();
+    for l in lines {
+        if writeln!(out, "{l}").is_err() {
+            std::process::exit(0);
+        }
+    }
+    out.flush().ok();
     Ok(())
 }
 

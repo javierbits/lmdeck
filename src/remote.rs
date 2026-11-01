@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use crate::deck::LogChunk;
 use crate::hosts::{HostEntry, HostsFile, LOCAL};
 use crate::paths::Paths;
 
@@ -110,6 +111,20 @@ impl Client {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_string)).collect())
             .unwrap_or_default())
+    }
+
+    /// [`Client::logs`] for a follower: the last `n` lines with no `offset`,
+    /// else the whole lines written since. Also returns the path the host
+    /// reads (a new path means a new log: start over without an offset).
+    pub fn logs_since(&self, recipe: &str, offset: Option<u64>, n: usize) -> Result<(String, LogChunk)> {
+        let at = offset.map(|o| format!("&offset={o}")).unwrap_or_default();
+        let v: Value = self.get(&format!("logs/{}?n={n}{at}", encode(recipe)))?;
+        if v.get("offset").is_none() {
+            bail!("{}: its lmdeck can't follow a log yet; update lmdeck there", self.name);
+        }
+        let path = v.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+        let chunk = serde_json::from_value(v).with_context(|| format!("{}: bad log reply", self.name))?;
+        Ok((path, chunk))
     }
 
     fn describe(&self, e: ureq::Error) -> anyhow::Error {

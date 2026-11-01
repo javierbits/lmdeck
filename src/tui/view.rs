@@ -673,22 +673,32 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let t = app.theme();
-    let name = app.selected().map(|r| r.name.clone()).unwrap_or_default();
+    let from = app.log_from.as_ref().filter(|(h, _)| h != crate::hosts::LOCAL);
+    let name = match from {
+        Some((_, n)) => n.clone(),
+        None => app.selected().map(|r| r.name.clone()).unwrap_or_default(),
+    };
     let file = app
         .log_path
         .as_ref()
         .and_then(|p| p.file_name())
         .map(|f| f.to_string_lossy().into_owned())
         .filter(|_| !app.logs.is_empty());
-    let extra = match (file, app.log_scroll) {
-        (Some(f), 0) => Some(format!("{f} · live")),
-        (Some(f), n) => Some(format!("{f} · ↑{n}")),
-        (None, _) => None,
+    let extra = match (from, file, app.log_scroll) {
+        (Some((h, _)), _, 0) => Some(format!("logs from {h} · live")),
+        (Some((h, _)), _, n) => Some(format!("logs from {h} · ↑{n}")),
+        (None, Some(f), 0) => Some(format!("{f} · live")),
+        (None, Some(f), n) => Some(format!("{f} · ↑{n}")),
+        (None, None, _) => None,
     };
     let block = panel(title("≡", format!("Logs {name}"), extra, t), t, focused);
     let inner_h = block.inner(area).height as usize;
     let lines: Vec<Line> = if app.logs.is_empty() {
-        vec![Line::from(Span::styled("no log yet; start the server with ↵", Style::new().fg(t.dim).italic()))]
+        let empty = match from {
+            Some((h, _)) => format!("asking {h} for its log…"),
+            None => "no log yet; start the server with ↵".to_string(),
+        };
+        vec![Line::from(Span::styled(empty, Style::new().fg(t.dim).italic()))]
     } else {
         let end = app.logs.len().saturating_sub(app.log_scroll);
         let start = end.saturating_sub(inner_h);

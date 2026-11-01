@@ -110,6 +110,19 @@ fn host_logs(deck: &Deck, host: &str, name: &str) -> std::result::Result<Vec<Str
     c.logs(name, 500).map_err(|e| format!("{e:#}"))
 }
 
+/// Where the selected recipe's log is when its run is on another host: a
+/// start placed there (see [`Deck::remote_log`]), or a run the sampler sees
+/// there while this machine has no log of it.
+fn placed_log(deck: &Deck, r: &crate::deck::RecipeView) -> Option<(String, String)> {
+    if !r.nodes.is_empty() {
+        return None;
+    }
+    deck.remote_log(&r.name).or_else(|| {
+        let host = r.placed_on.as_ref().filter(|h| h.as_str() != crate::hosts::LOCAL)?;
+        (!deck.log_for(&r.name).exists()).then(|| (host.clone(), r.name.clone()))
+    })
+}
+
 fn stop_on(deck: &Deck, host: &str, name: &str) -> Result<String> {
     if host == crate::hosts::LOCAL {
         return deck.stop(name);
@@ -229,7 +242,7 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                     Msg::Plans { reference, rows } => app.set_plans(&reference, rows),
                     Msg::RemoteLogs { host, name, lines } => {
                         remote_inflight = false;
-                        if app.remote_log.as_ref() == Some(&(host.clone(), name.clone())) {
+                        if app.log_from.as_ref() == Some(&(host.clone(), name.clone())) {
                             match lines {
                                 Ok(l) => app.logs = l,
                                 Err(e) => app.logs = vec![format!("✗ logs from {host}: {e}")],
@@ -239,7 +252,17 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                     }
                 }
             }
-            if let Some((host, name)) = app.remote_log.clone() {
+            // The Hosts tab's pick, else the selected recipe's run when it lives on another host.
+            let from = app.remote_log.clone().or_else(|| app.selected().and_then(|r| placed_log(&deck, r)));
+            if from != app.log_from {
+                if from.is_some() {
+                    app.logs.clear();
+                    app.log_path = None;
+                    (remote_inflight, last_remote) = (false, Instant::now() - REFRESH);
+                }
+                app.log_from = from.clone();
+            }
+            if let Some((host, name)) = from {
                 // Another host's log: fetched off-thread, one request at a time.
                 if !remote_inflight && last_remote.elapsed() >= REFRESH {
                     (remote_inflight, last_remote) = (true, Instant::now());

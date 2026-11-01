@@ -60,6 +60,34 @@ fn remote_start_stop_logs_with_and_without_token() {
     assert!(
         c.run(&["logs", "web", "--on", "a"]).contains("http.server") || c.run(&["logs", "web", "--on", "a"]).is_empty()
     );
+    // A start placed on a: the controller has no log of it, so `logs` reads a's,
+    // and a follower polls a's serve for the lines after its offset.
+    let log = a.host.dir.join("home/state/logs/web.log");
+    let append = |line: &str| {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(&log).unwrap();
+        writeln!(f, "{line}").unwrap();
+    };
+    append("placed-marker");
+    fs::create_dir_all(c.dir.join("home/state/placements")).unwrap();
+    fs::write(
+        c.dir.join("home/state/placements/web.json"),
+        r#"{"recipe":"web","run_host":"a","home":"a","served_as":"web","volume":""}"#,
+    )
+    .unwrap();
+    assert!(c.run(&["logs", "web"]).contains("placed-marker"));
+    let get = |q: &str| -> serde_json::Value {
+        ureq::get(&format!("{}/api/logs/web?{q}", a.url)).call().unwrap().into_json().unwrap()
+    };
+    let tail = get("n=5");
+    let end = tail["offset"].as_u64().unwrap_or_else(|| panic!("{tail}"));
+    assert!(tail["lines"].to_string().contains("placed-marker"), "{tail}");
+    append("after-offset");
+    let since = get(&format!("n=5&offset={end}"));
+    assert!(since["lines"].to_string().contains("after-offset"), "{since}");
+    assert!(!since["lines"].to_string().contains("placed-marker"), "{since}");
+    assert_eq!(since["reset"], false);
+    fs::remove_file(c.dir.join("home/state/placements/web.json")).unwrap();
     assert!(c.run(&["stop", "web", "--on", "a"]).contains("a:"));
     let t0 = Instant::now();
     while std::net::TcpStream::connect(("127.0.0.1", pa)).is_ok() {

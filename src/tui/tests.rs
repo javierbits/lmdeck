@@ -819,3 +819,20 @@ fn details_and_list_show_weights_home_nodes_and_placement() {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
 }
+
+#[test]
+fn log_pane_names_the_host_a_remote_log_comes_from() {
+    let mut a = app();
+    let s = demo();
+    let name = s.recipes[0].name.clone();
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    a.log_from = Some(("ember".into(), name.clone()));
+    let text = buffer_text(&render(&a, 170, 50));
+    assert!(text.contains("asking ember for its log"), "{text}");
+    a.logs = vec!["[prepare.sh] Copying image to 10.100.136.1".into()];
+    let text = buffer_text(&render(&a, 170, 50));
+    for want in ["logs from ember · live", "[prepare.sh] Copying image"] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+}
