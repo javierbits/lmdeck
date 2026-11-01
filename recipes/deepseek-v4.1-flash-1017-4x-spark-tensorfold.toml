@@ -19,7 +19,7 @@
 # `lmdeck use` without --on runs the recipe on the Spark whose Hugging Face cache holds it.
 schema = 1
 display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
-description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on spark1, ~80 GiB resident per Spark."
+description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on whichever Spark holds it (lmdeck runs it there), ~80 GiB resident per Spark."
 tags = ["deepseek", "fp8", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrapped"]
 
 [source]
