@@ -1,0 +1,251 @@
+# NVIDIA's NVFP4 conversion of DeepSeek-V4.1-Flash-1017, served by stock
+# `vllm/vllm-openai:v0.32.0` on four DGX Sparks (one GB10 each, TP=4) with
+# the Engram MXFP4 overlay from vllm-project/vllm#61530 mounted over the
+# installed vLLM file. No image build and no image push: every node pulls the
+# official image and mounts `{dir}/patches/engram_mxfp4.py` read-only.
+#
+# The checkpoint is 399.55 GiB: 302.23 GiB of non-Engram weights (75.56 GiB
+# per rank) plus 97.28 GiB of MXFP4 Engram tables (24.32 GiB per rank). A GB10
+# exposes ~121.7 GiB of unified memory, and `cpu_offload` does not add a tier,
+# so the first profile is deliberately small: 8K context, one sequence, eager,
+# GPU_MEMORY_UTILIZATION 0.75. Raise one knob at a time and watch MemAvailable
+# on every node; 32K is the realistic target, not 1M.
+#
+# The four nodes are started workers-first so the head's readiness gate is a
+# TCP connect to its API port; the head is the last node and starts its
+# `vllm serve` after the three headless workers are waiting for the master.
+# `host = "auto"` makes lmdeck place the workers on the head's CX7 fabric.
+#
+# Prerequisites, because this is a wrapped multi-node command rather than an
+# engine lmdeck launches itself:
+#   * the checkpoint in the weights home's Hugging Face cache (lmdeck pull),
+#   * a read-only NFS export of that cache to the other Sparks (ember already
+#     has one; another home needs `[weights] allow_export = true` and sudo),
+#   * the same image and the same `vllm/vllm-openai:v0.32.0` on every node,
+#   * passwordless SSH from the controller to each node's lmdeck serve, and
+#     `[serve] accept_recipes = true` on the workers.
+schema = 1
+display_name = "DeepSeek V4.1 Flash 1017 (NVFP4, vLLM, 4x Spark)"
+description = "NVIDIA's NVFP4 DeepSeek-V4.1-Flash-1017 (399.55 GiB) on four DGX Sparks, vLLM 0.32.0 TP=4 with the MXFP4 Engram overlay. 8K/1-seq/eager first profile; weights read over NFS from their home."
+tags = ["deepseek", "nvfp4", "mxfp4", "vllm", "dspark", "dgx-spark", "multi-node", "4x-spark"]
+
+[source]
+repo = "https://github.com/javierbits/DeepSeek-V4.1-Flash-1017-NVFP4-DGX-Spark-recipe"
+ref = "2c730ba727fd2a771bbb985f9b08dea348c36f5e"
+
+[model]
+repo = "nvidia/DeepSeek-V4.1-Flash-1017-NVFP4"
+revision = "480550d349ede47a048eb65a276c5c01a06256e2"
+size_gb = 400.0
+
+[quant]
+format = "nvfp4"
+label = "NVFP4 experts / MXFP4 Engram"
+bits = 4.5
+
+[engine]
+name = "custom"
+image = "vllm/vllm-openai:v0.32.0"
+port = 8889
+ctx = 8192
+ready_timeout = 7200
+
+[hardware]
+nodes = 4
+min_memory_gb = 105
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"
+
+[cluster]
+# The headless workers must be waiting before rank 0 binds the master port.
+order = "workers-first"
+# First boot reads ~100 GiB per rank over NFS and compiles Triton kernels.
+gate_timeout = 7200
+
+# ---------------------------------------------------------------------------
+# head — rank 0, the OpenAI-compatible API and the torch.distributed master
+# ---------------------------------------------------------------------------
+[[nodes]]
+name = "head"
+role = "head"
+# The Spark that holds the checkpoint's Hugging Face cache. On this fleet that
+# is ember; change it when the weights move. A `host = "local"` head also works
+# when lmdeck itself runs on the weights Spark (that machine then needs the
+# other Sparks in its hosts.toml for the `auto` workers).
+host = "ember"
+port = 8889
+ready_port = 8889
+container = "lmdeck-dsv41-nvfp4-head"
+stop = ["docker", "rm", "-f", "lmdeck-dsv41-nvfp4-head"]
+logs = ["docker", "logs", "-f", "lmdeck-dsv41-nvfp4-head"]
+detached = true
+
+env = { HF_HOME = "{weights_at}", HF_HUB_OFFLINE = "1", VLLM_ENGINE_READY_TIMEOUT_S = "3600", NCCL_IB_DISABLE = "0", NCCL_SOCKET_IFNAME = "{ifname}", GLOO_SOCKET_IFNAME = "{ifname}", NCCL_IB_HCA = "{hca}", NCCL_IB_GID_INDEX = "{gid_index}", VLLM_HOST_IP = "{node_addr}", PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False" }
+
+command = [
+  "docker", "run", "-d", "--rm", "--name", "lmdeck-dsv41-nvfp4-head",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "{dir}/patches/engram_mxfp4.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/common/engram.py:ro",
+  "-v", "lmdeck-vllm-cache-{node}:/root/.cache/vllm",
+  "-e", "HF_HOME", "-e", "HF_HUB_OFFLINE", "-e", "VLLM_ENGINE_READY_TIMEOUT_S",
+  "-e", "NCCL_IB_DISABLE", "-e", "NCCL_SOCKET_IFNAME", "-e", "GLOO_SOCKET_IFNAME",
+  "-e", "NCCL_IB_HCA", "-e", "NCCL_IB_GID_INDEX", "-e", "VLLM_HOST_IP",
+  "--entrypoint", "bash", "{image}", "-lc",
+  '''exec vllm serve nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 \
+  --revision 480550d349ede47a048eb65a276c5c01a06256e2 \
+  --served-model-name deepseek-v4.1-flash-nvfp4 \
+  --host 0.0.0.0 --port 8889 \
+  --tensor-parallel-size 4 --nnodes 4 --node-rank 0 \
+  --master-addr {master_addr} --master-port 29641 \
+  --tokenizer-mode deepseek_v41 \
+  --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+  --kv-cache-dtype fp8 \
+  --max-model-len 8192 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 1024 \
+  --gpu-memory-utilization 0.75 \
+  --enforce-eager \
+  --engram-config '{"cpu_offload":true}' \
+  --reasoning-parser deepseek_v41 \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v41''',
+]
+
+# ---------------------------------------------------------------------------
+# workers — ranks 1..3, same image and flags, headless
+# ---------------------------------------------------------------------------
+[[nodes]]
+name = "w1"
+role = "worker"
+host = "auto"
+ready_delay = 10
+container = "lmdeck-dsv41-nvfp4-w1"
+stop = ["docker", "rm", "-f", "lmdeck-dsv41-nvfp4-w1"]
+logs = ["docker", "logs", "-f", "lmdeck-dsv41-nvfp4-w1"]
+detached = true
+
+env = { HF_HOME = "{weights_at}", HF_HUB_OFFLINE = "1", VLLM_ENGINE_READY_TIMEOUT_S = "3600", NCCL_IB_DISABLE = "0", NCCL_SOCKET_IFNAME = "{ifname}", GLOO_SOCKET_IFNAME = "{ifname}", NCCL_IB_HCA = "{hca}", NCCL_IB_GID_INDEX = "{gid_index}", VLLM_HOST_IP = "{node_addr}", PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False" }
+
+command = [
+  "docker", "run", "-d", "--rm", "--name", "lmdeck-dsv41-nvfp4-w1",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "{dir}/patches/engram_mxfp4.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/common/engram.py:ro",
+  "-v", "lmdeck-vllm-cache-{node}:/root/.cache/vllm",
+  "-e", "HF_HOME", "-e", "HF_HUB_OFFLINE", "-e", "VLLM_ENGINE_READY_TIMEOUT_S",
+  "-e", "NCCL_IB_DISABLE", "-e", "NCCL_SOCKET_IFNAME", "-e", "GLOO_SOCKET_IFNAME",
+  "-e", "NCCL_IB_HCA", "-e", "NCCL_IB_GID_INDEX", "-e", "VLLM_HOST_IP",
+  "--entrypoint", "bash", "{image}", "-lc",
+  '''exec vllm serve nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 \
+  --revision 480550d349ede47a048eb65a276c5c01a06256e2 \
+  --served-model-name deepseek-v4.1-flash-nvfp4 \
+  --host 0.0.0.0 --port 8889 \
+  --tensor-parallel-size 4 --nnodes 4 --node-rank 1 \
+  --master-addr {master_addr} --master-port 29641 \
+  --headless \
+  --tokenizer-mode deepseek_v41 \
+  --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+  --kv-cache-dtype fp8 \
+  --max-model-len 8192 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 1024 \
+  --gpu-memory-utilization 0.75 \
+  --enforce-eager \
+  --engram-config '{"cpu_offload":true}' \
+  --reasoning-parser deepseek_v41 \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v41''',
+]
+
+[[nodes]]
+name = "w2"
+role = "worker"
+host = "auto"
+ready_delay = 10
+container = "lmdeck-dsv41-nvfp4-w2"
+stop = ["docker", "rm", "-f", "lmdeck-dsv41-nvfp4-w2"]
+logs = ["docker", "logs", "-f", "lmdeck-dsv41-nvfp4-w2"]
+detached = true
+
+env = { HF_HOME = "{weights_at}", HF_HUB_OFFLINE = "1", VLLM_ENGINE_READY_TIMEOUT_S = "3600", NCCL_IB_DISABLE = "0", NCCL_SOCKET_IFNAME = "{ifname}", GLOO_SOCKET_IFNAME = "{ifname}", NCCL_IB_HCA = "{hca}", NCCL_IB_GID_INDEX = "{gid_index}", VLLM_HOST_IP = "{node_addr}", PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False" }
+
+command = [
+  "docker", "run", "-d", "--rm", "--name", "lmdeck-dsv41-nvfp4-w2",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "{dir}/patches/engram_mxfp4.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/common/engram.py:ro",
+  "-v", "lmdeck-vllm-cache-{node}:/root/.cache/vllm",
+  "-e", "HF_HOME", "-e", "HF_HUB_OFFLINE", "-e", "VLLM_ENGINE_READY_TIMEOUT_S",
+  "-e", "NCCL_IB_DISABLE", "-e", "NCCL_SOCKET_IFNAME", "-e", "GLOO_SOCKET_IFNAME",
+  "-e", "NCCL_IB_HCA", "-e", "NCCL_IB_GID_INDEX", "-e", "VLLM_HOST_IP",
+  "--entrypoint", "bash", "{image}", "-lc",
+  '''exec vllm serve nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 \
+  --revision 480550d349ede47a048eb65a276c5c01a06256e2 \
+  --served-model-name deepseek-v4.1-flash-nvfp4 \
+  --host 0.0.0.0 --port 8889 \
+  --tensor-parallel-size 4 --nnodes 4 --node-rank 2 \
+  --master-addr {master_addr} --master-port 29641 \
+  --headless \
+  --tokenizer-mode deepseek_v41 \
+  --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+  --kv-cache-dtype fp8 \
+  --max-model-len 8192 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 1024 \
+  --gpu-memory-utilization 0.75 \
+  --enforce-eager \
+  --engram-config '{"cpu_offload":true}' \
+  --reasoning-parser deepseek_v41 \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v41''',
+]
+
+[[nodes]]
+name = "w3"
+role = "worker"
+host = "auto"
+ready_delay = 10
+container = "lmdeck-dsv41-nvfp4-w3"
+stop = ["docker", "rm", "-f", "lmdeck-dsv41-nvfp4-w3"]
+logs = ["docker", "logs", "-f", "lmdeck-dsv41-nvfp4-w3"]
+detached = true
+
+env = { HF_HOME = "{weights_at}", HF_HUB_OFFLINE = "1", VLLM_ENGINE_READY_TIMEOUT_S = "3600", NCCL_IB_DISABLE = "0", NCCL_SOCKET_IFNAME = "{ifname}", GLOO_SOCKET_IFNAME = "{ifname}", NCCL_IB_HCA = "{hca}", NCCL_IB_GID_INDEX = "{gid_index}", VLLM_HOST_IP = "{node_addr}", PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False" }
+
+command = [
+  "docker", "run", "-d", "--rm", "--name", "lmdeck-dsv41-nvfp4-w3",
+  "--gpus", "all", "--network", "host", "--ipc", "host", "--shm-size", "16g",
+  "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+  "--device", "/dev/infiniband:/dev/infiniband",
+  "-v", "{weights_mount}",
+  "-v", "{dir}/patches/engram_mxfp4.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/common/engram.py:ro",
+  "-v", "lmdeck-vllm-cache-{node}:/root/.cache/vllm",
+  "-e", "HF_HOME", "-e", "HF_HUB_OFFLINE", "-e", "VLLM_ENGINE_READY_TIMEOUT_S",
+  "-e", "NCCL_IB_DISABLE", "-e", "NCCL_SOCKET_IFNAME", "-e", "GLOO_SOCKET_IFNAME",
+  "-e", "NCCL_IB_HCA", "-e", "NCCL_IB_GID_INDEX", "-e", "VLLM_HOST_IP",
+  "--entrypoint", "bash", "{image}", "-lc",
+  '''exec vllm serve nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 \
+  --revision 480550d349ede47a048eb65a276c5c01a06256e2 \
+  --served-model-name deepseek-v4.1-flash-nvfp4 \
+  --host 0.0.0.0 --port 8889 \
+  --tensor-parallel-size 4 --nnodes 4 --node-rank 3 \
+  --master-addr {master_addr} --master-port 29641 \
+  --headless \
+  --tokenizer-mode deepseek_v41 \
+  --attention-config '{"backend":"FLASHINFER_MLA_SPARSE_DSV41","indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}' \
+  --kv-cache-dtype fp8 \
+  --max-model-len 8192 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 1024 \
+  --gpu-memory-utilization 0.75 \
+  --enforce-eager \
+  --engram-config '{"cpu_offload":true}' \
+  --reasoning-parser deepseek_v41 \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v41''',
+]

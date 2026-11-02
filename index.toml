@@ -45,3 +45,12 @@ size_gb = 320.0  # four rank files, ~80 GiB each (README). The checkpoint is a s
 recipe = "recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml"
 tags = { engine = "tensorfold", model = "DeepSeek-V4.1-Flash-1017", family = "deepseek", quant = "fp8", sparks = 4 }
 speed = { tok_s = 65.8, note = "repo README: four DGX Sparks, switchless ring, 1 stream, prose, thinking on, measured 2026-10-25" }
+
+[[entry]]
+name = "deepseek-v4.1-flash-1017-4x-spark-nvfp4"
+repo = "https://github.com/javierbits/DeepSeek-V4.1-Flash-1017-NVFP4-DGX-Spark-recipe"
+ref = "2c730ba727fd2a771bbb985f9b08dea348c36f5e"
+description = "NVIDIA's NVFP4 DeepSeek-V4.1-Flash-1017 (399.55 GiB) on four DGX Sparks: stock vLLM 0.32.0 TP=4 with the MXFP4 Engram overlay, weights over NFS, 8K/1-seq/eager first profile."
+size_gb = 400.0   # 399.55 GiB, 48 safetensors shards (HF API)
+recipe = "recipes/deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml"
+tags = { engine = "vllm", model = "DeepSeek-V4.1-Flash-1017", family = "deepseek", quant = "nvfp4", sparks = 4 }

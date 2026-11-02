@@ -47,6 +47,10 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
         "deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml",
         include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml"),
     ),
+    (
+        "deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml",
+        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml"),
+    ),
 ];
 
 pub fn builtin() -> Vec<Found> {

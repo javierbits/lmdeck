@@ -322,8 +322,11 @@ places, see below), with exactly one `role = "head"`. lmdeck:
   A changed `ref`, or `lmdeck pull <recipe>` moving a branch, reaches every
   node at its next start;
 
-- fills fast-link facts into each node's command: `{head_addr}`,
-  `{node_addr}`, `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,
+- fills fast-link facts into each node's command: `{head_addr}` (the head's
+  address on *this* node's link), `{master_addr}` (the head's address on its
+  first link, the same value on every node — use it for a torch.distributed /
+  TCPStore master; `{head_addr}` differs around a ring), `{node_addr}`,
+  `{ifname}`, `{hca}`, `{gid_index}`, `{weights_mount}`,
   `{image}`, `{head_port}`, `{node}`, `{rank}`, `{nodes}`, and the fabric:
   `{fabric}` (`ring`, `switch`, `mesh`, `cable`, ...), `{fabric_order}` (the
   hosts in fabric order, comma-separated) and, on a switchless ring,

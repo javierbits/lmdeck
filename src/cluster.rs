@@ -319,6 +319,15 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
     let total = r.nodes.len();
     let image = r.engine.image.clone().unwrap_or_default();
     let first_other = r.nodes.iter().find(|n| key(&n.host) != head_key).map(|n| key(&n.host));
+    // One address every node can use for the head's torch.distributed master. The
+    // per-peer `head_addr` picks the head's IP on *that* link, which differs around a
+    // ring; a TCPStore binds one address, so rank 0 uses this same one on every node.
+    let master_addr = match first_other.as_ref() {
+        Some(p) => link_for(&graph, &head_key, p, &show, &mut warnings)
+            .and_then(|l| l.sides(&head_key).map(|(h, _)| h.ip.clone()))
+            .unwrap_or_else(|| "127.0.0.1".into()),
+        None => "127.0.0.1".into(),
+    };
     let mut out = vec![];
     for (rank, n) in start_order(r).into_iter().enumerate() {
         let host = key(&n.host);
@@ -349,6 +358,7 @@ pub fn plan(deck: &Deck, r: &Recipe, opts: &Opts) -> Result<Plan> {
                 vars.insert("gid_index".into(), String::new());
             }
         }
+        vars.insert("master_addr".into(), master_addr.clone());
         let port = match n.role {
             Role::Head => n.port.unwrap_or(r.port()),
             Role::Worker => n.port.or(n.ready_port).unwrap_or(r.port() + rank as u16),

@@ -32,7 +32,10 @@ pub enum NodeRole {
 }
 
 /// One `[[nodes]]` entry: what runs on one machine. Commands and env take
-/// the engine placeholders plus `{head_addr}`, `{node_addr}`, `{ifname}`,
+/// the engine placeholders plus `{head_addr}`, `{master_addr}` (the head's
+/// address on its first fabric link, the same on every node: use it for a
+/// torch.distributed/TCPStore master, because `{head_addr}` is per-link and
+/// differs around a ring), `{node_addr}`, `{ifname}`,
 /// `{hca}`, `{gid_index}`, `{rank}`, `{nodes}`, `{node}`, `{image}`,
 /// `{head_port}`, `{weights_mount}`, `{weights_volume}`, `{weights_at}`, the
 /// fabric ones and the other nodes' `{peer_addr}` / `{peer_host}`,

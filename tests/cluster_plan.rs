@@ -77,6 +77,22 @@ fn each_node_of_a_split_model_is_checked_against_its_share() {
 }
 
 #[test]
+fn every_node_gets_the_same_master_addr() {
+    // A torch.distributed/TCPStore master is one bind address; the per-peer
+    // `head_addr` differs around a ring, so the plan also fills one value for
+    // every node. All-local is loopback; real hosts get the head's first link.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut r = split(3, 10.0, "");
+    for n in &mut r.nodes {
+        n.command = vec!["sh".into(), "-c".into(), "echo {master_addr}".into()];
+    }
+    let plan = cluster::plan(&deck(tmp.path()), &r, &Opts::default()).unwrap();
+    let seen: Vec<String> =
+        plan.nodes.iter().map(|n| n.recipe.engine.command.last().cloned().unwrap_or_default()).collect();
+    assert_eq!(seen, vec!["echo 127.0.0.1"; 3], "{seen:?}");
+}
+
+#[test]
 fn a_share_that_does_not_fit_one_spark_is_still_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let plan = cluster::plan(&deck(tmp.path()), &split(2, 300.0, ""), &Opts::default()).unwrap();
