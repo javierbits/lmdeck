@@ -43,10 +43,16 @@ lmdeck recipe search qwen --compatible
 lmdeck recipe add qwen3-4b-gguf
 lmdeck pull qwen3-4b-gguf     # hf download …
 lmdeck use 1                  # start deck entry #1, wait until /v1/models answers 2xx
-lmdeck list                   # ● loaded  ○ stopped  ✓ downloaded
+lmdeck list                   # ● loaded  ● external (not started by lmdeck)  ○ stopped  ✓ downloaded
 lmdeck switch qwen3-4b-gguf   # stop the others, start this one
 lmdeck stop --all
 ```
+
+A server started outside lmdeck that answers with a recipe's model on its port
+is **external**: lmdeck shows it as up and its `stop` runs the recipe's stop
+command, but lmdeck didn't start it. **port taken** means another server holds
+the port and is not that recipe. Each recipe is counted once as up, so a
+shipped example shadowed by a deck recipe isn't a second server.
 
 Run `lmdeck` with no arguments in a terminal to open the [TUI](#tui). When
 stdout isn't a terminal, or with `--plain`, you get the wordmark and the deck
@@ -315,7 +321,7 @@ JSON API are compiled into the binary, so nothing is fetched from a CDN.
 
 Across machines (details in [docs/MULTIHOST.md](docs/MULTIHOST.md)): host cards
 have `≡` logs and `■` stop per model and a **run here** picker; recipe cards
-show **⛁ weights on: …**, `×N nodes` with the start order for multi-node
+show **⛁ weights on disk: …**, `×N nodes` with the start order for multi-node
 recipes, and a **Run on another host…** dropdown that opens the plan (NFS
 steps, link, load estimate, fit) before anything starts; a **Topology**
 section draws the hosts and their CX7 / LAN / Tailscale links as an SVG.
@@ -459,15 +465,15 @@ column and Machine panel there still describe that VM.
 
 | command | what it does |
 |---|---|
-| `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (●/◐/○), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache; a cache repo holding GGUFs shows as `gguf`). |
+| `lmdeck list [-a] [-l] [-d] [--json] [--flat]` | Shows the deck with status (● loaded, ◐ loading, ● external, ○ port taken, ○ stopped), download state (✓/✗), size and port, grouped under `── Family ──` separators (Qwen, GLM, DeepSeek, …; `--flat` disables the grouping). `-a` lists every known recipe, `-l` only running servers, `-d` the weights on disk (models dir and HF cache; a cache repo holding GGUFs shows as `gguf`). |
 | `lmdeck use <ref\|#> [--only] [--no-wait] [--force] [--dry-run]` | Starts a recipe. The aliases `on` and `start` do the same. Before launching it checks compatibility, the engine, free memory and the port. Then it waits until `GET /v1/models` answers 2xx: any other answer is a server still loading (llama-server says 503 until its model is in memory), and the status reads loading (◐) meanwhile. A server behind a key gets its own: an `--api-key` in the command, or TabbyAPI's `api_key` from `api_tokens.yml` in its checkout. `--dry-run` prints the exact command and runs nothing. With other hosts in `hosts.toml`, a recipe whose weights this machine lacks but another host holds runs on that host (its weights home), exactly as `--on <that host>` would; when this machine holds them too, or no host does, it runs here. The plan and the start output say where and why (`why: weights on ember, not here`, or `where: here (weights here)`); `--on local` runs it here anyway. See [docs/MULTIHOST.md](docs/MULTIHOST.md#3-choosing-where-a-model-runs---on). |
 | `lmdeck switch <ref\|#>` | Same as `use --only`: stops every other lmdeck server first. |
 | `lmdeck stop <ref\|#>` / `--all` | Stops a server. lmdeck sends SIGTERM to the process group and SIGKILL after 20 s. Docker recipes get `docker stop`, LM Studio gets `lms unload`, wrapped recipes run their `stop` script first. |
 | `lmdeck pull <ref> [--latest] [--dry-run]` | Downloads the weights with `hf download` (or `huggingface-cli`) into the Hugging Face cache, passing `--revision` and `--include` as needed; a recipe with a `[model] path` (any engine: that is where it runs from) gets them there instead (`--local-dir`). `hf download` keeps a file's place in the repo, so a llama.cpp path (the GGUF itself) must end with its first `files` entry, e.g. `…/UD-IQ4_NL/X-00001-of-00005.gguf`. LM Studio recipes use `lms get` instead; TensorFold recipes use `tensorfold pull <repo>@<revision>`. For a recipe with a `[source]`, it fetches the checkout and checks out its `ref` again (and downloads nothing unless the recipe also has a `[model]` repo without `pull = false`). A recipe with `pull = false` is never downloaded: its own scripts fetch its weights. `--latest` first moves a pinned `ref` to the upstream head, rewriting the deck recipe. |
 | `lmdeck outdated [names] [--fetch] [--json]` | Asks each cloned wrapped recipe's upstream (`git ls-remote`, no fetch) whether it has new commits, and prints local and remote commits and what to run. `--fetch` also fetches into the checkout so it can count the commits behind. Alias `updates`. See [Update checks](#update-checks). |
 | `lmdeck browse [words] [-t TAG]… [--sort name\|sparks\|speed] [--fits] [--refresh\|--offline] [--json]` | Lists the [recipe index](#recipe-index) with installed state, update badge, fit and the speed each repo reports. Words match name, description and tags; `-t exl3` or `-t sparks=2` filters by tag. |
-| `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
-| `lmdeck add <repo> [--name N] [--ref R] [--force]` | Wraps a repo that has `start.sh` and `stop.sh` at its root: clones it, reads the scripts, and writes a wrapper recipe into the deck. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes). |
+| `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise the repo's own `lmdeck.toml`, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
+| `lmdeck add <repo> [--name N] [--ref R] [--force]` | Adds a repo to the deck. If the repo has a `lmdeck.toml` at its root, that native recipe is installed; otherwise a repo with root `start.sh` and `stop.sh` is cloned, its scripts read, and a wrapper recipe written. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes) and [A repo's own recipe](#a-repos-own-recipe). |
 | `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
 | `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. `--on local` (or this machine's `[node] name`) runs it here, the way `use` without `--on` did before it followed the weights: nothing is placed or mounted, and the engine or the recipe's scripts fetch the weights if they need them. |
 | `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
@@ -807,16 +813,57 @@ those as they are. It applies no patches and builds nothing; the scripts do
 everything, and lmdeck clones the repo, hands the scripts its settings as
 environment variables, waits for `/v1/models`, shows the logs, and stops it.
 
+#### A repo's own recipe
+
+A repo can also ship a full native recipe as `lmdeck.toml` at its root. That is
+the escape hatch for repos whose launcher lives in a subdirectory, needs a
+different command, or wants its own `stop`/`port`/`container`/`[hardware]`:
+
+```sh
+lmdeck add https://github.com/owner/repo
+```
+
+`lmdeck add` clones the repo, then prefers the root `lmdeck.toml` over
+`start.sh` / `stop.sh` detection. The manifest is a normal recipe (`schema`,
+`[engine]`, optional `[model]`, `[quant]`, `[hardware]`); two rules differ:
+
+- `[source]` is not needed. lmdeck replaces it with the repo it cloned and the
+  commit it pinned, so the deck always runs that checkout.
+- The deck name comes from `--name` or the repo name; a `name` in the manifest
+  is ignored. Use `display_name` for the picker label.
+
+```toml
+schema = 1
+display_name = "My model on one Spark"
+
+[engine]
+name = "custom"
+command = ["bash", "scripts/serve.sh"]
+stop = ["bash", "scripts/guard.sh", "stop"]
+port = 8000
+container = "my-model"
+detached = true
+logs = ["docker", "logs", "-f", "my-model"]
+ready_timeout = 3600
+
+[model]
+repo = "org/model"
+```
+
+The same file can be installed without cloning the repo by hand with
+`lmdeck recipe add <path-or-raw-url>.toml`; `--name` or a `name` field picks the
+deck name there.
+
 ```sh
 lmdeck add MiaAI-Lab/Ornith-1.5-122B-TensorFold   # or a URL, or a local directory
 lmdeck use ornith-1.5-122b-tensorfold --dry-run
 ```
 
-`lmdeck add` needs `start.sh` and `stop.sh` at the repo root. It reads
-`VAR=${VAR:-default}` lines in the root `*.sh`, `scripts/*.sh` and
-`.env.example` to find the port and Docker container name, pins the commit it
-cloned, and leaves `TODO` comments for whatever it can't tell. Review the file
-it writes in `~/.config/lmdeck/recipes/`.
+Without a `lmdeck.toml`, `lmdeck add` needs `start.sh` and `stop.sh` at the
+repo root. It reads `VAR=${VAR:-default}` lines in the root `*.sh`,
+`scripts/*.sh` and `.env.example` to find the port and Docker container name,
+pins the commit it cloned, and leaves `TODO` comments for whatever it can't
+tell. Review the file it writes in `~/.config/lmdeck/recipes/`.
 
 - More than one `start*.sh` at the root: a script named for a fabric goes
   under `[engine.command_by_fabric]` (`start-switchless.sh` / `start-ring.sh`
@@ -827,7 +874,8 @@ it writes in `~/.config/lmdeck/recipes/`.
 - `ready_timeout` is a minute per GB of the largest download the README
   mentions (an hour at least, twelve at most).
 - A repo a built-in recipe already wraps gets that recipe instead, unless you
-  pass `--name`.
+  pass `--name`. Otherwise a repo's own `lmdeck.toml` wins over this wrapper
+  detection.
 
 
 ```toml

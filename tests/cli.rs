@@ -583,6 +583,52 @@ fn add_wraps_a_repo_and_runs_it_detached() {
     assert!(checkout.join("README.md").exists(), "re-adding pins the new commit");
 }
 
+/// A repo that ships `lmdeck.toml` is installed as a native recipe, and the
+/// manifest wins over `start.sh` / `stop.sh` that happen to exist too.
+#[test]
+fn add_uses_the_repos_lmdeck_toml() {
+    let e = Env::new();
+    let repo = e.path("native-server");
+    write(
+        &repo,
+        "lmdeck.toml",
+        r#"schema = 1
+display_name = "Native server"
+
+[engine]
+name = "custom"
+command = ["bash", "scripts/serve.sh"]
+stop = ["bash", "scripts/stop.sh"]
+port = 8123
+detached = true
+"#,
+    );
+    write(&repo.join("scripts"), "serve.sh", "#!/usr/bin/env bash\nexit 0\n");
+    // These are the fallback path; the manifest must win.
+    write(&repo, "start.sh", "#!/usr/bin/env bash\nPORT=\"${PORT:-9999}\"\n");
+    write(&repo, "stop.sh", "#!/usr/bin/env bash\necho wrapper-stop\n");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+
+    let out = e.run(&["add", repo.to_str().unwrap()]);
+    assert!(out.contains("added native-server") && out.contains("lmdeck.toml"), "{out}");
+    let file = e.path("home/config/recipes/native-server.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let r = lmdeck::recipe::Recipe::parse(&text, "native-server").unwrap();
+    assert_eq!(r.engine.command, ["bash", "scripts/serve.sh"]);
+    assert_eq!(r.engine.stop, ["bash", "scripts/stop.sh"]);
+    assert_eq!(r.port(), 8123);
+    assert_eq!(r.name, "native-server");
+    assert_eq!(r.source.unwrap().repo, repo.display().to_string());
+    assert!(!text.contains("./start.sh"), "manifest should win over the wrapper: {text}");
+
+    let plan = e.run(&["use", "native-server", "--dry-run"]);
+    assert!(plan.contains("run:  bash scripts/serve.sh"), "{plan}");
+    assert!(plan.contains("stop: bash scripts/stop.sh"), "{plan}");
+    assert!(plan.contains("url:  http://localhost:8123/v1"), "{plan}");
+}
+
 /// A bare repo as the "remote" plus a working clone to push new commits from.
 fn bare_remote(e: &Env) -> (std::path::PathBuf, std::path::PathBuf) {
     let work = e.path("work");

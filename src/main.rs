@@ -61,7 +61,7 @@ enum Cmd {
         #[arg(long, value_name = "HOST")]
         on: Option<String>,
     },
-    /// Wrap a repo that ships start.sh / stop.sh as a recipe in the deck.
+    /// Add a repo to the deck: its lmdeck.toml if present, else wrap start.sh / stop.sh.
     Add {
         /// A name from the recipe index (`lmdeck browse`), GitHub owner/repo,
         /// a GitHub or git URL, or a local directory.
@@ -2346,7 +2346,6 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
     println!("{} {} {}", cyan("↓"), url, dim(&format!("→ {}", co.display())));
     let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone(), branch: None };
     let outcome = checkout::sync(&src, &co, true)?;
-    let det = wrap::detect(&co, &url)?;
     let branch = checkout::default_branch(&co);
     // Pin the commit unless a ref was asked for.
     let pinned = wanted_ref.clone().unwrap_or_else(|| outcome.commit().to_string());
@@ -2356,6 +2355,20 @@ fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<Stri
         git_ref: &pinned,
         branch: if wanted_ref.is_none() { branch.as_deref() } else { None },
     };
+    // The repo's own native recipe wins over wrapper detection.
+    if let Some(recipe) = wrap::from_manifest(&co, &name, &pin)? {
+        let path = catalog::add_to_deck(&ctx.paths, &recipe, force)?;
+        println!(
+            "{} added {} to the deck {} {}",
+            green("✓"),
+            bold(&name),
+            dim(&format!("({})", path.display())),
+            dim(&format!("from {}", wrap::MANIFEST))
+        );
+        println!("  try: lmdeck use {name} --dry-run");
+        return Ok(());
+    }
+    let det = wrap::detect(&co, &url)?;
     let text = wrap::recipe_toml(&name, &display, &pin, &det);
     Recipe::parse(&text, &name).context("the generated recipe does not parse (please report this)")?;
     std::fs::create_dir_all(ctx.paths.recipes_dir())?;

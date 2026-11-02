@@ -1,17 +1,25 @@
-//! `lmdeck add <repo>`: turn a repo that ships `start.sh` / `stop.sh` into a
-//! wrapper recipe (engine `custom`, `[source]` checkout, `detached`).
+//! `lmdeck add <repo>`: use a repo's own `lmdeck.toml`, or turn a repo that
+//! ships `start.sh` / `stop.sh` into a wrapper recipe (engine `custom`,
+//! `[source]` checkout, `detached`).
 //!
-//! Settings are read from simple `VAR="${VAR:-default}"` lines in the repo's
-//! shell scripts (`PORT`, `HOST`, `CONTAINER_NAME`, …) so the recipe can pass
-//! lmdeck's values back in through the environment. Anything it cannot work
-//! out is left as a `TODO` comment in the written recipe.
+//! A root `lmdeck.toml` is a full native recipe owned by the repo. It wins over
+//! `start.sh` / `stop.sh` detection, and its `[source]` is replaced with the
+//! URL/ref `lmdeck add` cloned. Without one, settings are read from simple
+//! `VAR="${VAR:-default}"` lines in the repo's shell scripts (`PORT`, `HOST`,
+//! `CONTAINER_NAME`, …) so the recipe can pass lmdeck's values back in through
+//! the environment. Anything it cannot work out is left as a `TODO` comment in
+//! the written recipe.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::paths::expand;
+use crate::recipe::{GitSource, Recipe};
+
+/// A repo's native recipe, at its root. `lmdeck add` prefers it to a wrapper.
+pub const MANIFEST: &str = "lmdeck.toml";
 
 /// What `lmdeck add` found in a checkout.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -183,15 +191,37 @@ fn script_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Loads a repo's root `lmdeck.toml`. It is a full native recipe; `[source]` is
+/// replaced with the checkout `lmdeck add` made so the deck cannot point
+/// somewhere else. `name` is the deck name (`--name` or the repo name), not the
+/// manifest's `name` field.
+pub fn from_manifest(dir: &Path, name: &str, pin: &SourcePin<'_>) -> Result<Option<Recipe>> {
+    let path = dir.join(MANIFEST);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut recipe = Recipe::parse(&text, name).with_context(|| format!("loading {}", path.display()))?;
+    recipe.name = name.to_string();
+    recipe.source = Some(GitSource {
+        repo: pin.repo.to_string(),
+        git_ref: Some(pin.git_ref.to_string()),
+        branch: pin.branch.map(str::to_string),
+    });
+    Ok(Some(recipe))
+}
+
 /// Looks at a checkout of `repo`. Fails unless it has `start.sh` and
-/// `stop.sh` at the root.
+/// `stop.sh` at the root. Callers check [`from_manifest`] first; this is the
+/// fallback for repos that don't ship a native recipe.
 pub fn detect(dir: &Path, repo: &str) -> Result<Detected> {
     let missing: Vec<&str> = ["start.sh", "stop.sh"].into_iter().filter(|f| !dir.join(f).is_file()).collect();
     if !missing.is_empty() {
         bail!(
-            "{} has no {} at its root; `lmdeck add` wraps repos that ship start.sh and stop.sh (write a recipe by hand for others)",
+            "{} has no {} at its root and no {}; `lmdeck add` uses a repo's lmdeck.toml, or wraps repos that ship start.sh and stop.sh (write a recipe by hand for others)",
             dir.display(),
-            missing.join(" or ")
+            missing.join(" or "),
+            MANIFEST
         );
     }
     let mut d = Detected::default();
@@ -519,6 +549,37 @@ DASH=${DASH-7}
         assert_eq!(r.engine.env["PORT"], "{port}");
         assert_eq!(r.engine.env["CONTAINER_NAME"], "{container}");
         assert_eq!(r.source.unwrap().git_ref.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn reads_the_repos_native_manifest() {
+        let d = checkout(&[
+            (
+                "lmdeck.toml",
+                "schema = 1\nname = \"ignored\"\ndisplay_name = \"Own recipe\"\n[engine]\nname = \"custom\"\ncommand = [\"bash\", \"scripts/serve.sh\"]\nstop = [\"bash\", \"scripts/stop.sh\"]\nport = 8123\ndetached = true\n",
+            ),
+            // A manifest wins over these; from_manifest itself never reads them.
+            ("start.sh", "PORT=\"${PORT:-9999}\"\n"),
+            ("stop.sh", "echo wrapper\n"),
+        ]);
+        let pin = SourcePin { repo: "https://github.com/o/r", git_ref: "abc123", branch: Some("main") };
+        let r = from_manifest(d.path(), "deck-name", &pin).unwrap().unwrap();
+        assert_eq!(r.name, "deck-name", "--name / repo name wins over the manifest's name");
+        assert_eq!(r.display_name.as_deref(), Some("Own recipe"));
+        assert_eq!(r.engine.command, ["bash", "scripts/serve.sh"]);
+        assert_eq!(r.engine.stop, ["bash", "scripts/stop.sh"]);
+        assert_eq!(r.port(), 8123);
+        assert!(r.engine.detached);
+        let src = r.source.unwrap();
+        assert_eq!(src.repo, "https://github.com/o/r");
+        assert_eq!(src.git_ref.as_deref(), Some("abc123"));
+        assert_eq!(src.branch.as_deref(), Some("main"));
+
+        let empty = checkout(&[]);
+        assert!(from_manifest(empty.path(), "x", &pin).unwrap().is_none());
+        let bad = checkout(&[("lmdeck.toml", "not = \"a recipe\"\n")]);
+        let err = from_manifest(bad.path(), "x", &pin).unwrap_err().to_string();
+        assert!(err.contains("lmdeck.toml"), "{err}");
     }
 
     #[test]

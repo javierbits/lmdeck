@@ -11,7 +11,8 @@
 # description = "…"
 # size_gb     = 0.0                        # optional, weights on disk
 # recipe      = "recipes/x.toml"           # optional native recipe (relative to this file, or a URL);
-#                                          # without one, `add` wraps the repo's start.sh / stop.sh
+#                                          # without one, `add` uses the repo's lmdeck.toml,
+#                                          # else wraps its start.sh / stop.sh
 # tags        = { engine = "…", model = "…", family = "…", quant = "…", sparks = 1 }
 # speed       = { tok_s = 0.0, note = "where the number comes from" }
 
