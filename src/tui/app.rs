@@ -196,6 +196,15 @@ impl App {
         &themes()[self.theme % themes().len()]
     }
 
+    /// A shipped recipe a deck entry shadows: the same recipe, not a second
+    /// server, so "All recipes" doesn't list it twice.
+    pub fn shadowed(&self, r: &RecipeView) -> bool {
+        r.origin == crate::catalog::BUILTIN
+            && self.snap.as_ref().is_some_and(|s| {
+                s.recipes.iter().any(|o| o.listed && o.origin != crate::catalog::BUILTIN && o.name == r.name)
+            })
+    }
+
     /// Recipes after the deck/all, compatible and fuzzy filters; best match first.
     pub fn visible(&self) -> Vec<&RecipeView> {
         let Some(s) = &self.snap else { return vec![] };
@@ -203,6 +212,7 @@ impl App {
             .recipes
             .iter()
             .filter(|r| self.show_all || r.listed)
+            .filter(|r| !self.shadowed(r))
             .filter(|r| !self.only_fit || r.fits())
             .filter_map(|r| {
                 if self.query.trim().is_empty() {
@@ -315,7 +325,16 @@ impl App {
         &mut self.query
     }
 
+    /// Arrow keys: unlike PageUp/Home, step past an end to the other one.
+    fn cycle_by(&mut self, delta: isize) {
+        self.move_by_with(delta, true);
+    }
+
     fn move_by(&mut self, delta: isize) {
+        self.move_by_with(delta, false);
+    }
+
+    fn move_by_with(&mut self, delta: isize, cycle: bool) {
         if self.logs_max {
             let max = self.logs.len().saturating_sub(1);
             self.log_scroll = (self.log_scroll as isize - delta).clamp(0, max as isize) as usize;
@@ -331,7 +350,11 @@ impl App {
         if n == 0 {
             return;
         }
-        let c = (self.cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        let c = if cycle {
+            (self.cursor as isize + delta).rem_euclid(n as isize) as usize
+        } else {
+            (self.cursor as isize + delta).clamp(0, n as isize - 1) as usize
+        };
         if c != self.cursor {
             self.cursor = c;
             self.log_scroll = 0;
@@ -514,8 +537,8 @@ impl App {
                 self.query_mut().clear();
                 self.cursor = 0;
             }
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
+            KeyCode::Up => self.cycle_by(-1),
+            KeyCode::Down => self.cycle_by(1),
             KeyCode::Char(c) => {
                 self.query_mut().push(c);
                 self.cursor = 0;
@@ -548,8 +571,8 @@ impl App {
                     return Action::Quit;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.cycle_by(1),
+            KeyCode::Up | KeyCode::Char('k') => self.cycle_by(-1),
             KeyCode::PageDown => self.move_by(10),
             KeyCode::PageUp => self.move_by(-10),
             KeyCode::Home | KeyCode::Char('g') => self.move_by(-10_000),

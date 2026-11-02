@@ -115,6 +115,16 @@ pub fn serves(ids: &[String], r: &Recipe) -> bool {
     })
 }
 
+/// Whether a live run record for a *different* recipe owns `port` or the same
+/// container. Variants of one model (FP8 / NVFP4) share both, but only the one
+/// lmdeck started is the server: the other must not adopt it as external.
+pub(crate) fn owned_by_other(paths: &Paths, name: &str, port: u16, container: Option<&str>) -> bool {
+    RunRecord::all(paths)
+        .into_iter()
+        .filter(|rec| rec.name != name)
+        .any(|rec| (rec.port == port || container.is_some_and(|c| rec.container.as_deref() == Some(c))) && rec.alive())
+}
+
 /// A recipe's status on this machine, adopting servers lmdeck didn't start:
 /// the recipe's container running, or its port answering with its model,
 /// make it [`Status::External`]. With `docker` `None` only the port is asked
@@ -130,8 +140,14 @@ pub fn local_status(
     if s.is_up() || !r.nodes.is_empty() {
         return s;
     }
+    let container = r.engine.container.as_deref().filter(|c| !c.is_empty());
+    let owned_elsewhere = || owned_by_other(paths, &r.name, port, container);
     match cache.get(&port) {
-        Some(Probe::Up(ids)) if serves(ids, r) => return Status::External,
+        Some(Probe::Up(ids)) if serves(ids, r) => {
+            // Reason: a variant that shares the port (and model id) answers too;
+            // its port is taken by the recipe lmdeck actually started.
+            return if owned_elsewhere() { Status::PortBusy } else { Status::External };
+        }
         // Reason: the port answers for another model, so a container of this
         // name belongs to a recipe sharing it (a variant), not this one.
         Some(Probe::Up(ids)) if !ids.is_empty() => return s,
@@ -141,9 +157,9 @@ pub fn local_status(
     // every worker too; only its head, the one answering on the port, serves it.
     let spans_hosts = r.hardware.hosts.unwrap_or(1) > 1;
     if let (Some(docker), None, false) = (docker, std::env::var_os("LMDECK_NO_PROBE"), spans_hosts) {
-        if let Some(c) = r.engine.container.as_deref().filter(|c| !c.is_empty()) {
+        if let Some(c) = container {
             if runner::container_running(docker, c) {
-                return Status::External;
+                return if owned_elsewhere() { s } else { Status::External };
             }
         }
     }
@@ -462,8 +478,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Recipes with a server answering, one per name: a built-in copy that
+    /// shadows a deck recipe is the same recipe, not a second server.
     pub fn running(&self) -> usize {
-        self.recipes.iter().filter(|r| r.is_up()).count()
+        let mut seen = std::collections::BTreeSet::new();
+        self.recipes.iter().filter(|r| r.is_up() && seen.insert(r.name.as_str())).count()
     }
 
     pub fn find(&self, reference: &str) -> Option<&RecipeView> {
@@ -1137,6 +1156,41 @@ mod tests {
         assert!(serves(&ids(&["/models/y"]), &r), "a path ending in the repo name");
         assert!(!serves(&ids(&["other", "x/yy"]), &r));
         assert!(!serves(&[], &r));
+    }
+
+    #[test]
+    fn a_variant_sharing_a_live_records_port_is_taken_not_adopted() {
+        use std::io::{Read, Write};
+        let (_d, paths) = sandbox_paths();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten().take(4) {
+                let mut s = s;
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let body = r#"{"object":"list","data":[{"id":"y"}]}"#;
+                let _ = s.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                        .as_bytes(),
+                );
+            }
+        });
+        // Two recipes share the port and model repo (FP8 / NVFP4 twins); only
+        // `alpha` has a run record, so `beta` must see the port as taken.
+        let alpha = found("deck", "alpha", Some(port)).recipe;
+        let beta = found("deck", "beta", Some(port)).recipe;
+        let rec = serde_json::json!({
+            "name": "alpha", "engine": "llama.cpp", "pid": std::process::id(),
+            "port": port, "started_at": 0, "log": "/tmp/x.log", "argv": ["x"], "oneshot": false,
+        });
+        std::fs::write(paths.run_dir().join("alpha.json"), serde_json::to_string(&rec).unwrap()).unwrap();
+        let mut cache = HashMap::new();
+        assert_eq!(local_status(&paths, None, &beta, port, &mut cache), Status::PortBusy);
+        // With no record, the server is adopted as external.
+        super::RunRecord::remove(&paths, &alpha.name);
+        let mut cache = HashMap::new();
+        assert_eq!(local_status(&paths, None, &beta, port, &mut cache), Status::External);
     }
 
     #[test]

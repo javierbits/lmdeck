@@ -244,7 +244,7 @@ pub fn probe(port: u16, timeout: Duration, key: Option<&str>) -> Probe {
 
 /// Live state of one recipe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum Status {
     /// Started by lmdeck and answering.
     Loaded,
@@ -540,6 +540,16 @@ mod tests {
                 return p;
             }
         }
+    }
+
+    #[test]
+    fn status_serializes_to_the_names_the_front_ends_use() {
+        let word = |s: Status| serde_json::to_string(&s).unwrap();
+        assert_eq!(word(Status::Loaded), r#""loaded""#);
+        assert_eq!(word(Status::Loading), r#""loading""#);
+        assert_eq!(word(Status::External), r#""external""#);
+        assert_eq!(word(Status::PortBusy), r#""port-busy""#, "the dashboard keys and CSS use port-busy");
+        assert_eq!(word(Status::Stopped), r#""stopped""#);
     }
 
     #[test]

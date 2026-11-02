@@ -284,7 +284,7 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   </label>
   <div class="toggle" id="scope"><button data-v="deck" class="on">Deck</button><button data-v="all">All</button></div>
   <button class="chipbtn" data-f="fits">Fits this machine</button>
-  <button class="chipbtn deckonly" data-f="running">Running</button>
+  <button class="chipbtn deckonly" data-f="running" title="recipes with a server answering: running, loading, or outside lmdeck">Running</button>
   <button class="chipbtn deckonly" data-f="disk">On disk</button>
   <button class="chipbtn deckonly" id="groupbtn" title="group the cards by model family (Qwen, GLM, …)">Group families</button>
   <div class="grow"></div>
@@ -353,10 +353,12 @@ function fuzzy(q, text){
   text = text.toLowerCase();
   return q.toLowerCase().split(/\s+/).filter(Boolean).every(w => { let i = 0; for (const c of w) { i = text.indexOf(c, i); if (i < 0) return false; i++; } return true; });
 }
+// A shipped recipe a deck entry shadows is the same recipe, not a second server.
+const shadowed = r => r.origin === "builtin" && st.snap.recipes.some(o => o.listed && o.origin !== "builtin" && o.name === r.name);
 function visible(){
   if (!st.snap) return [];
   return st.snap.recipes.filter(r =>
-    (st.scope === "all" || r.listed) &&
+    (st.scope === "all" ? !shadowed(r) : r.listed) &&
     (!st.f.has("fits") || r.fit !== "fail") &&
     (!st.f.has("running") || ["loaded","loading","external"].includes(r.status)) &&
     (!st.f.has("disk") || r.downloaded) &&
@@ -364,7 +366,12 @@ function visible(){
     .sort((a, b) => up(b) - up(a)); // running first; sort is stable
 }
 const up = r => ["loaded","loading","external"].includes(r.status);
-const statusLabel = {loaded:"running", loading:"loading", external:"external", "port-busy":"port taken", stopped:"stopped"};
+const statusLabel = {loaded:"running", loading:"loading", external:"outside lmdeck", "port-busy":"port taken", stopped:"stopped"};
+const statusTip = {loaded:"started by lmdeck and answering",
+  loading:"started by lmdeck; not answering yet",
+  external:"answering on this recipe's port with its model, but lmdeck did not start it (Stop still runs the recipe's stop command)",
+  "port-busy":"another server holds this recipe's port",
+  stopped:"no server answering"};
 
 // Family display order mirrors the Rust FAMILY_RULES; "Other" sorts last.
 const FAMILY_RANKS = ["Qwen","Gemma","DeepSeek","Nemotron","Kimi","GPT-OSS","GLM","Nex","Step","Ornith","MiMo","MiniMax","Llama","Mistral","Phi","Command","Yi","Falcon","SmolLM","OLMo","InternLM","Hunyuan","Granite","Seed","Apertus","Ernie","Grok","RWKV","Apex"];
@@ -395,7 +402,7 @@ function card(r){
   const busy = st.busy.has(r.reference);
   const cls = ["card", up(r) ? (r.status === "loading" ? "loading" : "up") : "", r.fit === "fail" ? "nofit" : ""].join(" ");
   const pill = busy ? `<span class="pill busy"><span class="spin"></span>working</span>`
-                    : `<span class="pill ${r.status}"><span class="dot"></span>${statusLabel[r.status]}</span>`;
+                    : `<span class="pill ${r.status}" title="${esc(statusTip[r.status] || "")}"><span class="dot"></span>${statusLabel[r.status]}</span>`;
   const fit = {ok:["ok","fits"], warn:["warn","tight"], fail:["fail","doesn't fit"]}[r.fit];
   const size = r.downloaded && r.size_bytes ? bytes(r.size_bytes) : (r.size_gb ? "~" + gb(r.size_gb) : "size ?");
   const need = r.need_gb ? `<div class="need"><span>needs ${gb(r.need_gb)}</span><div class="bar ${r.need_gb/total>.9?"err":r.need_gb/total>.7?"warn":""}"><i style="width:${Math.min(100, r.need_gb/total*100).toFixed(1)}%"></i></div><span>${Math.round(r.need_gb/total*100)}%</span></div>` : "";
@@ -418,8 +425,8 @@ function card(r){
     ? `<button class="btn upd${u.state === "pinned_newer" ? " pin" : ""}" data-act="pull" data-ref="${ref}" ${u.state === "pinned_newer" ? 'data-latest="1" title="move the pinned ref to the upstream head and update the checkout"' : 'title="update the checkout"'} ${busy||r.pulling?"disabled":""}>⬆ Update</button>`
     : `<button class="btn" data-act="pull" data-ref="${ref}" ${busy||r.pulling||(!r.model&&!u)?"disabled":""}>↓ Pull</button>`;
   const wOn = (r.weights_on || []);
-  const wTag = wOn.length ? `<span class="tag wt" title="weights on disk on: ${esc(wOn.join(", "))}${r.weights_home ? " · served from " + esc(r.weights_home) : ""} (never copied; other hosts mount them read-only)">⛁ weights on: ${esc(wOn.join(", "))}</span>` : "";
-  const onTag = r.placed_on ? `<span class="tag on" title="started with --on; weights read over NFS from their home">→ running on ${esc(r.placed_on)}</span>` : "";
+  const wTag = wOn.length ? `<span class="tag wt" title="the checkpoint is on these hosts' disks (not where it runs); it is never copied and other hosts mount it read-only">⛁ weights on disk: ${esc(wOn.join(", "))}</span>` : "";
+  const onTag = r.placed_on ? `<span class="tag on" title="this host runs the server; if the weights aren't on its disk it reads them from their home over NFS">▸ running on ${esc(r.placed_on)}</span>` : "";
   const nTag = (r.nodes || []).length ? `<span class="tag on">×${r.nodes.length} nodes</span>` : "";
   const nodes = (r.nodes || []).length ? `<div class="nodes"><div class="hd"><span>nodes · start order</span><span>${esc(r.cluster_phase || "")}</span></div>${r.nodes.map((n, i) =>
       `<div class="n"><span class="dim">${i + 1}.</span><b>${esc(n.name)}</b><span class="r">${esc(n.role)}</span><span class="h">${esc(n.host)}</span><span class="s ${esc(n.status)}">● ${esc(n.status)}</span></div>`).join("")}
@@ -454,14 +461,18 @@ function render(){
   const hw = s.hardware;
   $("#ver").textContent = "v" + s.version;
   const L = localTel() || {};
-  const segs = [[L.platform || hw.platform,"var(--seg1)"],[L.hostname || hw.hostname,"var(--seg2)"],[(L.os || hw.os) + "/" + (L.arch || hw.arch),"var(--seg3)"],[s.recipes.filter(up).length + " running","var(--seg4)"]];
-  $("#segs").innerHTML = segs.map(([t,c]) => `<span class="seg" style="background:${c}">${esc(t)}</span>`).join("");
+  // One entry per running server: a built-in copy of a deck recipe is the same recipe.
+  const seenUp = new Set();
+  const live = s.recipes.filter(r => up(r) && !seenUp.has(r.name) && seenUp.add(r.name));
+  const segs = [[L.platform || hw.platform,"var(--seg1)"],[L.hostname || hw.hostname,"var(--seg2)"],[(L.os || hw.os) + "/" + (L.arch || hw.arch),"var(--seg3)"],
+    [`${live.length} recipe${live.length === 1 ? "" : "s"} up`,"var(--seg4)","recipes with a server answering here or on another host (running, loading, or outside lmdeck)"]];
+  $("#segs").innerHTML = segs.map(([t,c,tip]) => `<span class="seg" style="background:${c}"${tip ? ` title="${esc(tip)}"` : ""}>${esc(t)}</span>`).join("");
   const lt = localTel();
   const total = (lt && lt.mem_total_gb) || hw.total_memory_gb || 1;
   const used = lt && lt.mem_used_gb != null ? lt.mem_used_gb : (hw.available_memory_gb == null ? null : total - hw.available_memory_gb);
   $("#memtxt").textContent = used == null ? gb(total) : `${gb(used)} / ${gb(total)}`;
   setBar($("#membar"), used == null ? 0 : used / total);
-  const held = s.recipes.filter(up).reduce((a, r) => a + (r.need_gb || 0), 0);
+  const held = live.reduce((a, r) => a + (r.need_gb || 0), 0);
   $("#heldtxt").textContent = "~" + gb(held);
   $("#heldbar").querySelector("i").style.width = Math.min(100, held / total * 100).toFixed(1) + "%";
 

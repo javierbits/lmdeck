@@ -46,6 +46,7 @@ fn find_adopted(paths: &Paths) -> Vec<ModelTel> {
     let ports = crate::deck::planned_ports(&cat, paths, &cfg);
     let mut cache = HashMap::new();
     let mut seen = std::collections::BTreeSet::new();
+    let mut adopted_ports = std::collections::BTreeSet::new();
     let mut out = vec![];
     for f in &cat.entries {
         let r = &f.recipe;
@@ -53,7 +54,16 @@ fn find_adopted(paths: &Paths) -> Vec<ModelTel> {
             continue;
         }
         let port = crate::deck::planned_port(&ports, f);
+        // A live record for a variant shares the port (and often the container),
+        // so the server is already accounted for; only the record's recipe runs.
+        let container = r.engine.container.as_deref().filter(|c| !c.is_empty());
+        if crate::deck::owned_by_other(paths, &r.name, port, container) {
+            continue;
+        }
         if crate::deck::local_status(paths, None, r, port, &mut cache) == Status::External {
+            if !adopted_ports.insert(port) {
+                continue; // one server: the first recipe the model id names
+            }
             out.push(ModelTel {
                 name: r.name.clone(),
                 engine: r.engine.name.as_str().into(),
@@ -1119,6 +1129,49 @@ mod tests {
         a.push(Sample { at: 10, ..Default::default() });
         a.merge(&[Sample { at: 5, ..Default::default() }, Sample { at: 10, ..Default::default() }]);
         assert_eq!(a.samples.iter().map(|s| s.at).collect::<Vec<_>>(), vec![5, 10]);
+    }
+
+    #[test]
+    fn adoption_skips_a_port_a_live_record_owns_and_dedupes_the_rest() {
+        use std::io::{Read, Write};
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let recipes = home.join("config/recipes");
+        fs::create_dir_all(&recipes).unwrap();
+        fs::create_dir_all(home.join("state/run")).unwrap();
+        let paths =
+            Paths::resolve(|k| if k == "LMDECK_HOME" { Some(home.display().to_string()) } else { None }, home.clone());
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten().take(12) {
+                let mut s = s;
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let body = r#"{"object":"list","data":[{"id":"y"}]}"#;
+                let _ = s.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                        .as_bytes(),
+                );
+            }
+        });
+        for name in ["alpha", "beta"] {
+            fs::write(
+                recipes.join(format!("{name}.toml")),
+                format!("[model]\nrepo = \"x/y\"\nfiles = [\"a\"]\n[engine]\nname = \"custom\"\nport = {port}\ncommand = [\"true\"]\n"),
+            )
+            .unwrap();
+        }
+        let rec = serde_json::json!({
+            "name": "alpha", "engine": "custom", "pid": std::process::id(),
+            "port": port, "started_at": 0, "log": "/tmp/x.log", "argv": ["x"], "oneshot": false,
+        });
+        fs::write(paths.run_dir().join("alpha.json"), serde_json::to_string(&rec).unwrap()).unwrap();
+        assert!(find_adopted(&paths).is_empty(), "the live record's port is accounted for");
+        RunRecord::remove(&paths, "alpha");
+        let adopted = find_adopted(&paths);
+        assert_eq!(adopted.len(), 1, "{adopted:#?}");
+        assert_eq!(adopted[0].name, "alpha", "one server, the first recipe the model id names");
     }
 
     #[test]

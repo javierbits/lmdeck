@@ -123,9 +123,9 @@ fn status_pill(r: &RecipeView, busy: bool) -> (&'static str, fn(&Theme) -> Color
     match r.status {
         Status::Loaded => ("● running", |t| t.ok),
         Status::Loading => ("◐ loading", |t| t.warn),
-        Status::External => ("● extern", |t| t.info),
+        Status::External => ("● external", |t| t.info),
         // Another server holds this recipe's port; the recipe itself isn't running.
-        Status::PortBusy => ("○ blocked", |t| t.dim),
+        Status::PortBusy => ("○ port taken", |t| t.dim),
         Status::Stopped => ("○ stopped", |t| t.dim),
     }
 }
@@ -215,7 +215,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if let Some(s) = &app.snap {
         let shown = app.visible().len();
         segs.push((format!("{} {shown}", if app.show_all { "all" } else { "deck" }), t.seg[0]));
-        segs.push((format!("▶ {} running", s.running()), t.seg[3]));
+        let n = s.running();
+        segs.push((format!("▶ {n} recipe{} up", if n == 1 { "" } else { "s" }), t.seg[3]));
     }
     if app.only_fit {
         segs.push(("fits".into(), t.seg[1]));
@@ -274,15 +275,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 // ───────────────────────── deck tab ─────────────────────────
 
 fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
-    // 55% for the list, widened (up to 62%) only as far as a `⬆` badge needs
-    // to be shown whole next to its recipe name.
+    // 55% for the list, widened (up to 62%) to fit an update badge and host
+    // tags next to the recipe name.
     let base = area.width * 55 / 100;
-    let want = app
-        .visible()
-        .iter()
-        .filter_map(|r| update_badge(r, app.theme()).map(|b| r.name.width() + 1 + b.width()))
-        .max()
-        .map_or(0, |w| w as u16 + LIST_FIXED_COLS + if app.nerd { 13 } else { 11 });
+    let want =
+        app.visible().iter().map(|r| name_cell_width(r, app.theme()) as u16 + LIST_FIXED_COLS + 14).max().unwrap_or(0);
     let lw = want.clamp(base, (area.width * 62 / 100).max(base));
     let [left, right] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(0)]).areas(area);
     draw_list(f, app, s, left);
@@ -309,10 +306,10 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     if app.grouped {
         ordered.sort_by_key(|(i, r)| (crate::recipe::family_rank_of(r.family), *i));
     }
-    let total = s.recipes.iter().filter(|r| app.show_all || r.listed).count();
+    let total = s.recipes.iter().filter(|r| app.show_all || r.listed).filter(|r| !app.shadowed(r)).count();
     let extra = if vis.len() == total { format!("{total}") } else { format!("{} of {total}", vis.len()) };
     let block = panel(title("▤", if app.show_all { "All recipes" } else { "Deck" }, Some(extra), t), t, !app.logs_max);
-    let pill_w: u16 = if app.nerd { 13 } else { 11 };
+    let pill_w: u16 = 14; // "○ port taken" + the pill's padding (or Nerd caps)
     let name_w = (area.width.saturating_sub(LIST_FIXED_COLS + pill_w) as usize).max(14);
     let mut rows: Vec<Row> = vec![];
     let mut sel_row: Option<usize> = None;
@@ -375,7 +372,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(if app.nerd { 13 } else { 11 }),
+            Constraint::Length(14),
             Constraint::Min(14),
             Constraint::Length(10),
             Constraint::Length(11),
@@ -397,40 +394,58 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     }
 }
 
-/// The recipe name, its origin when it isn't in the deck, and the update badge,
-/// fitted to `w` columns: the badge shrinks to `⬆` and then the name gets an
-/// ellipsis, so the badge is never the part that is cut off.
-fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
-    let origin = if r.listed { String::new() } else { format!(" {}", r.origin) };
-    let badge = update_badge(r, t);
-    let full = badge.as_ref().map_or(0, |b| 1 + b.width());
-    let badge = match badge {
-        Some(b) if r.name.width() + origin.width() + full > w => Some(Span::styled("⬆", b.style)),
-        b => b,
-    };
-    let room = w.saturating_sub(badge.as_ref().map_or(0, |b| 1 + b.width()));
-    // Where it runs and where its weights live, when that isn't just here.
+/// Where it runs and where its weights live, when that isn't just here.
+fn placement_tags(r: &RecipeView) -> Vec<String> {
     let mut tags = vec![];
     if !r.nodes.is_empty() {
         tags.push(format!("×{}", r.nodes.len()));
     }
     if let Some(h) = &r.placed_on {
-        tags.push(format!("→{h}"));
+        tags.push(format!("runs:{h}"));
     }
     if r.nodes.is_empty() && r.cluster_error.is_some() {
         tags.push("✗ failed".into());
     }
     if !r.weights_on.is_empty() && (r.weights_on.len() > 1 || !r.downloaded) {
-        tags.push(format!("⛁{}", r.weights_on.join(",")));
+        tags.push(format!("⛁disk:{}", r.weights_on.join(",")));
     }
+    tags
+}
+
+/// The columns [`name_cell`] wants before it truncates anything: the list
+/// grows (up to 62%) rather than drop a badge or a host tag.
+fn name_cell_width(r: &RecipeView, t: &Theme) -> usize {
+    let origin = if r.listed { 0 } else { r.origin.width() + 1 };
+    let badge = update_badge(r, t).map_or(0, |b| 1 + b.width());
+    let tags: usize = placement_tags(r).iter().map(|tag| 1 + tag.width()).sum();
+    r.name.width() + origin + badge + tags
+}
+
+/// The recipe name, its origin when it isn't in the deck, and the update badge,
+/// fitted to `w` columns: the badge shrinks to `⬆` and then the name gets an
+/// ellipsis, so the badge is never the part that is cut off.
+fn name_cell<'a>(r: &RecipeView, t: &Theme, w: usize) -> Line<'a> {
+    let origin = if r.listed { String::new() } else { format!(" {}", r.origin) };
+    let tags = placement_tags(r);
+    let tags_w: usize = tags.iter().map(|tag| 1 + tag.width()).sum();
+    let badge = update_badge(r, t);
+    let full = badge.as_ref().map_or(0, |b| 1 + b.width());
+    let badge = match badge {
+        Some(b) if r.name.width() + origin.width() + tags_w + full > w => Some(Span::styled("⬆", b.style)),
+        b => b,
+    };
+    // Keep the host tags even when the name has to give way: where it runs is
+    // what the tags are for.
+    let room = w.saturating_sub(badge.as_ref().map_or(0, |b| 1 + b.width()) + origin.width() + tags_w).max(1);
     let mut spans = vec![Span::styled(fit_to(&r.name, room), Style::new().fg(t.fg).bold())];
-    // The origin label gives way to placement tags, which say more.
-    if !origin.is_empty() && tags.is_empty() && r.name.width() + origin.width() <= room {
-        spans.push(Span::styled(origin, Style::new().fg(t.dim)));
-    }
     if let Some(b) = badge {
         spans.push(Span::raw(" "));
         spans.push(b);
+    }
+    // Always name the origin: a built-in copy of a deck recipe otherwise reads
+    // as a second running entry.
+    if !origin.is_empty() {
+        spans.push(Span::styled(origin, Style::new().fg(t.dim)));
     }
     let mut used: usize = spans.iter().map(|s| s.width()).sum();
     for tag in tags {
@@ -538,6 +553,12 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(Span::styled(
             format!("port {} is held by another server, so this recipe can't start until it stops", r.port),
             Style::new().fg(t.warn),
+        )));
+    }
+    if r.status == Status::External {
+        lines.push(Line::from(Span::styled(
+            format!("running outside lmdeck: :{} answers with this recipe's model, but lmdeck didn't start it", r.port),
+            Style::new().fg(t.info),
         )));
     }
 
@@ -771,12 +792,14 @@ fn draw_machine(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
         t.ok
     };
     f.render_widget(gauge("system memory", ratio, text, mem_color, t), rows[1]);
-    let committed: f64 = s.recipes.iter().filter(|r| r.is_up()).filter_map(|r| r.need_gb).sum();
+    let mut seen = std::collections::BTreeSet::new();
+    let committed: f64 =
+        s.recipes.iter().filter(|r| r.is_up() && seen.insert(r.name.as_str())).filter_map(|r| r.need_gb).sum();
     f.render_widget(
         gauge(
-            "held by running recipes",
+            "held by up recipes",
             committed / total,
-            format!("~{} across {} server(s)", human_gb(committed), s.running()),
+            format!("~{} across {} recipe(s) up", human_gb(committed), s.running()),
             t.seg[0],
             t,
         ),

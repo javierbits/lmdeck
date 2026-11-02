@@ -135,15 +135,22 @@ fn deck_shows_listed_and_all_toggles() {
 }
 
 #[test]
-fn navigation_clamps_and_survives_refresh() {
+fn navigation_wraps_and_survives_refresh() {
     let mut a = app();
     a.on_key(code(KeyCode::Up));
-    assert_eq!(a.cursor, 0);
-    a.on_key(key('j'));
+    assert_eq!(a.cursor, 2, "up from the first wraps to the last");
+    assert_eq!(a.selected().unwrap().name, "glm-big-exl3");
+    a.on_key(code(KeyCode::Down));
+    assert_eq!(a.cursor, 0, "down from the last wraps to the first");
     a.on_key(key('j'));
     a.on_key(key('j'));
     assert_eq!(a.cursor, 2);
     assert_eq!(a.selected().unwrap().name, "glm-big-exl3");
+    // Home/End and pages still stop at the ends; only the arrows cycle.
+    a.on_key(code(KeyCode::PageDown));
+    assert_eq!(a.cursor, 2);
+    a.on_key(key('G'));
+    assert_eq!(a.cursor, 2);
     // A refresh that reorders recipes keeps the same one selected.
     let mut s = demo();
     s.recipes.reverse();
@@ -533,7 +540,7 @@ fn update_badge_survives_a_narrow_list() {
     s.recipes[0].update = Some(upd(U::Behind));
     let mut a = App::default();
     a.set_snapshot(s);
-    let narrow = buffer_text(&render(&a, 100, 30));
+    let narrow = buffer_text(&render(&a, 94, 30));
     assert!(narrow.contains("… ⬆ "), "{narrow}");
     assert!(!narrow.contains("⬆ upd ") && !narrow.contains("⬆ updat"), "{narrow}");
     // Wide enough: the list grows (up to 62%) to show the whole badge.
@@ -764,7 +771,7 @@ fn list_marks_weights_that_live_on_another_host() {
     a.set_snapshot(s);
     let text = buffer_text(&render(&a, 170, 50));
     let row = text.lines().find(|l| l.contains(&name)).unwrap();
-    assert!(row.contains("⛁spark2") && row.matches('⛁').count() == 2, "{row}");
+    assert!(row.contains("⛁disk:spark2") && row.matches('⛁').count() == 2, "{row}");
 }
 
 #[test]
@@ -814,7 +821,7 @@ fn details_and_list_show_weights_home_nodes_and_placement() {
         "● offline",
         "✗ w1 never came up",
         "×2",
-        "→spark2",
+        "runs:spark2",
     ] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }

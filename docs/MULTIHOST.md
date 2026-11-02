@@ -166,10 +166,11 @@ is. The controller merges them (cached 60 s):
 lmdeck weights [--refresh] [--json]
 ```
 
-They show up as **weights on: spark2** on web cards, `⛁spark2` in the TUI
-list (the `dl` column shows `⛁` when the weights are only on another host)
-and `on ⛁ spark2 · home spark2` in the TUI details. The **home** is the host
-that serves them to others.
+They show up as **weights on disk: spark2** on web cards, `⛁disk:spark2` in
+the TUI list (the `dl` column shows `⛁` when the weights are only on another
+host), `runs:spark3` when the server runs on another host, and
+`on ⛁ spark2 · home spark2` in the TUI details. The **home** is the host that
+serves them to others.
 
 ## 3. Choosing where a model runs (`--on`)
 
@@ -473,14 +474,14 @@ real CX7 cables) unless marked DEMO DATA.
 | ![](screenshots/tui-hosts-controls.png) | TUI Hosts tab on spark2: its two running stub servers, `x stop · l logs`, `↵ run <deck pick> here`. |
 | ![](screenshots/tui-run-on.png) | TUI run-on picker (`o`): Qwen3 0.6B's weights are on spark2, so spark1 and spark3 would mount them read-only over NFS. |
 | ![](screenshots/tui-multinode.png) | A 2-node recipe (python stubs) running: head on this machine, worker on spark2, started in order. |
-| ![](screenshots/tui-weights-on.png) | Weights on other hosts: `⛁spark2` / `⛁spark3` in the list, `on ⛁ spark2 · home spark2` in details. Real downloaded files. |
+| ![](screenshots/tui-weights-on.png) | Weights on other hosts: `⛁disk:spark2` / `⛁disk:spark3` in the list, `on ⛁ spark2 · home spark2` in details. Real downloaded files. |
 | ![](screenshots/tui-topology-1host.png) | TUI Topology, **DEMO DATA** (`LMDECK_DEMO_TOPO=single`): one centred host. |
 | ![](screenshots/tui-topology-2host.png) | TUI Topology, **DEMO DATA** (`duo`): two Sparks on a CX7 cable. |
 | ![](screenshots/tui-topology-demo.png) | TUI Topology, **DEMO DATA** (`tri`): triangle of /30 cables. |
 | ![](screenshots/tui-topology-switch8.png) | TUI Topology, **DEMO DATA** (`switch8`): eight Sparks on `SN2100-TOR`. |
 | ![](screenshots/web-run-on.png) | Web run-on dialog: the full NFS plan for running on spark1. Nothing runs until **Start there**. |
 | ![](screenshots/web-hosts-controls.png) | Web host cards with per-model logs / stop and **run here**. |
-| ![](screenshots/web-weights-on.png) | Web card with **weights on: spark2** and the run-on dropdown. |
+| ![](screenshots/web-weights-on.png) | Web card with **weights on disk: spark2** and the run-on dropdown. |
 | ![](screenshots/web-multinode-card.png) | Web card for the 2-node stub: `×2 nodes`, start order and per-node status. |
 | ![](screenshots/web-topology-rig.png) | Web topology of the rig (hand-written loopback links, busy link to spark2 carries the 2-node stub). |
 | ![](screenshots/web-topology-1host.png) | Web topology, **DEMO DATA** (`single`): one host + hint to add peers. |

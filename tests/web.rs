@@ -125,7 +125,7 @@ fn dashboard_and_read_endpoints() {
         "api(\"topology\")",
         "plan/${ref}?on=",
         "hosts/${encodeURIComponent(host)}/stop/",
-        "weights on: ",
+        "weights on disk: ",
         "nodes · start order",
     ] {
         assert!(body.contains(hook), "dashboard is missing {hook}");
