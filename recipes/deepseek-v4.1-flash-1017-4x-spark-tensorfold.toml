@@ -23,7 +23,9 @@
 # its own disk (faster loads; needs the space), TF_DS_LOAD_PREFETCH=0 turns the loader's
 # read-ahead off. Add either under [engine.env] in the deck copy to change it.
 schema = 1
-display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, TensorFold, 4x Spark)"
+# "Vision" is load-bearing: harness sync only writes `input: [text, image]` to
+# the agent configs when the recipe name/display matches its vision heuristic.
+display_name = "DeepSeek V4.1 Flash 1017 (FP8 / MXFP4, Vision, TensorFold, 4x Spark)"
 description = "DeepSeek-V4.1-Flash-1017, native FP8 / MXFP4, on four DGX Sparks (TP4) via Mia's start.sh. ~510 GB checkpoint on whichever Spark holds it (lmdeck runs it there), ~80 GiB resident per Spark."
 tags = ["deepseek", "fp8", "mxfp4", "tensorfold", "dspark", "dgx-spark", "wrapped"]
 
