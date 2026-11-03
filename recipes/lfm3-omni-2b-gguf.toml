@@ -1,0 +1,34 @@
+# Requires llama.cpp v0.8.0 (b11960) or newer: LFM3 Omni support landed there,
+# including the realtime /v1/realtime voice API.
+# Non-reasoning model: text output is greedy (temperature 0) per the model card;
+# `--reasoning off` suppresses the empty think block. The speech presets
+# (audio temperature 0.4, audio repetition penalty 1.2) are stored in the GGUF.
+# `lmdeck pull` first: `{model_dir}` needs both files in the local cache.
+schema = 1
+display_name = "LFM3 Omni 2B (GGUF Q4_K_M, vision+audio)"
+description = "LiquidAI LFM3 Omni 2B on llama.cpp: text, image, video and audio input; text or 24 kHz speech output. ~1.4 GB including the projector. Needs llama.cpp v0.8.0 (b11960) or newer."
+tags = ["lfm3", "lfm3-omni", "omni", "liquid", "vision", "audio", "speech", "gguf", "small", "dgx-spark"]
+
+[model]
+repo = "LiquidAI/LFM3-Omni-2B-GGUF"
+files = ["LFM3-Omni-2B-Q4_K_M.gguf", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"]
+size_gb = 1.4
+
+[quant]
+format = "gguf"
+bits = 4.0
+label = "Q4_K_M"
+
+[engine]
+name = "llama.cpp"
+ctx = 32768
+args = [
+  "--jinja",
+  "--reasoning", "off",
+  "--mmproj", "{model_dir}/mmproj-LFM3-Omni-2B-Q4_K_M.gguf",
+  "--temp", "0",
+  "--top-k", "1",
+]
+
+[hardware]
+min_memory_gb = 8

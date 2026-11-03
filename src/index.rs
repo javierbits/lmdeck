@@ -43,7 +43,9 @@ pub struct Index {
 pub struct Entry {
     /// What `lmdeck add <name>` takes and what the recipe is called.
     pub name: String,
-    /// Git URL of the repo (its README is what the details link to).
+    /// Repo the entry links to. Without `recipe` it is cloned and must carry
+    /// `start.sh` / `stop.sh`; an entry with a `recipe` may instead point at a
+    /// Hugging Face model page (the details link).
     pub repo: String,
     /// A tag / branch / commit to pin; the repo's default branch if absent.
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
@@ -593,7 +595,9 @@ tags = { engine = "tensorfold", quant = "exl3" }
         assert!(text.lines().any(|l| l.trim() == "schema = 1"));
         assert!(!i.entries.is_empty());
         for e in &i.entries {
-            assert!(e.repo.starts_with("https://github.com/"), "{}", e.repo);
+            let linked = e.repo.starts_with("https://github.com/")
+                || (e.recipe.is_some() && e.repo.starts_with("https://huggingface.co/"));
+            assert!(linked, "{}", e.repo);
             assert!(!e.description.is_empty(), "{}", e.name);
             if let Some(link) = &e.recipe {
                 let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(link);
