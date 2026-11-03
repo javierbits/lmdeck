@@ -316,12 +316,12 @@ pub fn run_wizard(
         }
     }
 
-    // Recipe sources: collections of recipe files. No default; the built-ins are free.
+    // Recipe sources: collections of recipe files. No default source.
     println!("\n{}", crate::ui::bold("recipe sources"));
     println!(
         "{}",
         crate::ui::dim(
-            "repos full of lmdeck recipe files (.toml), searched alongside the built-ins (always included).\n\
+            "repos full of lmdeck recipe files (.toml), searched alongside your deck.\n\
              To run a model repo with its own start scripts, skip this and use `lmdeck add <url>` later."
         )
     );

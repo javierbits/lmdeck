@@ -1,8 +1,8 @@
 //! Where `lmdeck use` runs a model when no `--on` says: on the host that holds
 //! its weights (the controller's weights index over its hosts), here when this
 //! machine holds them too, and here when no host does. `--on local` runs it
-//! here anyway, the dashboard's Start follows the same rule, and the built-in
-//! DeepSeek 4x recipe goes to the Spark holding its checkpoint.
+//! here anyway, the dashboard's Start follows the same rule, and the DeepSeek
+//! 4x recipe goes to the Spark holding its checkpoint.
 
 mod common;
 use common::*;
@@ -225,12 +225,13 @@ const DSV41: &str = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
 const DSV41_REPO: &str = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
 const DSV41_REV: &str = "1bae0e1088993b9b82de08f59de5be5a34e42170";
 
-/// The built-in DeepSeek 4x recipe names the checkpoint Mia's scripts load,
-/// at its revision, with `pull = false`: lmdeck picks the Spark holding it
-/// (ember, not spark) and never downloads it (`pull` updates the checkout only).
+/// The DeepSeek 4x recipe file names the checkpoint Mia's scripts load, at its
+/// revision, with `pull = false`: lmdeck picks the Spark holding it (ember,
+/// not spark) and never downloads it (`pull` updates the checkout only).
 #[test]
-fn the_deepseek_builtin_names_its_checkpoint_and_never_pulls_it() {
-    let r = lmdeck::catalog::builtin().into_iter().find(|f| f.recipe.name == DSV41).unwrap().recipe;
+fn the_deepseek_recipe_names_its_checkpoint_and_never_pulls_it() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes").join(format!("{DSV41}.toml"));
+    let r = Recipe::load(&path).unwrap();
     assert_eq!(r.model.repo.as_deref(), Some(DSV41_REPO));
     assert_eq!(r.model.revision.as_deref(), Some(DSV41_REV));
     assert!(r.model.fetched_by_scripts());
@@ -256,18 +257,19 @@ fn the_deepseek_builtin_names_its_checkpoint_and_never_pulls_it() {
 
     let tmp = tempfile::tempdir().unwrap();
     let spark = Host::new(tmp.path(), "spark", "");
+    spark.add_recipe(DSV41, &fs::read_to_string(&path).unwrap());
     let pull = spark.run(&["pull", DSV41, "--dry-run"]);
     assert!(pull.contains("git clone") && !pull.contains(DSV41_REPO), "only the checkout:\n{pull}");
 }
 
 /// From a controller whose Sparks are cabled in a ring (a-b-c-d-a), the
-/// built-in DeepSeek 4x recipe started without --on goes to the Spark holding
-/// its checkpoint (a), with its three peers picked around a by the controller
+/// DeepSeek 4x recipe started without --on goes to the Spark holding its
+/// checkpoint (a), with its three peers picked around a by the controller
 /// and the ring's launcher. An explicit --on to a Spark without the checkpoint
 /// still plans, as before the recipe named it, and warns that the scripts
 /// fetch their own copy there.
 #[test]
-fn the_deepseek_builtin_plans_on_the_spark_holding_its_checkpoint() {
+fn the_deepseek_recipe_plans_on_the_spark_holding_its_checkpoint() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let names = ["a", "b", "c", "d"];
@@ -294,6 +296,8 @@ fn the_deepseek_builtin_plans_on_the_spark_holding_its_checkpoint() {
         .collect();
     let c = Host::new(root, "ctl", "");
     fs::write(c.dir.join("home/config/hosts.toml"), format!("{}{links}", hosts_toml(&hosts))).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes").join(format!("{DSV41}.toml"));
+    c.add_recipe(DSV41, &fs::read_to_string(path).unwrap());
 
     let plan = c.run(&["use", DSV41, "--dry-run"]);
     for want in [

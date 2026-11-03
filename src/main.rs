@@ -1282,7 +1282,7 @@ fn hints(ctx: &Ctx, cat: &Catalog, all: bool) {
     if !all && cat.deck().next().is_none() {
         println!(
             "{}",
-            dim("deck is empty: showing built-in examples. Add recipes with `lmdeck recipe add <name>`; find more with `lmdeck recipe search`.")
+            dim("deck is empty. Add recipes with `lmdeck recipe add <name|file|url>`; find more with `lmdeck recipe search`.")
         );
     }
     let unfetched: Vec<&str> = ctx
@@ -2857,7 +2857,7 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
         println!("  {:<10} {} {}", s.name, dim(&s.spec), state);
     }
 
-    let label = if cat.deck().next().is_some() { "deck" } else { "built-in recipes" };
+    let label = if cat.deck().next().is_some() { "deck" } else { "recipes" };
     println!("\n{}", bold(&format!("{label} on this machine")));
     let mut t = Table::new(&["fit", "recipe", "engine", "notes"]).max_width(3, 80);
     for (f, rep) in &checked {

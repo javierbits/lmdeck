@@ -114,7 +114,13 @@ fn status(e: ureq::Error) -> u16 {
 
 #[test]
 fn dashboard_and_read_endpoints() {
-    let s = serve_with(&[], &[("LMDECK_NO_PROBE", "1".to_string())], |_| {});
+    let recipe =
+        fs::read_to_string(format!("{}/recipes/qwen3.5-2b-tensorfold.toml", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let s = serve_with(&[], &[("LMDECK_NO_PROBE", "1".to_string())], |root| {
+        let deck = root.join("home/config/recipes");
+        fs::create_dir_all(&deck).unwrap();
+        fs::write(deck.join("qwen3.5-2b-tensorfold.toml"), &recipe).unwrap();
+    });
     let html = ureq::get(&format!("{}/", s.base)).call().unwrap();
     assert!(html.header("Content-Security-Policy").unwrap().contains("frame-ancestors 'none'"));
     let body = html.into_string().unwrap();
@@ -134,19 +140,19 @@ fn dashboard_and_read_endpoints() {
     let snap = s.get("/api/snapshot").unwrap();
     assert_eq!(snap["version"], env!("CARGO_PKG_VERSION"));
     let recipes = snap["recipes"].as_array().unwrap();
-    assert_eq!(recipes.len(), lmdeck::catalog::BUILTIN_RECIPES.len(), "the built-ins");
+    assert_eq!(recipes.len(), 1);
     assert!(recipes.iter().all(|r| r["status"] == "stopped" && r["listed"] == true));
-    assert!(recipes.iter().any(|r| r["reference"] == "builtin/qwen3.5-2b-tensorfold" && r["engine"] == "tensorfold"));
+    assert!(recipes.iter().any(|r| r["reference"] == "deck/qwen3.5-2b-tensorfold" && r["engine"] == "tensorfold"));
     assert!(snap["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
 
-    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), lmdeck::catalog::BUILTIN_RECIPES.len());
-    assert_eq!(s.get("/api/status").unwrap().as_array().unwrap().len(), lmdeck::catalog::BUILTIN_RECIPES.len());
+    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), 1);
+    assert_eq!(s.get("/api/status").unwrap().as_array().unwrap().len(), 1);
     let doc = s.get("/api/doctor").unwrap();
     assert!(doc["inventory"]["engines"]["tensorfold"].is_object(), "{doc}");
     let sources = s.get("/api/sources").unwrap();
     assert!(sources.as_array().unwrap().iter().all(|x| x["name"].is_string() && x["spec"].is_string()), "{sources}");
-    let logs = s.get("/api/logs/builtin/qwen3-4b-gguf?n=5").unwrap();
-    assert_eq!(logs["name"], "qwen3-4b-gguf");
+    let logs = s.get("/api/logs/deck/qwen3.5-2b-tensorfold?n=5").unwrap();
+    assert_eq!(logs["name"], "qwen3.5-2b-tensorfold");
     assert!(logs["lines"].as_array().unwrap().is_empty());
 
     assert_eq!(status(s.get("/api/nope").unwrap_err()), 404);
@@ -459,6 +465,8 @@ fn wrapped_recipe_updates_show_and_pull_clears() {
         for args in [["--name", "follow", "--ref", "main"].as_slice(), ["--name", "pinned"].as_slice()] {
             assert!(lmdeck_cmd(root).arg("add").arg(&bare).args(args).output().unwrap().status.success());
         }
+        let native = fs::read_to_string(format!("{}/recipes/qwen3-4b-gguf.toml", env!("CARGO_MANIFEST_DIR")));
+        fs::write(root.join("home/config/recipes/native.toml"), native.unwrap()).unwrap();
     });
     // The background check fills the cache on startup.
     wait_for(&s, "follow", "current");
@@ -520,7 +528,7 @@ fn a_peers_deck_shows_in_list_and_resolves_to_it() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let rows = rows.as_array().unwrap();
-    assert_eq!(rows.len(), 1, "a peer deck replaces the built-in examples: {rows:?}");
+    assert_eq!(rows.len(), 1, "a peer deck replaces the local examples: {rows:?}");
     assert_eq!((rows[0]["name"].as_str(), rows[0]["origin"].as_str()), (Some("peer-only"), Some("@a")));
     // Its dry run goes to A, the host whose deck has it.
     let out = lmdeck_cmd(root.path()).args(["use", "peer-only", "--dry-run"]).output().unwrap();

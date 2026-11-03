@@ -1,4 +1,4 @@
-//! All recipes lmdeck can see: the deck, the built-in examples, and sources.
+//! All recipes lmdeck can see: the deck, the built-in recipes, and sources.
 
 use anyhow::{bail, Result};
 use std::fs;
@@ -28,30 +28,9 @@ pub fn save_remote(paths: &Paths, recipe: &Recipe) -> Result<std::path::PathBuf>
     Ok(p)
 }
 
-/// Example recipes compiled into the binary.
-pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
-    ("qwen3-4b-gguf.toml", include_str!("../recipes/qwen3-4b-gguf.toml")),
-    ("gpt-oss-20b-gguf.toml", include_str!("../recipes/gpt-oss-20b-gguf.toml")),
-    ("qwen3-30b-a3b-exl3.toml", include_str!("../recipes/qwen3-30b-a3b-exl3.toml")),
-    ("qwen3.6-35b-a3b-nvfp4-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-nvfp4-spark.toml")),
-    ("qwen3-4b-mlx.toml", include_str!("../recipes/qwen3-4b-mlx.toml")),
-    ("qwen3-4b-lmstudio.toml", include_str!("../recipes/qwen3-4b-lmstudio.toml")),
-    ("qwen3.5-2b-tensorfold.toml", include_str!("../recipes/qwen3.5-2b-tensorfold.toml")),
-    ("qwen3.6-35b-a3b-mtp-tensorfold-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-mtp-tensorfold-spark.toml")),
-    ("ornith-1.5-122b-tensorfold.toml", include_str!("../recipes/ornith-1.5-122b-tensorfold.toml")),
-    (
-        "deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml",
-        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml"),
-    ),
-    (
-        "deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml",
-        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4.toml"),
-    ),
-    (
-        "deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml",
-        include_str!("../recipes/deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml"),
-    ),
-];
+/// Recipes compiled into the binary. lmdeck ships no default recipes; add
+/// `("<file>.toml", include_str!("../recipes/<file>.toml"))` here to ship one.
+pub const BUILTIN_RECIPES: &[(&str, &str)] = &[];
 
 pub fn builtin() -> Vec<Found> {
     BUILTIN_RECIPES
@@ -226,6 +205,19 @@ mod tests {
         (d, p)
     }
 
+    fn simple(name: &str) -> Recipe {
+        Recipe::parse(
+            "[model]\nrepo = \"unsloth/Qwen3-4B-GGUF\"\nfiles = [\"m.gguf\"]\n\
+             [quant]\nformat = \"gguf\"\n[engine]\nname = \"llama.cpp\"\n",
+            name,
+        )
+        .unwrap()
+    }
+
+    fn recipe_file(name: &str) -> Recipe {
+        Recipe::load(Path::new(&format!("{}/recipes/{name}.toml", env!("CARGO_MANIFEST_DIR")))).unwrap()
+    }
+
     #[test]
     fn builtins_parse_and_are_unique() {
         let b = builtin();
@@ -240,7 +232,7 @@ mod tests {
     fn deck_add_resolve_remove() {
         let (_d, paths) = tmp();
         let cfg = Config { sources: vec![], ..Config::default() };
-        let mut r = builtin().remove(0).recipe;
+        let mut r = simple("qwen3-4b-gguf");
         add_to_deck(&paths, &r, false).unwrap();
         assert!(add_to_deck(&paths, &r, false).is_err());
         r.description = Some("mine".into());
@@ -249,9 +241,8 @@ mod tests {
         let f = cat.resolve(&r.name).unwrap();
         assert_eq!(f.origin, DECK);
         assert_eq!(f.recipe.description.as_deref(), Some("mine"));
-        assert_eq!(cat.resolve(&format!("builtin/{}", r.name)).unwrap().origin, BUILTIN);
         assert!(cat.resolve("nope-nothing").is_err());
-        let err = cat.resolve("qwen3").unwrap_err().to_string();
+        let err = cat.resolve("qwen3-4b").unwrap_err().to_string();
         assert!(err.contains("did you mean"), "{err}");
         assert!(remove_from_deck(&paths, &r.name).unwrap());
         assert!(!remove_from_deck(&paths, &r.name).unwrap());
@@ -262,21 +253,16 @@ mod tests {
         use crate::peerdeck::{PeerDecks, Shared};
         let (_d, paths) = tmp();
         let cfg = Config { sources: vec![], ..Config::default() };
-        let b = builtin();
-        let mine = b[0].recipe.clone();
+        let mine = simple("mine");
         add_to_deck(&paths, &mine, false).unwrap();
-        let share = |name: &str, i: usize| {
-            let mut r = b[i].recipe.clone();
-            r.name = name.into();
-            Shared { name: name.into(), toml: r.to_toml().unwrap() }
-        };
+        let share = |name: &str| Shared { name: name.into(), toml: simple(name).to_toml().unwrap() };
         let decks = PeerDecks {
             at: 1,
             hosts: [
-                ("ember".to_string(), vec![share(&mine.name, 1), share("peer-only", 1), share(&b[2].recipe.name, 2)]),
+                ("ember".to_string(), vec![share("peer-only"), share("ember-only")]),
                 (
                     "faraday".to_string(),
-                    vec![share("peer-only", 3), Shared { name: "broken".into(), toml: "not = [toml".into() }],
+                    vec![share("peer-only"), Shared { name: "broken".into(), toml: "not = [toml".into() }],
                 ),
             ]
             .into(),
@@ -288,11 +274,10 @@ mod tests {
         let p = cat.resolve("peer-only").unwrap();
         assert_eq!((p.origin.as_str(), p.recipe.name.as_str()), ("@ember", "peer-only"), "the first host wins");
         assert_eq!(cat.entries.iter().filter(|f| f.recipe.name == "peer-only").count(), 1);
-        assert_eq!(cat.resolve(&b[2].recipe.name).unwrap().origin, "@ember", "a peer's deck wins over a built-in");
-        assert_eq!(cat.resolve(&format!("builtin/{}", b[2].recipe.name)).unwrap().origin, BUILTIN);
+        assert_eq!(cat.resolve("ember-only").unwrap().origin, "@ember");
         assert!(cat.resolve("broken").is_err(), "a peer recipe that doesn't parse is left out");
         let listed: Vec<&str> = crate::deck::listed(&cat).iter().map(|f| f.recipe.name.as_str()).collect();
-        assert_eq!(listed, vec![mine.name.as_str(), "peer-only", b[2].recipe.name.as_str()]);
+        assert_eq!(listed, vec![mine.name.as_str(), "peer-only", "ember-only"]);
     }
 
     #[test]
@@ -308,8 +293,8 @@ mod tests {
     }
 
     #[test]
-    fn ornith_wrapper_builtin() {
-        let r = builtin().into_iter().find(|f| f.recipe.name == "ornith-1.5-122b-tensorfold").unwrap().recipe;
+    fn ornith_wrapper_recipe() {
+        let r = recipe_file("ornith-1.5-122b-tensorfold");
         let e = &r.engine;
         assert_eq!(e.name, crate::recipe::Engine::Custom);
         assert!(e.detached);
@@ -324,11 +309,7 @@ mod tests {
 
     #[test]
     fn deepseek_v41_wrapper_is_one_local_command() {
-        let r = builtin()
-            .into_iter()
-            .find(|f| f.recipe.name == "deepseek-v4.1-flash-1017-4x-spark-tensorfold")
-            .unwrap()
-            .recipe;
+        let r = recipe_file("deepseek-v4.1-flash-1017-4x-spark-tensorfold");
         let e = &r.engine;
         assert_eq!(e.name, crate::recipe::Engine::Custom);
         assert!(e.detached);
@@ -356,9 +337,8 @@ mod tests {
 
     #[test]
     fn deepseek_v41_nvfp4_is_the_same_wrapper_with_nvidias_checkpoint() {
-        let find = |n: &str| builtin().into_iter().find(|f| f.recipe.name == n).unwrap().recipe;
-        let fp8 = find("deepseek-v4.1-flash-1017-4x-spark-tensorfold");
-        let nv = find("deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4");
+        let fp8 = recipe_file("deepseek-v4.1-flash-1017-4x-spark-tensorfold");
+        let nv = recipe_file("deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4");
         assert_eq!(nv.engine.env.get("NVFP4").map(String::as_str), Some("1"));
         let m = &nv.model;
         assert_eq!(m.repo.as_deref(), Some("nvidia/DeepSeek-V4.1-Flash-1017-NVFP4"));
@@ -378,9 +358,10 @@ mod tests {
 
     #[test]
     fn recipe_schemas_missing_current_newer() {
-        // Every built-in and example says `schema = 1` itself.
-        for (file, text) in BUILTIN_RECIPES {
-            assert!(text.lines().any(|l| l.trim() == "schema = 1"), "{file} has no schema line");
+        // Every recipe file and example says `schema = 1` itself.
+        for path in fs::read_dir(format!("{}/recipes", env!("CARGO_MANIFEST_DIR"))).unwrap().flatten() {
+            let text = fs::read_to_string(path.path()).unwrap();
+            assert!(text.lines().any(|l| l.trim() == "schema = 1"), "{} has no schema line", path.path().display());
         }
         for ex in ["ornith-122b-awq-lmdeploy.toml", "vllm-ray-2spark.toml"] {
             let t = fs::read_to_string(format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"))).unwrap();

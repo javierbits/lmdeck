@@ -87,11 +87,10 @@ fn help_and_version() {
 }
 
 #[test]
-fn bare_invocation_shows_wordmark_and_builtins() {
+fn bare_invocation_shows_wordmark_and_empty_deck() {
     let e = Env::new();
     let out = e.run(&[]);
     assert!(out.contains("██╗     ███╗   ███╗"), "{out}");
-    assert!(out.contains("qwen3-4b-gguf"));
     assert!(out.contains("deck is empty"));
     assert!(!out.contains('\x1b'), "NO_COLOR respected");
 }
@@ -160,7 +159,7 @@ fn local_source_with_toml_recipes() {
     let refs: Vec<&str> = v.as_array().unwrap().iter().map(|r| r["ref"].as_str().unwrap()).collect();
     assert_eq!(refs, ["mine/qwen3-4b"]);
     let gguf = e.run(&["recipe", "search", "--quant", "Q4_K_M", "--engine", "llama.cpp"]);
-    assert!(gguf.contains("mine/qwen3-4b") && gguf.contains("builtin/qwen3-4b-gguf"), "{gguf}");
+    assert!(gguf.contains("mine/qwen3-4b"), "{gguf}");
 
     // Add to the deck; it is now #1 in `list`.
     e.run(&["recipe", "add", "mine/qwen3-4b"]);
@@ -202,12 +201,13 @@ fn local_source_with_toml_recipes() {
     e.run(&["recipe", "remove", "qwen3-4b"]);
     e.run(&["source", "remove", "mine"]);
     assert!(!e.run(&["source", "list"]).contains("mine"));
-    assert!(e.run(&["recipe", "list"]).contains("builtin"));
+    assert!(e.run(&["recipe", "list"]).contains("no recipes"));
 }
 
 #[test]
 fn tensorfold_recipe_plan_pull_and_doctor() {
     let e = Env::new();
+    e.run(&["recipe", "add", &format!("{}/recipes/qwen3.5-2b-tensorfold.toml", env!("CARGO_MANIFEST_DIR"))]);
     let plan = e.run(&["use", "qwen3.5-2b-tensorfold", "--dry-run"]);
     assert!(
         plan.contains(
@@ -221,7 +221,7 @@ fn tensorfold_recipe_plan_pull_and_doctor() {
     assert!(!pull.contains("hf download"), "{pull}");
     let found = e.run(&["recipe", "search", "--engine", "tf", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&found).unwrap();
-    assert_eq!(v.as_array().unwrap().len(), 2, "{found}");
+    assert_eq!(v.as_array().unwrap().len(), 1, "{found}");
     // A stand-in `tensorfold-native` (the Linux archive's binary name) is detected with its version.
     let bin = e.path("bin");
     write(&bin, "tensorfold-native", "#!/bin/sh\necho 'tensorfold-native 1.1.2'\n");
@@ -241,6 +241,7 @@ fn tensorfold_recipe_plan_pull_and_doctor() {
 #[test]
 fn unknown_and_ambiguous_references() {
     let e = Env::new();
+    write(&e.path("home/config/recipes"), "qwen3-4b-gguf.toml", QWEN_TOML);
     e.cmd().args(["use", "does-not-exist"]).assert().failure().stderr(predicate::str::contains("no recipe"));
     e.cmd().args(["use", "99", "--dry-run"]).assert().failure().stderr(predicate::str::contains("no recipe #99"));
     e.cmd().args(["recipe", "show", "qwen3-4b"]).assert().failure().stderr(predicate::str::contains("did you mean"));
@@ -460,6 +461,8 @@ fn lmdeploy_dry_run() {
 fn four_spark_recipe_picks_its_launcher_from_the_fabric() {
     let e = Env::new();
     let name = "deepseek-v4.1-flash-1017-4x-spark-tensorfold";
+    let recipe = concat!(env!("CARGO_MANIFEST_DIR"), "/recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml");
+    e.run(&["recipe", "add", recipe]);
     // This machine is spark1; hosts.toml lists the three Sparks the recipe hands Mia's scripts
     // (never contacted: the demo topologies answer for them).
     write(&e.path("home/config"), "config.toml", "[node]\nname = \"spark1\"\n");
@@ -490,6 +493,7 @@ fn four_spark_recipe_picks_its_launcher_from_the_fabric() {
     assert!(plan.contains("fabric: switch") && plan.contains("run:  ./start.sh"), "{plan}");
     // A lone machine has no Sparks to hand the scripts: the plan stops and says how many it needs.
     let lone = Env::new();
+    lone.run(&["recipe", "add", recipe]);
     lone.cmd()
         .args(["use", name, "--dry-run", "--force"])
         .assert()
@@ -650,11 +654,9 @@ fn push_commit(work: &Path, file: &str) {
     git(work, &["push", "-q", "origin", "HEAD:main"]);
 }
 
-/// `outdated --json` rows for deck recipes (the built-in wrapper is listed too, as not cloned).
+/// `outdated --json` rows for deck recipes.
 fn outdated(e: &Env) -> serde_json::Value {
     let v: serde_json::Value = serde_json::from_str(&e.run(&["outdated", "--json"])).unwrap();
-    let builtin = v.as_array().unwrap().iter().find(|r| r["ref"].as_str().unwrap().starts_with("builtin/")).unwrap();
-    assert_eq!(builtin["update"]["state"], "not_cloned");
     v.as_array().unwrap().iter().filter(|r| r["ref"].as_str().unwrap().starts_with("deck/")).cloned().collect()
 }
 
@@ -667,6 +669,7 @@ fn wrapped_recipes_flag_upstream_commits() {
     let bare_s = bare.to_str().unwrap();
     e.run(&["add", bare_s, "--name", "follow", "--ref", "main"]);
     e.run(&["add", bare_s, "--name", "pinned"]);
+    write(&e.path("home/config/recipes"), "native.toml", QWEN_TOML);
     let v = outdated(&e);
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
     assert!(v.as_array().unwrap().iter().all(|r| r["update"]["state"] == "current"), "{v}");
@@ -744,6 +747,7 @@ fn tui_run_on_picker_and_topology_frames() {
     let e = Env::new();
     let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     e.run(&["host", "add", "spark9", &format!("http://127.0.0.1:{dead}")]);
+    write(&e.path("home/config/recipes"), "qwen3-4b-gguf.toml", QWEN_TOML);
     let frame =
         e.run(&["tui", "--render-text", "--run-on", "--select", "qwen3-4b-gguf", "--width", "130", "--height", "36"]);
     for want in ["Run qwen3-4b-gguf on", "⌂", "spark9", "no weights", "weights never move", "RUN ON"] {
@@ -775,17 +779,6 @@ fn doctor_reports_newer_schemas_and_skips_them() {
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(stderr.contains("needs lmdeck newer than") && stderr.contains("using the defaults"), "{stderr}");
     assert!(stdout.contains("config.toml"), "{stdout}");
-}
-
-#[test]
-fn adding_a_repo_a_builtin_wraps_adds_the_builtin_offline() {
-    let e = Env::new();
-    let out = e.run(&["add", "MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold"]);
-    assert!(out.contains("built-in recipe deepseek-v4.1-flash-1017-4x-spark-tensorfold already wraps"), "{out}");
-    let text =
-        fs::read_to_string(e.path("home/config/recipes/deepseek-v4.1-flash-1017-4x-spark-tensorfold.toml")).unwrap();
-    assert!(text.contains("start-switchless.sh") && text.contains("hosts = 4"), "{text}");
-    assert!(!e.path("home/cache/checkouts").join("deepseek-v4.1-flash-1017-4x-spark-tensorfold").exists());
 }
 
 /// `[harness] hub = true` survives every other `lmdeck harness` setting (each

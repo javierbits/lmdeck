@@ -265,7 +265,7 @@ fn renders_every_tab_and_overlay() {
     assert!(text.contains("GB10") && text.contains("llama.cpp"), "{text}");
     a.on_key(key('5'));
     let text = buffer_text(&render(&a, 140, 36));
-    assert!(text.contains("builtin") && text.contains("every recipe file parsed"), "{text}");
+    assert!(text.contains("deck") && text.contains("every recipe file parsed"), "{text}");
     a.on_key(key('?'));
     let text = buffer_text(&render(&a, 140, 36));
     assert!(text.contains("fuzzy search"), "{text}");

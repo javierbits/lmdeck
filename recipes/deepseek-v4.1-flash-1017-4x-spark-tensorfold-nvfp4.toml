@@ -81,6 +81,14 @@ HF_CACHE = "{hf_home}"
 NFS_PATH = "{hf_home}"
 # NVIDIA's NVFP4 checkpoint and its revision (scripts/config.sh pins it).
 NVFP4 = "1"
+# drowzeys' Keys abliteration overlay (attn.wo_b, layers 10-35) grafted before the
+# rank caches are baked. Gated and free: accept its terms on Hugging Face and
+# export HF_TOKEN first; the first switch downloads the ~1.1 GB sidecar. The repo
+# passes this pairing through validate.py but NVIDIA does not validate ABLIT on NVFP4.
+ABLIT = "1"
+# The sidecar revision already cached on ember (same sha256 as the repo's default
+# de412d2). Pinning it reuses the existing overlay view and downloads nothing.
+ABLIT_REVISION = "c61b5dcce6add8a282395f030d2ca7c664de5423"
 
 # A switchless ring (four Sparks, two CX7 cables each) runs the repo's ring launcher,
 # which sets FABRIC_EXPECT=ring and checks the ranks follow the cables.

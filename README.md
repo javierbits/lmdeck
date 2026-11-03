@@ -38,13 +38,15 @@ x86_64. Windows isn't supported.
 
 ```sh
 lmdeck doctor                 # hardware, engines, and which recipes fit
+lmdeck browse                 # the recipe index
+lmdeck add <name>             # install an index entry into your deck
 lmdeck source add github:someone/recipes   # optional: more recipes
-lmdeck recipe search qwen --compatible
-lmdeck recipe add qwen3-4b-gguf
-lmdeck pull qwen3-4b-gguf     # hf download …
+lmdeck recipe search --compatible
+lmdeck recipe add ./my-recipe.toml         # or a file, URL, or source ref
+lmdeck pull <name>            # hf download …
 lmdeck use 1                  # start deck entry #1, wait until /v1/models answers 2xx
 lmdeck list                   # ● loaded  ● external (not started by lmdeck)  ○ stopped  ✓ downloaded
-lmdeck switch qwen3-4b-gguf   # stop the others, start this one
+lmdeck switch <name>          # stop the others, start this one
 lmdeck stop --all
 ```
 
@@ -52,7 +54,7 @@ A server started outside lmdeck that answers with a recipe's model on its port
 is **external**: lmdeck shows it as up and its `stop` runs the recipe's stop
 command, but lmdeck didn't start it. **port taken** means another server holds
 the port and is not that recipe. Each recipe is counted once as up, so a
-shipped example shadowed by a deck recipe isn't a second server.
+copy shadowed by a deck recipe isn't a second server.
 
 Run `lmdeck` with no arguments in a terminal to open the [TUI](#tui). When
 stdout isn't a terminal, or with `--plain`, you get the wordmark and the deck
@@ -106,10 +108,9 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
 
 
 4. **Recipe sources**: repos that hold lmdeck recipe files (`.toml`), searched
-   alongside the built-ins (`github:owner/repo`, `hf:owner/repo`, a URL, a
-   local directory). There is no default source; the built-in recipes are
-   always there. A model repo with its own start scripts isn't a source: run
-   `lmdeck add <url>` for it instead.
+   alongside your deck (`github:owner/repo`, `hf:owner/repo`, a URL, a local
+   directory). There is no default source. A model repo with its own start
+   scripts isn't a source: run `lmdeck add <url>` for it instead.
 
 
 Answers are saved to `~/.config/lmdeck/` (`hosts.toml`, `config.toml`) and
@@ -147,8 +148,8 @@ pills, rounded panels, and a status bar with key hints.
   NFS weights or a multi-node run.
 - **Machine**: platform, CPU and memory gauges, the memory held by running
   recipes, per-GPU memory, and which engines and tools are installed.
-- **Sources**: the deck, the built-ins and every recipe source, with recipe
-  counts and when each source was last fetched.
+- **Sources**: the deck and every recipe source, with recipe counts and when
+  each source was last fetched.
 
 The screen refreshes every 2 s in the background. Starting, stopping and
 pulling run off the UI thread, so nothing freezes while a server loads.
@@ -349,7 +350,7 @@ API (JSON unless noted):
 | `GET` | `/api/recipes` | every recipe, with status, download state, size, fit, checks and the launch command |
 | `GET` | `/api/status` | running and deck recipes: status, port, endpoint |
 | `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors |
-| `GET` | `/api/sources` | the deck, built-ins and sources with recipe counts |
+| `GET` | `/api/sources` | the deck and sources with recipe counts |
 | `GET` | `/api/telemetry?history=1&since=MS` | this machine's live telemetry (memory, GPUs, temperatures, power, load, running models with RSS and tok/s); with `history=1` also the samples newer than `since` (ms since the epoch) |
 | `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry` and `history` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
@@ -478,7 +479,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. `--on local` (or this machine's `[node] name`) runs it here, the way `use` without `--on` did before it followed the weights: nothing is placed or mounted, and the engine or the recipe's scripts fetch the weights if they need them. |
 | `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
 | `lmdeck hosts topology [--json] [--no-verify]` | Hosts and the links between them: CX7 cables, LAN, Tailscale, with a ping / TCP check. |
-| `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck, the built-ins and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
+| `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
 | `lmdeck recipe add <ref\|file\|url> [--name N] [--force]` | Copies a recipe into your deck as TOML. |
 | `lmdeck recipe list [--source S]` / `show <ref> [--toml]` / `run <ref>` / `remove <name>` | Lists, inspects, runs or removes recipes. `run` starts a recipe without adding it to the deck. |
 | `lmdeck source add <spec> [--name N] [--no-fetch]` / `list` / `update [name]` / `remove <name>` | Manages recipe sources. |
@@ -491,7 +492,7 @@ column and Machine panel there still describe that VM.
 | `lmdeck serve [--host H] [-p PORT] [--token T]` | Serves the web dashboard and JSON API. The default is `127.0.0.1:7979`. Off loopback every `/api` route but `/api/health` needs the token (reads too), and a state-changing request from a non-loopback peer without a configured token is refused with 403. Token: `--token`, `LMDECK_TOKEN`, or `[serve] token_env`. |
 
 A `<ref>` can be a recipe name (`qwen3-4b-gguf`), an `origin/name` pair
-(`mine/gpt-oss-20b`, `builtin/qwen3-4b-mlx`), or the `#` row number from
+(`mine/gpt-oss-20b`, `@ember/qwen3-4b-gguf`), or the `#` row number from
 `lmdeck list`. When the same name exists in several places, the deck copy wins.
 
 ## Recipe index
@@ -583,8 +584,8 @@ supported: a `.yaml`/`.yml` file in the deck, or passed to `recipe add`, is an
 error that says so, and sources skip YAML files.
 
 **`schema = 1`.** Recipes, the config and the recipe index carry a top-level
-`schema` integer; a missing one means 1. `lmdeck add`, `recipe add` and the
-built-ins write it. A file with a newer schema than this lmdeck reads is
+`schema` integer; a missing one means 1. `lmdeck add` and `recipe add` write
+it. A file with a newer schema than this lmdeck reads is
 skipped with a warning such as `needs lmdeck >= 0.3.0 / schema 2` (the
 version comes from the file's optional `min_lmdeck = "…"`), never guessed
 at; `lmdeck doctor` lists every such file. A newer `config.toml` is not read
@@ -713,7 +714,7 @@ next one), as the addresses the run host reaches them on. It fills
 `command_by_fabric` it also picks the command and `{fabric}` for the shape
 it sees. The run host fills only its own placeholders (`{port}`, `{host}`,
 `{user}`, `{hf_home}`, …). That upload needs `[serve] accept_recipes = true`
-on the run host, even for a recipe the run host has by name (a built-in):
+on the run host, even for a recipe the run host has by name:
 its own copy would pick peers from its own `hosts.toml`. Too few Sparks
 around the run host fail on the controller, before anything starts there,
 and the controller's `--dry-run` shows the peers and the `env` they fill.
@@ -873,9 +874,7 @@ tell. Review the file it writes in `~/.config/lmdeck/recipes/`.
   the fit check knows it needs four Sparks.
 - `ready_timeout` is a minute per GB of the largest download the README
   mentions (an hour at least, twelve at most).
-- A repo a built-in recipe already wraps gets that recipe instead, unless you
-  pass `--name`. Otherwise a repo's own `lmdeck.toml` wins over this wrapper
-  detection.
+- A repo's own `lmdeck.toml` wins over this wrapper detection.
 
 
 ```toml
@@ -902,8 +901,8 @@ CONTAINER_NAME = "{container}"
 - `[model]` is optional for `custom` recipes; leave it out when the scripts fetch
   their own weights, or name them with `pull = false`. Then lmdeck never pulls
   or mounts them, but finds the host whose Hugging Face cache holds them, and
-  `lmdeck use` without `--on` runs the recipe there (the built-in DeepSeek 4x
-  recipe does this: its head must hold the checkpoint). With `--on` to a host
+  `lmdeck use` without `--on` runs the recipe there (the DeepSeek 4x recipe
+  does this: its head must hold the checkpoint). With `--on` to a host
   without them, the plan warns that the scripts fetch their own copy there.
 - `[source]` is cloned on the first `use`. A later `use` fetches only when the
   checkout isn't at `ref` (you changed `ref`, or it names a commit not fetched
@@ -1011,7 +1010,7 @@ spec = "github:someone/recipes"
 
 [serve]                   # serving defaults
 # port_start = 8000       # count port-less recipes from here (8000, 8001, …);
-                           # your deck counts first, built-ins keep their own ports
+                           # your deck counts first, then sources
 
 [harness]                  # agent harnesses to point at served models (see Harness sync)
 asked = true
@@ -1020,31 +1019,21 @@ sync = ["opencode", "omp"]
 # hub = true               # push every host's models to every host (lmdeck harness hub on)
 ```
 
-## Built-in examples
+## Recipes in this repo
 
-These recipes ship inside the binary. `lmdeck list` shows them while your deck
-is empty. Every Hugging Face id below was checked against the Hub.
+lmdeck ships no built-in recipes. [`recipes/`](recipes/) holds the recipes
+[`index.toml`](index.toml) points at; install one with `lmdeck add <name>`, or
+copy the file with `lmdeck recipe add recipes/<name>.toml`.
 
-| recipe | model | engine | for |
-|---|---|---|---|
-| `qwen3-4b-gguf` | `unsloth/Qwen3-4B-GGUF` · Q4_K_M | llama.cpp | anything, ~2.5 GB |
-| `gpt-oss-20b-gguf` | `unsloth/gpt-oss-20b-GGUF` · Q4_K_M | llama.cpp | 16 GB+ |
-| `qwen3-30b-a3b-exl3` | `turboderp/Qwen3-30B-A3B-exl3` @ 4.0bpw | tabbyapi | NVIDIA / DGX Spark |
-| `qwen3.6-35b-a3b-nvfp4-spark` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | vllm (Docker) | DGX Spark / Blackwell |
-| `qwen3-4b-mlx` | `mlx-community/Qwen3-4B-4bit` | mlx | Apple Silicon |
-| `qwen3-4b-lmstudio` | `unsloth/Qwen3-4B-GGUF` | lmstudio | LM Studio |
-| `qwen3.5-2b-tensorfold` | `mlx-community/Qwen3.5-2B-MLX-4bit` @ `93760be` | tensorfold | Apple Silicon or NVIDIA (TensorFold's quick-start model) |
-| `qwen3.6-35b-a3b-mtp-tensorfold-spark` | `TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP` @ `81169a9` | tensorfold | NVIDIA / DGX Spark (CUDA only) |
-| `ornith-1.5-122b-tensorfold` | wraps [MiaAI-Lab/Ornith-1.5-122B-TensorFold](https://github.com/MiaAI-Lab/Ornith-1.5-122B-TensorFold) @ `0c8fd6a` (its scripts fetch the EXL3 weights) | custom (wrapped, detached) | DGX Spark, ~100 GB |
-| `deepseek-v4.1-flash-1017-4x-spark-tensorfold` | wraps [MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) @ `fcef6cf` (spark1's `start.sh` fetches the FP8 checkpoint and ssh's the other three; a switchless ring runs `start-switchless.sh`; `[model]` names the checkpoint with `pull = false`, so `lmdeck use` runs it on the Spark that holds it) | custom (wrapped, detached) | 4x DGX Spark, ~100 GB free each |
-| `deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4` | the same wrapper with `NVFP4=1`: [NVIDIA's NVFP4 release](https://huggingface.co/nvidia/DeepSeek-V4.1-Flash-1017-NVFP4) (~430 GB), run on the Spark that holds it; its first start writes its own weight files and copies ~98 GiB of Engram tables to each worker. Same container and port as the FP8 recipe: stop one before starting the other | custom (wrapped, detached) | 4x DGX Spark, ~100 GB free each |
-| `deepseek-v4.1-flash-1017-4x-spark-nvfp4` | `nvidia/DeepSeek-V4.1-Flash-1017-NVFP4` @ `480550d` (NVIDIA's NVFP4 experts + MXFP4 Engram, 399.55 GiB; stock `vllm/vllm-openai:v0.32.0` plus the Engram overlay [javierbits/DeepSeek-V4.1-Flash-1017-NVFP4-DGX-Spark-recipe](https://github.com/javierbits/DeepSeek-V4.1-Flash-1017-NVFP4-DGX-Spark-recipe) @ `4849cdb`; `[[nodes]]` starts three headless workers then the head, weights read over NFS) | vllm in Docker, multi-node | 4x DGX Spark / GB10, ~105 GB per node |
-
-[`examples/`](examples/) has recipes that aren't built in, such as
+[`examples/`](examples/) has templates that aren't in the index, such as
 `ornith-122b-awq-lmdeploy.toml` (LMDeploy in Docker; its model repo is a
 placeholder).
 
 ## Development
+
+Agent contributors: read [AGENTS.md](AGENTS.md) first. It describes the data
+flow, recipe authoring, wrapping, `lmdeck.toml` manifests, and how recipes are
+wired into the deck, sources, and index.
 
 ```sh
 cargo build --release

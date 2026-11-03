@@ -487,7 +487,8 @@ function render(){
   const tool = t => `<div class="tool ${t.available?"ok":"no"}"><span class="m">${t.available?"✓":"✗"}</span><span class="n">${esc(t.name)}</span><span class="d" title="${esc(t.detail)}">${esc(t.detail)}</span></div>`;
   $("#engines").innerHTML = Object.values(s.inventory.engines).map(tool).join("") + `<div style="height:8px"></div>` + Object.values(s.inventory.tools).map(tool).join("");
   const count = o => s.recipes.filter(r => r.origin === o).length;
-  $("#sources").innerHTML = [["deck","your recipes",count("deck")],["builtin","shipped with lmdeck",count("builtin")]]
+  $("#sources").innerHTML = [["deck","your recipes",count("deck")]]
+    .concat(count("builtin") ? [["builtin","shipped with lmdeck",count("builtin")]] : [])
     .concat(s.sources.map(x => [x.name, x.spec + (x.fetched_at ? " · " + ago(x.fetched_at) + " ago" : " · never fetched"), x.recipes ?? 0]))
     .map(([n,d,c]) => `<div class="tool ok"><span class="n">${esc(n)}</span><span class="d" title="${esc(d)}">${esc(d)}</span><span class="grow"></span><span style="color:var(--accent)">${c}</span></div>`).join("");
 }

@@ -855,12 +855,12 @@ fn draw_sources(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let [top, bottom] = Layout::vertical([Constraint::Min(6), Constraint::Length(9)]).areas(area);
     let mut rows: Vec<Row> = vec![];
     let count = |origin: &str| s.recipes.iter().filter(|r| r.origin == origin).count();
-    for (name, spec, n, age) in [
-        ("deck", "your recipes (~/.config/lmdeck/recipes)".to_string(), count("deck"), None),
-        ("builtin", "shipped with lmdeck".to_string(), count("builtin"), None),
-    ]
-    .into_iter()
-    .chain(s.sources.iter().map(|src| {
+    let mut local: Vec<(&str, String, usize, Option<String>)> =
+        vec![("deck", "your recipes (~/.config/lmdeck/recipes)".to_string(), count("deck"), None)];
+    if count("builtin") > 0 {
+        local.push(("builtin", "shipped with lmdeck".to_string(), count("builtin"), None));
+    }
+    for (name, spec, n, age) in local.into_iter().chain(s.sources.iter().map(|src| {
         (
             src.name.as_str(),
             src.spec.clone(),

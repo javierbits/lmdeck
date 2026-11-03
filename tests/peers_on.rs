@@ -2,7 +2,7 @@
 //! standing in for separate hosts: a recipe with peers started on another
 //! host (`--on`) takes them from the controller, which holds the host list
 //! and the links (and runs the launcher for the ring the controller sees),
-//! and an upload named like a built-in keeps its log and its stop by name.
+//! and an upload keeps its log and its stop by name.
 
 mod common;
 
@@ -46,8 +46,8 @@ fn too_few_peers_around_the_run_host_stop_the_start_on_the_controller() {
     assert!(!out.exists(), "nothing started on a");
 }
 
-/// A run host with its own copy of a recipe with peers (as with a built-in
-/// on both machines) still gets the controller's peers: the controller
+/// A run host with its own copy of a recipe with peers (as with a recipe
+/// installed on both machines) still gets the controller's peers: the controller
 /// uploads the resolved recipe instead of starting that copy by name, whose
 /// peers the run host can't pick, and the run host fills only its own
 /// placeholders (`{home}` here). A run host that takes no uploads refuses
@@ -76,12 +76,11 @@ fn a_run_host_that_knows_a_recipe_still_takes_its_peers_from_the_controller() {
     assert!(!out.exists(), "b started its own copy");
 }
 
-/// A controller's upload named like a built-in (the built-in with its peers
-/// filled in) sits beside the built-in on the run host. Its log and its stop
-/// still go by that name after the run has exited, which is when the
-/// controller fetches the log tail of a start that died.
+/// A controller's upload sits on the run host. Its log and its stop still go
+/// by that name after the run has exited, which is when the controller
+/// fetches the log tail of a start that died.
 #[test]
-fn an_upload_named_like_a_built_in_keeps_its_log_and_stop_by_name() {
+fn an_upload_keeps_its_log_and_stop_by_name() {
     let tmp = tempfile::tempdir().unwrap();
     let a = serve(Host::new(tmp.path(), "sa", "[serve]\naccept_recipes = true\n"), &[]);
     let name = "qwen3-4b-gguf";
