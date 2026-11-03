@@ -484,10 +484,17 @@ pub const YAML_UNSUPPORTED: &str =
 /// whose key appears (case-insensitive substring) in a recipe's display name,
 /// name or model id wins; everything else is "Other". The list mirrors
 /// lmswitch's `FAMILY_RULES` plus the other major labs.
+///
+/// Order is semantic, not alphabetical: `Thinking Machines` must precede
+/// `inclusionAI` because `inkling-small` contains `ling-`. Keep
+/// `src/web/index.html`'s `FAMILY_RANKS` in the same order (a test enforces
+/// that).
 pub const FAMILY_RULES: &[(&str, &[&str])] = &[
     ("Qwen", &["qwen", "qwopus"]),
     ("Gemma", &["diffusiongemma", "gemma", "gemini"]),
     ("DeepSeek", &["deepseek"]),
+    ("LiquidAI", &["liquidai", "lfm"]),
+    ("javierbits", &["javi"]),
     ("Nemotron", &["nemotron"]),
     ("Kimi", &["kimi", "moonshot"]),
     ("GPT-OSS", &["gpt-oss", "gpt"]),
@@ -495,25 +502,36 @@ pub const FAMILY_RULES: &[(&str, &[&str])] = &[
     ("Nex", &["nex"]),
     ("Step", &["step"]),
     ("Ornith", &["ornith"]),
-    ("MiMo", &["mimo"]),
+    ("MiMo", &["mimo", "xiaomi", "milmmt"]),
     ("MiniMax", &["minimax"]),
     ("Llama", &["llama"]),
-    ("Mistral", &["mistral", "mixtral", "ministral", "magistral", "voxtral", "pixtral", "codestral"]),
+    ("Mistral", &["mistral", "mixtral", "ministral", "magistral", "voxtral", "pixtral", "codestral", "devstral"]),
     ("Phi", &["phi"]),
-    ("Command", &["command-r", "commandr"]),
+    ("Command", &["command-r", "commandr", "aya-", "north-"]),
     ("Yi", &["yi-"]),
     ("Falcon", &["falcon"]),
     ("SmolLM", &["smollm", "smol"]),
     ("OLMo", &["olmo"]),
     ("InternLM", &["internlm"]),
-    ("Hunyuan", &["hunyuan"]),
+    ("Hunyuan", &["hunyuan", "hy3", "hy-mt"]),
     ("Granite", &["granite"]),
-    ("Seed", &["seed-oss"]),
+    ("Seed", &["seed-oss", "ui-tars"]),
     ("Apertus", &["apertus"]),
     ("Ernie", &["ernie"]),
     ("Grok", &["grok"]),
     ("RWKV", &["rwkv"]),
     ("Apex", &["apex"]),
+    ("Poolside", &["poolside", "laguna"]),
+    ("Thinking Machines", &["thinkingmachines", "inkling"]),
+    ("OpenBMB", &["openbmb", "minicpm"]),
+    ("inclusionAI", &["inclusionai", "llada", "ling-", "ming-"]),
+    ("Nanbeige", &["nanbeige"]),
+    ("SenseNova", &["sensenova"]),
+    ("OpenGVLab", &["opengvlab", "internvl"]),
+    ("AI21", &["ai21", "jamba"]),
+    ("Upstage", &["upstage", "solar-"]),
+    ("LG AI", &["lgai", "exaone"]),
+    ("Naver", &["hyperclovax"]),
 ];
 
 /// Sort rank of a family label (families keep their rule order; unknown → last).
@@ -825,6 +843,33 @@ min_memory_gb = 4
         assert_eq!(with_name("Kimi-K2"), "Kimi");
         assert_eq!(with_name("ornith-1.5-122b"), "Ornith");
         assert_eq!(with_name("mystery-model"), "Other");
+        // labs added for the 2026 HF line-up
+        assert_eq!(with_name("LFM3-1.7B-GGUF"), "LiquidAI");
+        assert_eq!(with_name("Javi0.3-4B"), "javierbits");
+        assert_eq!(with_name("Laguna-XS.2"), "Poolside");
+        assert_eq!(with_name("Inkling-Small"), "Thinking Machines");
+        assert_eq!(with_name("Ling-3.0-tiny"), "inclusionAI");
+        assert_eq!(with_name("MiniCPM5-2B"), "OpenBMB");
+        assert_eq!(with_name("Nanbeige4.3-33B"), "Nanbeige");
+        assert_eq!(with_name("SenseNova-Loop-9B"), "SenseNova");
+        assert_eq!(with_name("InternVL3_5-8B"), "OpenGVLab");
+        assert_eq!(with_name("Jamba2-3B"), "AI21");
+        assert_eq!(with_name("Solar-Open-100B"), "Upstage");
+        assert_eq!(with_name("EXAONE-4.5-33B"), "LG AI");
+        assert_eq!(with_name("HyperCLOVAX-SEED-Think-32B"), "Naver");
+        // current lines of existing labels
+        assert_eq!(with_name("Devstral-Small-2"), "Mistral");
+        assert_eq!(with_name("Hy3"), "Hunyuan");
+        assert_eq!(with_name("Hy-MT2-7B"), "Hunyuan");
+        assert_eq!(with_name("aya-expanse-8b"), "Command");
+        assert_eq!(with_name("North-Micro-Vision"), "Command");
+        assert_eq!(with_name("MiLMMT-46-4B"), "MiMo");
+        assert_eq!(with_name("UI-TARS-1.5-7B"), "Seed");
+        // a repackaged Qwen stays Qwen even under javierbits
+        assert_eq!(
+            fam("[model]\nrepo = \"javierbits/Qwen3-4B-Pirate-GGUF\"\nfiles = [\"a.gguf\"]\n[engine]\nname = \"llama.cpp\"\n"),
+            "Qwen"
+        );
         // the display name counts when the id carries nothing
         let mut r =
             Recipe::parse("[model]\nrepo = \"org/zzz\"\nfiles = [\"a.gguf\"]\n[engine]\nname = \"llama.cpp\"\n", "t")
@@ -832,6 +877,18 @@ min_memory_gb = 4
         r.display_name = Some("GLM-5.3-Flash".into());
         assert_eq!(r.family(), "GLM");
         assert!(r.family_rank() < family_rank_of("Other"));
+    }
+
+    #[test]
+    fn web_family_order_mirrors_the_rules() {
+        let html = include_str!("web/index.html");
+        let marker = "const FAMILY_RANKS = ";
+        let start = html.find(marker).expect("FAMILY_RANKS is present") + marker.len();
+        let end = start + html[start..].find("];").expect("FAMILY_RANKS ends") + 1;
+        let ranks: Vec<String> = serde_json::from_str(&html[start..end]).expect("FAMILY_RANKS is valid JSON");
+        let rules: Vec<&str> = FAMILY_RULES.iter().map(|(label, _)| *label).collect();
+        assert_eq!(ranks, rules, "update src/web/index.html when FAMILY_RULES changes");
+        assert_eq!(family_rank_of("Other"), usize::MAX);
     }
 
     #[test]

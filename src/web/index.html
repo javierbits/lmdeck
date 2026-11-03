@@ -374,7 +374,7 @@ const statusTip = {loaded:"started by lmdeck and answering",
   stopped:"no server answering"};
 
 // Family display order mirrors the Rust FAMILY_RULES; "Other" sorts last.
-const FAMILY_RANKS = ["Qwen","Gemma","DeepSeek","Nemotron","Kimi","GPT-OSS","GLM","Nex","Step","Ornith","MiMo","MiniMax","Llama","Mistral","Phi","Command","Yi","Falcon","SmolLM","OLMo","InternLM","Hunyuan","Granite","Seed","Apertus","Ernie","Grok","RWKV","Apex"];
+const FAMILY_RANKS = ["Qwen","Gemma","DeepSeek","LiquidAI","javierbits","Nemotron","Kimi","GPT-OSS","GLM","Nex","Step","Ornith","MiMo","MiniMax","Llama","Mistral","Phi","Command","Yi","Falcon","SmolLM","OLMo","InternLM","Hunyuan","Granite","Seed","Apertus","Ernie","Grok","RWKV","Apex","Poolside","Thinking Machines","OpenBMB","inclusionAI","Nanbeige","SenseNova","OpenGVLab","AI21","Upstage","LG AI","Naver"];
 function deckGrid(v){
   const empty = `<div class="empty">${st.q ? "Nothing matches “" + esc(st.q) + "”." : "No recipes match these filters."}<br><span class="dim">Try All, or clear the filters.</span></div>`;
   if (!v.length) return empty;
