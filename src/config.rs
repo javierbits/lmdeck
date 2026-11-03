@@ -279,7 +279,7 @@ pub struct SourceEntry {
     pub spec: String,
 }
 
-fn default_models_dir() -> String {
+pub(crate) fn default_models_dir() -> String {
     "~/models".into()
 }
 

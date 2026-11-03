@@ -107,6 +107,16 @@ pub struct Outcome {
     pub models_dir: Option<String>,
 }
 
+/// What the wizard proposes for the models dir: the Hugging Face cache unless
+/// the config already names a different directory.
+fn wizard_models_dir(cfg: &Config) -> String {
+    if cfg.models_dir == crate::config::default_models_dir() {
+        crate::models::hf_cache_dir().display().to_string()
+    } else {
+        cfg.models_dir.clone()
+    }
+}
+
 /// Where the wizard's answers come from: the terminal, or a script in tests.
 pub trait Prompt {
     /// Prints `prompt` and reads one line (`None` on EOF).
@@ -241,11 +251,13 @@ pub fn run_wizard(
     }
 
     // Where the weights land, before the machines that will run them.
-    let mut models_dir = cfg.models_dir.clone();
+    // The default proposal is the Hugging Face cache, unless the config already
+    // names another models dir.
+    let mut models_dir = wizard_models_dir(cfg);
     println!("\n{}", crate::ui::bold("model weights"));
     println!("{}", crate::ui::dim("local-only weights, and recipes with a [model] path, live here."));
-    println!("{}", crate::ui::dim("lmdeck pull puts Hugging Face weights (GGUFs too) in its cache: $HF_HOME/hub,"));
-    println!("{}", crate::ui::dim("  else ~/.cache/huggingface/hub; set HF_HOME to move that one"));
+    println!("{}", crate::ui::dim("the default is the Hugging Face cache: $HF_HUB_CACHE, else $HF_HOME/hub,"));
+    println!("{}", crate::ui::dim("  else ~/.cache/huggingface/hub; lmdeck pull downloads there too"));
     disk_check(&crate::paths::expand(&models_dir));
     loop {
         let hint = space_hint(&models_dir);
@@ -1249,6 +1261,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn wizard_proposes_the_hf_cache_unless_configured() {
+        let hf = crate::models::hf_cache_dir().display().to_string();
+        assert_eq!(wizard_models_dir(&Config::default()), hf);
+        let custom = Config { models_dir: "/mnt/nvme/models".into(), ..Config::default() };
+        assert_eq!(wizard_models_dir(&custom), "/mnt/nvme/models");
+    }
+
+    #[test]
     fn wizard_adds_a_serving_host_by_hostname_and_marks_done() {
         let (_d, paths) = tmp("wizard");
         let peers = vec![
@@ -1367,7 +1387,8 @@ pub(crate) mod tests {
         ]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers);
         assert!(out.hosts.is_empty());
-        assert_eq!(out.models_dir, None, "the default answer changes nothing");
+        let hf = crate::models::hf_cache_dir().display().to_string();
+        assert_eq!(out.models_dir.as_deref(), Some(hf.as_str()), "the wizard default is the HF cache");
         assert_eq!(out.sources.len(), 1);
         assert!(HostsFile::load(&paths).unwrap().hosts.is_empty());
     }
@@ -1384,11 +1405,12 @@ pub(crate) mod tests {
         assert_eq!(out.models_dir.as_deref(), Some("/mnt/nvme/models"));
         assert_eq!(out.hosts.len(), 0);
 
-        // EOF after the confirm keeps the configured default.
+        // EOF after the confirm keeps the wizard's proposal, the HF cache.
         let (_d2, paths2) = tmp("wizard4");
         let mut p2 = Script::new(&[""]);
         let out = wiz(&paths2, &mut p2, &mut MockSsh::default(), vec![]);
-        assert_eq!(out.models_dir, None);
+        let hf = crate::models::hf_cache_dir().display().to_string();
+        assert_eq!(out.models_dir.as_deref(), Some(hf.as_str()));
     }
 
     #[test]

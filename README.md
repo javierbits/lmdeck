@@ -69,12 +69,12 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    and the ConnectX-7 / RDMA ports, then a
    "does this look right?" confirm.
 2. **Model weights**: the models dir, shown with the free space on that
-   filesystem (the default is `~/models`). It holds local-only weights and
-   recipes with a `[model] path`; Hugging Face downloads, GGUFs included, go
-   to the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
-   `~/.cache/huggingface/hub`), so set `HF_HOME` too if you want everything
-   off the boot disk. Any time: `lmdeck init --models-dir /mnt/nvme/models`,
-   `LMDECK_MODELS_DIR`, or the `models_dir` key in config.toml.
+   filesystem. The wizard starts with the Hugging Face cache (`$HF_HUB_CACHE`,
+   else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull`
+   downloads (GGUFs too). It holds local-only weights and recipes with a
+   `[model] path`; type `~/models` if you want those kept apart. Any time:
+   `lmdeck init --models-dir /mnt/nvme/models`, `LMDECK_MODELS_DIR`, or the
+   `models_dir` key in config.toml.
 3. **The cluster**: the wizard looks for the other Sparks over the
    ConnectX-7 links only: the neighbours on each CX7 port (a sweep of the
    subnet when the neighbour table is silent) and the subnets routed through
@@ -980,7 +980,7 @@ timeout_secs = 5      # per ls-remote, 1-120
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
 | harness pushes | `~/.local/state/lmdeck/harness-lanes.json` (the hub's last push to this machine); on the hub, `harness-hub.json` (what it pushed last, to whom, and each host's last-known models and failed looks in a row) |
 | harness configs | written into each harness's own file: `~/.config/opencode/opencode.json`, `~/.omp/agent/models.yml`, `~/.grok/config.toml`, `~/.pi/agent/models.json`, `~/.hermes/config.yaml` (see [Harness sync](#harness-sync)) |
-| model weights | the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull` downloads, GGUFs included; `models_dir` (default `~/models`, or `$LMDECK_MODELS_DIR`) for local-only weights and `[model] path` |
+| model weights | the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull` downloads, GGUFs included; `models_dir` (config default `~/models`, wizard default the HF cache, or `$LMDECK_MODELS_DIR`) for local-only weights and `[model] path` |
 
 Set `LMDECK_HOME=/some/dir` to put all of lmdeck's files under one directory.
 The tests use this. macOS uses the same XDG layout.
