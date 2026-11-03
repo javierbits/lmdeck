@@ -299,13 +299,9 @@ const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 2 + 8 + 6;
 fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let t = app.theme();
     let vis = app.visible();
-    // Family-grouped display: a stable sort by family rank over (index,
-    // recipe) pairs, so `app.cursor` (an index into `visible()`) still maps
-    // to its row — tracked through `sel_row`, since separators add rows.
-    let mut ordered: Vec<(usize, &RecipeView)> = vis.iter().enumerate().map(|(i, r)| (i, *r)).collect();
-    if app.grouped {
-        ordered.sort_by_key(|(i, r)| (crate::recipe::family_rank_of(r.family), *i));
-    }
+    // `visible()` is already in display order (family-grouped when enabled),
+    // so `app.cursor` indexes it directly; separators below are the only rows
+    // it does not account for.
     let total = s.recipes.iter().filter(|r| app.show_all || r.listed).filter(|r| !app.shadowed(r)).count();
     let extra = if vis.len() == total { format!("{total}") } else { format!("{} of {total}", vis.len()) };
     let block = panel(title("▤", if app.show_all { "All recipes" } else { "Deck" }, Some(extra), t), t, !app.logs_max);
@@ -314,7 +310,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let mut rows: Vec<Row> = vec![];
     let mut sel_row: Option<usize> = None;
     let mut prev_family: Option<&'static str> = None;
-    for (vis_i, r) in &ordered {
+    for (vis_i, &r) in vis.iter().enumerate() {
         if app.grouped && prev_family != Some(r.family) {
             prev_family = Some(r.family);
             let label = format!("── {} ", r.family);
@@ -324,10 +320,9 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Cell::from(Span::styled(format!("{label}{dashes}"), Style::new().fg(t.accent))),
             ]));
         }
-        if *vis_i == app.cursor {
+        if vis_i == app.cursor {
             sel_row = Some(rows.len());
         }
-        let r = *r;
         let busy = app.busy.contains(&r.name);
         let (label, color) = status_pill(r, busy);
         let dl = if r.pulling {

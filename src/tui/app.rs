@@ -205,7 +205,8 @@ impl App {
             })
     }
 
-    /// Recipes after the deck/all, compatible and fuzzy filters; best match first.
+    /// Recipes after the deck/all, compatible and fuzzy filters, in display
+    /// order: family-grouped when `grouped` is on, else best match first.
     pub fn visible(&self) -> Vec<&RecipeView> {
         let Some(s) = &self.snap else { return vec![] };
         let mut v: Vec<(i64, &RecipeView)> = s
@@ -233,6 +234,11 @@ impl App {
             .collect();
         if !self.query.trim().is_empty() {
             v.sort_by_key(|x| std::cmp::Reverse(x.0));
+        }
+        if self.grouped {
+            // The list is drawn in this order. Navigation indexes the same
+            // vector, so it must group too or the cursor jumps across families.
+            v.sort_by_key(|(_, r)| crate::recipe::family_rank_of(r.family));
         }
         v.into_iter().map(|(_, r)| r).collect()
     }
@@ -638,7 +644,14 @@ impl App {
                 return Action::SaveTheme(self.theme().name.to_string());
             }
             KeyCode::Char('F') if self.tab == Tab::Deck => {
+                let keep = self.selected().map(|r| r.reference.clone());
                 self.grouped = !self.grouped;
+                // The reorder moves the cursor; keep it on the same recipe.
+                if let Some(reference) = keep {
+                    if let Some(i) = self.visible().iter().position(|r| r.reference == reference) {
+                        self.cursor = i;
+                    }
+                }
                 self.notify(if self.grouped { "grouped by family" } else { "flat list" }, Level::Ok);
             }
             KeyCode::Char('T') => self.open_theme_picker(),

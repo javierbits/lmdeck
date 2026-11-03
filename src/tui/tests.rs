@@ -161,6 +161,38 @@ fn navigation_wraps_and_survives_refresh() {
 }
 
 #[test]
+fn grouped_navigation_follows_the_displayed_order() {
+    let mut a = App::default();
+    let mut s = demo();
+    // Interleave families in snapshot order: the grouped list, and therefore
+    // the cursor, must still run Qwen -> Qwen -> DeepSeek, not snapshot order.
+    s.recipes[0].family = "Qwen";
+    s.recipes[1].family = "DeepSeek";
+    s.recipes[2].family = "Qwen";
+    a.set_snapshot(s);
+    let names: Vec<_> = a.visible().iter().map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["qwen3-4b-gguf", "glm-big-exl3", "gpt-oss-20b-vllm"]);
+    let mut walked = vec![a.selected().unwrap().name.clone()];
+    for _ in 0..2 {
+        a.on_key(code(KeyCode::Down));
+        walked.push(a.selected().unwrap().name.clone());
+    }
+    assert_eq!(walked, names, "down must visit the rows in on-screen order");
+    for _ in 0..2 {
+        a.on_key(code(KeyCode::Up));
+    }
+    assert_eq!(a.selected().unwrap().name, "qwen3-4b-gguf");
+    // Toggling the grouping reorders the list but keeps the same recipe under
+    // the cursor.
+    a.cursor = 1;
+    let keep = a.selected().unwrap().name.clone();
+    a.on_key(key('F'));
+    assert_eq!(a.selected().unwrap().name, keep);
+    a.on_key(key('F'));
+    assert_eq!(a.selected().unwrap().name, keep);
+}
+
+#[test]
 fn enter_toggles_by_status_and_marks_busy() {
     let mut a = app();
     assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Stop("deck/qwen3-4b-gguf".into()));
