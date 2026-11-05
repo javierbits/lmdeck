@@ -11,7 +11,8 @@ pub mod topoview;
 pub mod view;
 
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind};
+use crossterm::execute;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
@@ -214,6 +215,17 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
 
     let mut app = initial_app(&opts, &deck)?;
     let mut terminal = ratatui::init();
+    if let Err(e) = execute!(std::io::stdout(), EnableMouseCapture) {
+        ratatui::restore();
+        return Err(e.into());
+    }
+    // ratatui's hook restores raw mode and the screen; this also releases the
+    // mouse before it runs.
+    let restore_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        restore_hook(info);
+    }));
     let result = (|| -> Result<()> {
         let mut last_log = Instant::now() - LOG_POLL;
         let mut last_hosts = Instant::now() - LOG_POLL;
@@ -290,7 +302,18 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
             if !event::poll(Duration::from_millis(100))? {
                 continue;
             }
-            let Event::Key(k) = event::read()? else { continue };
+            let k = match event::read()? {
+                Event::Key(k) => k,
+                Event::Mouse(m) => {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => app.scroll(true),
+                        MouseEventKind::ScrollDown => app.scroll(false),
+                        _ => {}
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
             let action = app.on_key(k);
             let (name, job): (String, Job) = match action {
                 Action::None | Action::Quit => continue,
@@ -347,6 +370,7 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
         }
         Ok(())
     })();
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }

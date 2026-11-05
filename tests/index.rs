@@ -260,7 +260,7 @@ fn browse_filters_sorts_and_reports_fit() {
     let big = &v["entries"][0];
     assert_eq!(big["fit"], "fail");
     // Only Sparks count (this machine, if it is one; no hosts here), never a Mac or phone.
-    assert!(big["fit_reason"].as_str().unwrap().contains("needs 2 Sparks ·"), "{big}");
+    assert!(big["fit_reason"].as_str().unwrap().contains("of 2 Sparks online"), "{big}");
 
     assert_eq!(big["installed"], "no");
     assert!(!names(&e.json(&["browse", "--json", "--fits"])).contains(&"big-two".to_string()));

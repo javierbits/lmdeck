@@ -116,7 +116,7 @@ fn row(e: &Entry, snap: Option<&Snapshot>, sparks: u32) -> Row {
 fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>, sparks: u32) -> (Level, String) {
     let need = e.sparks();
     if need > 1 && need > sparks {
-        return (Level::Fail, format!("needs {need} Sparks · {sparks} online (add the others with `lmdeck setup`)"));
+        return (Level::Fail, format!("{sparks} of {need} Sparks online (add the others with `lmdeck setup`)"));
     }
     if let Some(r) = rv {
         let why = r.checks.iter().filter(|c| c.level != Level::Ok).map(|c| c.detail.clone()).collect::<Vec<_>>();
@@ -144,7 +144,7 @@ fn fit(e: &Entry, snap: Option<&Snapshot>, rv: Option<&crate::deck::RecipeView>,
         return (Level::Warn, format!("made for DGX Spark; this is {}", hw.platform));
     }
     if need > 1 {
-        return (Level::Ok, format!("needs {need} Sparks · {sparks} online"));
+        return (Level::Ok, format!("{need} Sparks · {sparks} online"));
     }
 
     (Level::Ok, "fits this machine".into())
@@ -256,7 +256,7 @@ tags = { engine = "llama.cpp", quant = "gguf" }
         let one = rows(&i, None, 1);
         let z = one.iter().find(|r| r.entry.name == "zeta-big").unwrap();
         assert_eq!(z.fit, Level::Fail);
-        assert!(z.fit_reason.contains("needs 2 Sparks · 1 online"), "{}", z.fit_reason);
+        assert!(z.fit_reason.contains("1 of 2 Sparks online"), "{}", z.fit_reason);
         assert_eq!(z.installed, "no");
         assert_eq!(z.install, "lmdeck add zeta-big");
         assert_eq!(z.readme, "https://github.com/o/zeta#readme");

@@ -152,7 +152,7 @@ impl Plan {
             }
             out.push(format!("     weights: {}", n.weights));
             if let Some(gb) = n.recipe.hardware.min_memory_gb {
-                out.push(format!("     memory: needs ~{gb:.0} GB"));
+                out.push(format!("     memory: ~{gb:.0} GB"));
             }
             if let Some(nfs) = &n.nfs {
                 out.push(format!("     export on {}: {}", show(&nfs.home), nfs.export_line));

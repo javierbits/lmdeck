@@ -616,7 +616,7 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         lines.push(l);
     }
     if let Some(need) = r.need_gb {
-        lines.push(kv("memory", format!("needs ~{}", human_gb(need)), t));
+        lines.push(kv("memory", human_gb(need), t));
     }
     if let (Some(pid), Some(at)) = (r.pid, r.started_at) {
         lines.push(kv("process", format!("pid {pid} · up {}", human_duration(now_secs().saturating_sub(at))), t));
@@ -664,7 +664,7 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{mark} "), Style::new().fg(level_color(c.level, t))),
-            Span::styled(format!("{:<10}", c.what), Style::new().fg(t.muted)),
+            Span::styled(format!("{:<12}", c.what), Style::new().fg(t.muted)),
             Span::styled(c.detail.clone(), t.fg),
         ]));
     }
@@ -919,6 +919,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("p", "pull: download weights / update a checkout"),
     ("u", "take a ⬆ update (moves a pinned ref)"),
     ("l", "expand / collapse the live log"),
+    ("wheel", "scroll the live log on the deck; move elsewhere"),
     ("o", "run on…: pick the host (weights stay home)"),
     ("hosts ↵ s", "run the deck's pick on the selected host"),
     ("hosts ← →", "pick one of that host's servers"),

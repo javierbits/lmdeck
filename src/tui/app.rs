@@ -336,6 +336,18 @@ impl App {
         self.move_by_with(delta, true);
     }
 
+    /// Mouse wheel. The Deck tab's log pane is what it scrolls; on the other
+    /// tabs, where no log is visible, it moves the list instead.
+    pub fn scroll(&mut self, up: bool) {
+        if self.tab == Tab::Deck || self.logs_max {
+            let max = self.logs.len().saturating_sub(1) as isize;
+            let delta = if up { 1 } else { -1 };
+            self.log_scroll = (self.log_scroll as isize + delta).clamp(0, max) as usize;
+            return;
+        }
+        self.move_by(if up { -1 } else { 1 });
+    }
+
     fn move_by(&mut self, delta: isize) {
         self.move_by_with(delta, false);
     }

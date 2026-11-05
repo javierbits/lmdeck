@@ -34,7 +34,7 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         size_gb: Some(4.0),
         need_gb: Some(4.8),
         fit,
-        checks: vec![Check { level: fit, what: "memory".into(), detail: "needs ~4.8 GB of 64 GB".into() }],
+        checks: vec![Check { level: fit, what: "memory".into(), detail: "~4.8 GB · 64 GB RAM".into() }],
         command: Some(format!("llama-server -m {name}.gguf --port 8080")),
         plan_error: None,
         pulling: false,
@@ -279,6 +279,27 @@ fn logs_pane_scrolls_when_maximized() {
     assert_eq!(a.cursor, 0, "list cursor untouched");
     a.on_key(code(KeyCode::Esc));
     assert!(!a.logs_max && !a.quit);
+}
+
+#[test]
+fn mouse_wheel_scrolls_logs_without_moving_the_recipe() {
+    let mut a = app();
+    a.logs = (0..50).map(|i| format!("line {i}")).collect();
+    a.scroll(true);
+    a.scroll(true);
+    assert_eq!(a.log_scroll, 2);
+    assert_eq!(a.cursor, 0, "wheel does not move the recipe cursor");
+    assert!(!a.logs_max, "the deck's own log pane scrolls");
+    a.scroll(false);
+    assert_eq!(a.log_scroll, 1);
+    for _ in 0..10 {
+        a.scroll(false);
+    }
+    assert_eq!(a.log_scroll, 0, "clamped at the newest line");
+    for _ in 0..100 {
+        a.scroll(true);
+    }
+    assert_eq!(a.log_scroll, 49, "clamped at the oldest line");
 }
 
 #[test]

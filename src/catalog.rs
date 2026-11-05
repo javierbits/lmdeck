@@ -360,6 +360,9 @@ mod tests {
     fn recipe_schemas_missing_current_newer() {
         // Every recipe file and example says `schema = 1` itself.
         for path in fs::read_dir(format!("{}/recipes", env!("CARGO_MANIFEST_DIR"))).unwrap().flatten() {
+            if path.path().extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
             let text = fs::read_to_string(path.path()).unwrap();
             assert!(text.lines().any(|l| l.trim() == "schema = 1"), "{} has no schema line", path.path().display());
         }

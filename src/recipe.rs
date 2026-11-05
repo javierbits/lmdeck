@@ -384,7 +384,7 @@ pub struct HardwareReq {
     pub nodes: Option<u32>,
     /// How many Sparks a wrapped recipe's own scripts use. They reach the
     /// other machines themselves (ssh, docker), so lmdeck starts it on this
-    /// one only; the count is for the fit check ("needs 4 Sparks · 1 online").
+    /// one only; the count is for the fit check ("1 of 4 online").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts: Option<u32>,
 }

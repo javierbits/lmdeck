@@ -59,8 +59,8 @@ pub fn is_spark(platform: &str) -> bool {
 }
 
 impl Report {
-    /// Adds "needs N Sparks · M online" for a recipe whose scripts span
-    /// several Sparks (`hardware.hosts`): a failure when fewer are online.
+    /// Adds "M of N online" for a recipe whose scripts span several Sparks
+    /// (`hardware.hosts`): a failure when fewer are online.
     /// `fleet` is only asked for when the recipe needs more than one.
     pub fn with_fleet(mut self, r: &Recipe, fleet: impl FnOnce() -> Fleet) -> Report {
         let need = r.hardware.hosts.unwrap_or(1);
@@ -70,7 +70,7 @@ impl Report {
         let fleet = fleet();
 
         let ok = fleet.online >= need;
-        let mut detail = format!("needs {need} Sparks · {} online", fleet.online);
+        let mut detail = format!("{} of {} online", fleet.online, need);
         if !ok {
             detail.push_str(" (add the others with `lmdeck setup`)");
         }
@@ -135,32 +135,28 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
 
     if !req.os.is_empty() {
         let ok = req.os.iter().any(|o| normalize_os(o) == hw.os);
-        push(if ok { Level::Ok } else { Level::Fail }, "os", format!("needs {}, this is {}", req.os.join("/"), hw.os));
+        let detail = if ok { req.os.join("/") } else { format!("{} · found {}", req.os.join("/"), hw.os) };
+        push(if ok { Level::Ok } else { Level::Fail }, "os", detail);
     }
     if !req.arch.is_empty() {
         let ok = req.arch.iter().any(|a| normalize_arch(a) == normalize_arch(&hw.arch));
-        push(
-            if ok { Level::Ok } else { Level::Fail },
-            "arch",
-            format!("needs {}, this is {}", req.arch.join("/"), hw.arch),
-        );
+        let detail = if ok { req.arch.join("/") } else { format!("{} · found {}", req.arch.join("/"), hw.arch) };
+        push(if ok { Level::Ok } else { Level::Fail }, "arch", detail);
     }
     if !req.accelerator.is_empty() {
         let have = hw.accelerator();
         let ok = req.accelerator.iter().any(|a| a.eq_ignore_ascii_case(have));
-        push(
-            if ok { Level::Ok } else { Level::Fail },
-            "accelerator",
-            format!("needs {}, this has {}", req.accelerator.join("/"), have),
-        );
+        let detail =
+            if ok { req.accelerator.join("/") } else { format!("{} · found {}", req.accelerator.join("/"), have) };
+        push(if ok { Level::Ok } else { Level::Fail }, "accelerator", detail);
     }
     if let Some(min) = &req.min_compute_capability {
         match hw.compute_capability() {
             Some(cc) => {
                 let ok = cmp_version(&cc, min).is_ge();
-                push(if ok { Level::Ok } else { Level::Fail }, "compute", format!("needs sm {min}+, GPU is {cc}"));
+                push(if ok { Level::Ok } else { Level::Fail }, "compute", format!("sm {min}+ · GPU {cc}"));
             }
-            None => push(Level::Fail, "compute", format!("needs an NVIDIA GPU with compute capability {min}+")),
+            None => push(Level::Fail, "compute", format!("sm {min}+ · no NVIDIA GPU")),
         }
     }
     let pool = hw.model_memory_gb();
@@ -180,9 +176,9 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
             } else {
                 Level::Ok
             };
-            push(level, "memory", format!("needs ~{need:.0} GB, {pool:.0} GB {kind}"));
+            push(level, "memory", format!("~{need:.0} GB · {pool:.0} GB {kind}"));
         }
-        Some(need) => push(Level::Warn, "memory", format!("needs ~{need:.0} GB, could not measure this machine")),
+        Some(need) => push(Level::Warn, "memory", format!("~{need:.0} GB · not measured")),
         None => push(Level::Warn, "memory", "no size or min_memory_gb in recipe; cannot estimate".into()),
     }
     if let Some(frac) = reserved_fraction(r) {
@@ -220,7 +216,7 @@ pub fn check(r: &Recipe, hw: &Hardware, inv: Option<&Inventory>, on_disk_bytes: 
         }
     } else if let Some(inv) = inv {
         match inv.can_launch(r) {
-            Ok(()) => push(Level::Ok, "engine", format!("{} available", r.engine.name)),
+            Ok(()) => push(Level::Ok, "engine", r.engine.name.to_string()),
             Err(e) => push(Level::Warn, "engine", e),
         }
     }
@@ -240,7 +236,7 @@ fn tensorfold_checks(r: &Recipe, hw: &Hardware) -> Vec<(Level, &'static str, Str
             Level::Fail,
             "tensorfold",
             format!(
-                "runs on Apple-silicon macOS or Linux with an NVIDIA GPU; this is {} {} ({})",
+                "runs on Apple-silicon macOS or Linux with an NVIDIA GPU; found {} {} ({})",
                 hw.os,
                 arch,
                 hw.accelerator()
@@ -286,7 +282,7 @@ mod tests {
         });
         assert_eq!(asked, 1);
         assert_eq!(rep.level(), Level::Fail);
-        assert!(rep.reasons(false).iter().any(|s| s.contains("needs 4 Sparks · 1 online")), "{:?}", rep.reasons(false));
+        assert!(rep.reasons(false).iter().any(|s| s.contains("1 of 4 online")), "{:?}", rep.reasons(false));
         let rep = check(&r, &spark(), None, None).with_fleet(&r, || Fleet { online: 4 });
         assert!(rep.compatible());
         // One-machine recipes never ask.
@@ -346,7 +342,7 @@ mod tests {
     fn os_and_arch_mismatch() {
         let rec = r("os=[\"macos\"]\narch=[\"arm64\"]\n");
         let rep = check(&rec, &spark(), None, None);
-        assert_eq!(rep.reasons(false), vec!["os: needs macos, this is linux"]);
+        assert_eq!(rep.reasons(false), vec!["os: macos · found linux"]);
         assert!(check(&rec, &mac(), None, None).compatible());
     }
 

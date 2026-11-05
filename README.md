@@ -165,6 +165,7 @@ Quitting leaves servers running.
 | `p` | pull the weights, or update a wrapped recipe's checkout (runs in the background; the log pane shows progress) |
 | `u` | take a `⬆` upstream update; for a pinned wrapped recipe this also moves the pin (`pull --latest`) |
 | `l` | expand the log pane (`j k` then scroll it) |
+| mouse wheel | scroll the live log on the deck; on other tabs it moves the list |
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |

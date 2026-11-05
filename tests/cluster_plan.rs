@@ -73,7 +73,7 @@ fn each_node_of_a_split_model_is_checked_against_its_share() {
         assert!(rep.compatible(), "{} with the weights on disk: {:?}", n.name, rep.reasons(true));
     }
     let desc = plan.describe("ctl").join("\n");
-    assert!(desc.contains("memory: needs ~90 GB"), "{desc}");
+    assert!(desc.contains("memory: ~90 GB"), "{desc}");
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn a_share_that_does_not_fit_one_spark_is_still_refused() {
     for n in &plan.nodes {
         let rep = compat::check(&n.recipe, &spark(), None, Some(300 * GIB));
         assert_eq!(rep.level(), Level::Fail, "{}: {:?}", n.name, rep.checks);
-        assert!(rep.reasons(false).iter().any(|r| r.contains("needs ~150 GB")), "{:?}", rep.reasons(false));
+        assert!(rep.reasons(false).iter().any(|r| r.contains("~150 GB")), "{:?}", rep.reasons(false));
     }
 }
 
