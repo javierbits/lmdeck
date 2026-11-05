@@ -146,7 +146,7 @@ pub(super) fn kv<'a>(k: &str, v: impl Into<String>, t: &Theme) -> Line<'a> {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = app.theme();
-    let mut spans = segments(&[("◆ lmdeck".into(), t.accent)], t.bar_bg, t, app.nerd);
+    let mut spans = segments(&[("◈ lmdeck".into(), t.accent)], t.bar_bg, t, app.nerd);
     spans.push(Span::raw(" "));
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let label = format!(" {} {} ", i + 1, tab.title());

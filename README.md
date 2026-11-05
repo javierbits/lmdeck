@@ -1,11 +1,4 @@
-```
-██╗     ███╗   ███╗██████╗ ███████╗ ██████╗██╗  ██╗
-██║     ████╗ ████║██╔══██╗██╔════╝██╔════╝██║ ██╔╝
-██║     ██╔████╔██║██║  ██║█████╗  ██║     █████╔╝
-██║     ██║╚██╔╝██║██║  ██║██╔══╝  ██║     ██╔═██╗
-███████╗██║ ╚═╝ ██║██████╔╝███████╗╚██████╗██║  ██╗
-╚══════╝╚═╝     ╚═╝╚═════╝ ╚══════╝ ╚═════╝╚═╝  ╚═╝
-```
+![lmdeck — local LLM deck](docs/brand/lmdeck-banner.svg)
 
 **lmdeck** is a single-binary CLI for running local LLMs from *recipes*. A recipe
 says which model to use, which quant, which engine, and what hardware it
