@@ -56,9 +56,25 @@ recipe = "recipes/deepseek-v4.1-flash-1017-4x-spark-nvfp4.toml"
 tags = { engine = "vllm", model = "DeepSeek-V4.1-Flash-1017", family = "deepseek", quant = "nvfp4", sparks = 4 }
 
 [[entry]]
+name = "lfm3-1.7b-nvfp4"
+repo = "https://huggingface.co/LiquidAI/LFM3-1.7B-NVFP4"
+description = "LiquidAI LFM3 1.7B NVFP4 (W4A4) on SGLang: 256K context, agentic/tool-trained; runs on Blackwell FP4 tensor cores. Needs the native-LFM3 SGLang image."
+size_gb = 1.83  # model.safetensors (HF API)
+recipe = "recipes/lfm3-1.7b-nvfp4.toml"
+tags = { engine = "sglang", model = "LFM3 1.7B", family = "lfm3", quant = "nvfp4", sparks = 1 }
+
+[[entry]]
+name = "lfm3-omni-2b-bf16"
+repo = "https://huggingface.co/LiquidAI/LFM3-Omni-2B"
+description = "LiquidAI LFM3 Omni 2B BF16 on SGLang: text, image, video and audio in; text or 24 kHz speech out; 32K context."
+size_gb = 4.2   # model.safetensors (HF API)
+recipe = "recipes/lfm3-omni-2b-bf16.toml"
+tags = { engine = "sglang", model = "LFM3 Omni 2B", family = "lfm3", quant = "bf16", sparks = 1 }
+
+[[entry]]
 name = "lfm3-1.7b-gguf"
 repo = "https://huggingface.co/LiquidAI/LFM3-1.7B"
-description = "LiquidAI LFM3 1.7B (agentic/tool-trained, 256K context) NVFP4 on llama.cpp; runs on Blackwell FP4 tensor cores. Needs llama.cpp b12088 or newer."
+description = "LiquidAI LFM3 1.7B (agentic/tool-trained, 256K context) NVFP4 GGUF on llama.cpp; runs on Blackwell FP4 tensor cores. Needs llama.cpp b12088 or newer."
 size_gb = 1.28  # LFM3-1.7B-NVFP4.gguf (HF API)
 recipe = "recipes/lfm3-1.7b-gguf.toml"
 tags = { engine = "llama.cpp", model = "LFM3 1.7B", family = "lfm3", quant = "nvfp4", sparks = 1 }
@@ -66,7 +82,7 @@ tags = { engine = "llama.cpp", model = "LFM3 1.7B", family = "lfm3", quant = "nv
 [[entry]]
 name = "lfm3-omni-2b-gguf"
 repo = "https://huggingface.co/LiquidAI/LFM3-Omni-2B"
-description = "LiquidAI LFM3 Omni 2B (text, image, video, audio in; text or 24 kHz speech out) on llama.cpp, Q4_K_M. Needs llama.cpp v0.8.0 (b11960) or newer."
+description = "LiquidAI LFM3 Omni 2B (text, image, video, audio in; text or 24 kHz speech out) Q4_K_M GGUF on llama.cpp. Needs llama.cpp v0.8.0 (b11960) or newer."
 size_gb = 1.4   # LFM3-Omni-2B-Q4_K_M.gguf + mmproj-LFM3-Omni-2B-Q4_K_M.gguf (HF API)
 recipe = "recipes/lfm3-omni-2b-gguf.toml"
 tags = { engine = "llama.cpp", model = "LFM3 Omni 2B", family = "lfm3", quant = "gguf", sparks = 1 }

@@ -1,0 +1,34 @@
+# SGLang native LFM3 support is in PR #46858, not yet in a release. The image
+# below is the 2026-11-03 SGLang nightly with that PR's source overlaid; build
+# it with recipes/lfm3-sglang-pr46858.Dockerfile, or swap the tag once the PR
+# lands in a release.
+# Sampling follows the model card's general preset via the checkpoint's
+# generation_config.json (--sampling-defaults model).
+schema = 1
+display_name = "LFM3 1.7B (NVFP4, SGLang)"
+description = "LiquidAI LFM3 1.7B NVFP4 (W4A4) on SGLang: 256K context, agentic/tool-trained, ~1.8 GB; runs on Blackwell FP4 tensor cores. Needs the native-LFM3 SGLang image."
+tags = ["lfm3", "liquid", "nvfp4", "sglang", "agent", "tool-use", "blackwell", "dgx-spark"]
+
+[model]
+repo = "LiquidAI/LFM3-1.7B-NVFP4"
+size_gb = 1.83
+
+[quant]
+format = "nvfp4"
+bits = 4.0
+
+[engine]
+name = "sglang"
+image = "lmdeck/sglang-lfm3:pr46858"
+ctx = 262144
+args = [
+  "--trust-remote-code",
+  "--sampling-defaults", "model",
+  "--reasoning-parser", "auto",
+  "--tool-call-parser", "auto",
+]
+
+[hardware]
+min_memory_gb = 8
+accelerator = ["nvidia"]
+os = ["linux"]

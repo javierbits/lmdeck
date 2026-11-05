@@ -1,0 +1,30 @@
+# Same native-LFM3 SGLang image as the 1.7B recipe; see
+# recipes/lfm3-sglang-pr46858.Dockerfile. BF16 checkpoint (not GGUF).
+# Non-reasoning model: generation_config.json is greedy, which
+# --sampling-defaults model applies.
+schema = 1
+display_name = "LFM3 Omni 2B (BF16, SGLang)"
+description = "LiquidAI LFM3 Omni 2B BF16 on SGLang: text, image, video and audio input; text or 24 kHz speech output; 32K context, ~4.2 GB. Needs the native-LFM3 SGLang image."
+tags = ["lfm3", "lfm3-omni", "omni", "liquid", "bf16", "sglang", "vision", "audio", "speech", "dgx-spark"]
+
+[model]
+repo = "LiquidAI/LFM3-Omni-2B"
+size_gb = 4.2
+
+[quant]
+format = "bf16"
+bits = 16.0
+
+[engine]
+name = "sglang"
+image = "lmdeck/sglang-lfm3:pr46858"
+ctx = 32768
+args = [
+  "--trust-remote-code",
+  "--sampling-defaults", "model",
+]
+
+[hardware]
+min_memory_gb = 12
+accelerator = ["nvidia"]
+os = ["linux"]

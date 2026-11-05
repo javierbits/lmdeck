@@ -1,7 +1,7 @@
 # Requires llama.cpp b12088 or newer: the NVFP4 file needs the FP4 tensor-core
 # path (older builds load it but compute wrong output). On Blackwell (DGX Spark)
-# the feed-forward layers run on FP4 tensor cores; use LiquidAI/LFM3-1.7B-NVFP4
-# safetensors with SGLang once its LFM3 support lands.
+# the feed-forward layers run on FP4 tensor cores. The lfm3-1.7b-nvfp4 recipe
+# serves the same NVFP4 checkpoint's safetensors with SGLang.
 # Sampling is the model card's general preset (chat, tool use, agents, coding):
 # temperature 0.1, top_k 50, repetition penalty 1.1.
 # Math/STEM preset instead: --temp 1.0 --top-p 0.95 --top-k 20 (drop --min-p
