@@ -425,7 +425,8 @@ function card(r){
     ? `<button class="btn upd${u.state === "pinned_newer" ? " pin" : ""}" data-act="pull" data-ref="${ref}" ${u.state === "pinned_newer" ? 'data-latest="1" title="move the pinned ref to the upstream head and update the checkout"' : 'title="update the checkout"'} ${busy||r.pulling?"disabled":""}>⬆ Update</button>`
     : `<button class="btn" data-act="pull" data-ref="${ref}" ${busy||r.pulling||(!r.model&&!u)?"disabled":""}>↓ Pull</button>`;
   const wOn = (r.weights_on || []);
-  const wTag = wOn.length ? `<span class="tag wt" title="the checkpoint is on these hosts' disks (not where it runs); it is never copied and other hosts mount it read-only">⛁ weights on disk: ${esc(wOn.join(", "))}</span>` : "";
+  const wHere = wOn.length ? wOn.join(", ") : (r.weights_home || "");
+  const wTag = wHere && !r.downloaded ? `<span class="tag wt" title="the checkpoint is on this host's disk; it is never copied and other hosts mount it read-only">⛁ weights on disk: ${esc(wHere)}</span>` : "";
   const onTag = r.placed_on ? `<span class="tag on" title="this host runs the server; if the weights aren't on its disk it reads them from their home over NFS">▸ running on ${esc(r.placed_on)}</span>` : "";
   const nTag = (r.nodes || []).length ? `<span class="tag on">×${r.nodes.length} nodes</span>` : "";
   const nodes = (r.nodes || []).length ? `<div class="nodes"><div class="hd"><span>nodes · start order</span><span>${esc(r.cluster_phase || "")}</span></div>${r.nodes.map((n, i) =>
@@ -444,7 +445,7 @@ function card(r){
     <div class="tags"><span class="tag eng">${esc(r.engine)}</span>${wrapOnly
       ? `<span class="tag" title="${esc(u.repo)}">git @ ${esc(refShort)}</span>${u.state === "not_cloned" ? `<span class="tag remote">not cloned</span>` : ""}`
       : `<span class="tag q">${esc(r.quant)}</span><span class="tag">${size}</span>
-      ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : `<span class="tag remote">not downloaded</span>`}`}
+      ${r.pulling ? `<span class="tag disk">↓ pulling</span>` : r.downloaded ? `<span class="tag disk">✓ on disk</span>` : wHere ? "" : `<span class="tag remote">not downloaded</span>`}`}
       ${r.ctx ? `<span class="tag">ctx ${r.ctx}</span>` : ""}${upTag}${nTag}${wTag}${onTag}</div>
     ${need}${nodes}${liveLine(r)}
     <details class="checks" data-ref="${ref}" ${st.open.has(r.reference)?"open":""}><summary>${(r.checks||[]).length} checks · launch command</summary><div class="chk">${checks}</div>${cmd}</details>

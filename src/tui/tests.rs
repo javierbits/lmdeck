@@ -43,6 +43,7 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         source_repo: None,
         source_ref: None,
         weights_home: downloaded.then(|| "local".into()),
+        fetched_by_scripts: false,
         nodes: vec![],
         placed_on: None,
         cluster_phase: None,
@@ -594,8 +595,10 @@ fn update_badge_survives_a_narrow_list() {
     let mut a = App::default();
     a.set_snapshot(s);
     let narrow = buffer_text(&render(&a, 94, 30));
-    assert!(narrow.contains("… ⬆ "), "{narrow}");
-    assert!(!narrow.contains("⬆ upd ") && !narrow.contains("⬆ updat"), "{narrow}");
+    // The details header can show the full pill; the list row is what shrinks.
+    let row = narrow.lines().find(|l| l.contains("a-very-long")).expect("list row");
+    assert!(row.contains("… ⬆ "), "{row}");
+    assert!(!row.contains("⬆ upd ") && !row.contains("⬆ updat"), "{row}");
     // Wide enough: the list grows (up to 62%) to show the whole badge.
     let wide = buffer_text(&render(&a, 180, 42));
     assert!(wide.contains("a-very-long-wrapped-recipe-name ⬆ update"), "{wide}");
@@ -825,6 +828,68 @@ fn list_marks_weights_that_live_on_another_host() {
     let text = buffer_text(&render(&a, 170, 50));
     let row = text.lines().find(|l| l.contains(&name)).unwrap();
     assert!(row.contains("⛁disk:spark2") && row.matches('⛁').count() == 2, "{row}");
+}
+
+/// Weights on another Spark are not "not downloaded": the row names the
+/// holder, and pressing p is not needed.
+#[test]
+fn details_name_the_host_holding_the_weights() {
+    let mut a = app();
+    let mut s = demo();
+    let r = &mut s.recipes[1];
+    r.weights_on = vec![];
+    r.weights_home = Some("ember".into());
+    r.fetched_by_scripts = true;
+    r.placed_on = Some("ember".into());
+    let name = r.name.clone();
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    let text = buffer_text(&render(&a, 170, 50));
+    assert!(text.contains("weights   on ember"), "{text}");
+    assert!(text.contains("on ember (weights on its disk)"), "{text}");
+    assert!(!text.contains("not downloaded"), "{text}");
+    assert!(!text.contains("press p"), "{text}");
+}
+
+/// A wrapped recipe whose own scripts download its weights never asks for
+/// `lmdeck pull`.
+#[test]
+fn details_do_not_ask_to_pull_weights_the_scripts_fetch() {
+    let mut a = app();
+    let mut s = demo();
+    let r = &mut s.recipes[1];
+    r.weights_on = vec![];
+    r.weights_home = None;
+    r.fetched_by_scripts = true;
+    let name = r.name.clone();
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    let text = buffer_text(&render(&a, 170, 50));
+    assert!(text.contains("fetched by the wrapped repo's scripts"), "{text}");
+    assert!(!text.contains("press p"), "{text}");
+}
+
+/// The details panel shows the checkout commit the scripts run and an update
+/// pill when the cloned repo is ahead.
+#[test]
+fn details_show_the_running_commit_and_an_update_pill() {
+    use crate::updates::State as U;
+    let mut a = app();
+    let mut s = demo();
+    let r = &mut s.recipes[0];
+    r.source_repo = Some("https://github.com/MiaAI-Lab/example".into());
+    r.source_ref = Some("fcef6cf2117460f8453714d4ee756537c1a29995".into());
+    let mut u = upd(U::PinnedNewer);
+    u.local = Some("fcef6cf2117460f8453714d4ee756537c1a29995".into());
+    r.update = Some(u);
+    let name = r.name.clone();
+    a.set_snapshot(s);
+    a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
+    let text = buffer_text(&render(&a, 170, 50));
+    assert!(text.contains("source    MiaAI-Lab/example @ fcef6cf"), "{text}");
+    let head = text.lines().find(|l| l.contains("⬆ newer")).expect("update pill");
+    assert!(head.contains("running"), "the pill sits in the details header, not only the list: {head}");
+    assert!(text.contains("pinned; upstream"), "{text}");
 }
 
 #[test]

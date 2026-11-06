@@ -130,6 +130,29 @@ fn status_pill(r: &RecipeView, busy: bool) -> (&'static str, fn(&Theme) -> Color
     }
 }
 
+/// `owner/repo` from a clone URL (https, ssh, or `git@host:owner/repo`).
+fn repo_short(repo: &str) -> String {
+    let s = repo.strip_suffix(".git").unwrap_or(repo);
+    let parts: Vec<&str> = s.split(['/', ':']).filter(|p| !p.is_empty()).collect();
+    match parts.len() {
+        0 | 1 => s.to_string(),
+        n => format!("{}/{}", parts[n - 2], parts[n - 1]),
+    }
+}
+
+/// The host(s) holding a recipe's weights when this machine does not:
+/// the weights index's holders, else the home a placement started it from.
+fn weights_elsewhere(r: &RecipeView) -> Option<String> {
+    if r.weights_on.is_empty() {
+        return r.weights_home.clone();
+    }
+    if r.weights_on.len() == 1 {
+        return r.weights_on.first().cloned();
+    }
+    let home = r.weights_home.clone().unwrap_or_else(|| r.weights_on[0].clone());
+    Some(format!("{} (home {home})", r.weights_on.join(", ")))
+}
+
 fn size_text(r: &RecipeView) -> String {
     if r.downloaded && r.size_bytes > 0 {
         human_bytes(r.size_bytes)
@@ -532,6 +555,17 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     head.extend(pill(r.engine.clone(), t.seg[1], t, app.nerd));
     head.push(Span::raw(" "));
     head.extend(pill(r.quant.clone(), t.seg[0], t, app.nerd));
+    if let Some(u) = &r.update {
+        let badge = match u.state {
+            UpdState::Behind => Some(("⬆ update", t.warn)),
+            UpdState::PinnedNewer => Some(("⬆ newer", t.info)),
+            _ => None,
+        };
+        if let Some((word, color)) = badge {
+            head.push(Span::raw(" "));
+            head.extend(pill(word, color, t, app.nerd));
+        }
+    }
     lines.push(Line::from(head));
     if let Some(d) = &r.description {
         lines.push(Line::from(Span::styled(d.clone(), Style::new().fg(t.muted).italic())));
@@ -561,21 +595,29 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{:<10}", "endpoint"), Style::new().fg(t.muted)),
         Span::styled(r.endpoint.clone(), Style::new().fg(t.info).underlined()),
     ]));
-    if let (None, Some(u)) = (&r.model, &r.update) {
-        let at = u.git_ref.as_deref().map(|g| format!(" @ {}", if g.len() == 40 { short(g) } else { g.to_string() }));
-        lines.push(kv("source", format!("{}{}", u.repo, at.unwrap_or_default()), t));
+    if let Some(repo) = &r.source_repo {
+        // The checkout's HEAD is what the scripts run; before the first start,
+        // the pinned ref is what they will run.
+        let commit = r.update.as_ref().and_then(|u| u.local.clone()).or_else(|| r.source_ref.clone());
+        let at = commit.map(|c| format!(" @ {}", if c.len() == 40 { short(&c) } else { c })).unwrap_or_default();
+        // Keep the commit on the row: shrink the repo, never the commit.
+        let room = (area.width as usize).saturating_sub(14 + at.width());
+        lines.push(kv("source", format!("{}{at}", fit_to(&repo_short(repo), room.max(8))), t));
     }
     let weights = if r.pulling {
         "downloading…".to_string()
-    } else if r.model.is_none() && r.update.is_some() {
-        "fetched by the wrapped repo's scripts".to_string()
     } else if r.downloaded {
         format!("on disk, {}{}", size_text(r), if r.cached { " (HF cache)" } else { "" })
+    } else if let Some(on) = weights_elsewhere(r) {
+        let size = r.size_gb.map(|g| format!(", ~{}", human_gb(g))).unwrap_or_default();
+        format!("on {on}{size}")
+    } else if r.fetched_by_scripts || r.model.is_none() {
+        "fetched by the wrapped repo's scripts".to_string()
     } else {
         format!("not downloaded ({}) · press p", size_text(r))
     };
     lines.push(kv("weights", weights, t));
-    if !r.weights_on.is_empty() {
+    if r.downloaded && !r.weights_on.is_empty() {
         let home = r.weights_home.as_deref().map(|h| format!(" · home {h}")).unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled(format!("{:<10}", "on"), Style::new().fg(t.muted)),
@@ -584,7 +626,13 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
     if let Some(h) = &r.placed_on {
-        lines.push(kv("running", format!("on {h} (weights read over NFS from their home)"), t));
+        let how = match (&r.weights_home, r.fetched_by_scripts) {
+            (Some(home), _) if home == h => "weights on its disk".to_string(),
+            (Some(home), _) => format!("weights read over NFS from {home}"),
+            (None, true) => "weights fetched there by the recipe's scripts".to_string(),
+            (None, false) => "weights read over NFS from their home".to_string(),
+        };
+        lines.push(kv("running", format!("on {h} ({how})"), t));
     }
     if let (true, Some(e)) = (r.nodes.is_empty(), &r.cluster_error) {
         lines.push(Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(t.err))));

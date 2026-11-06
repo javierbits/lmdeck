@@ -434,8 +434,12 @@ pub struct RecipeView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
     /// The one host the weights are served from (`[model] home`, else the
-    /// first holder, this machine first).
+    /// first holder, this machine first; a placement's home when the index
+    /// has no answer).
     pub weights_home: Option<String>,
+    /// `[model] pull = false`: the recipe's own scripts fetch its weights,
+    /// so `lmdeck pull` does not download them.
+    pub fetched_by_scripts: bool,
     /// Multi-node recipes: one entry per `[[nodes]]`, in start order.
     pub nodes: Vec<crate::cluster::NodeView>,
     /// Started on another host by `--on` (placement record).
@@ -648,6 +652,13 @@ impl Deck {
                 None => format!("http://localhost:{port}/v1"),
             };
             let locs = widx.locate(r);
+            // Reason: the index drops a host that is offline, but a placement made for
+            // this run recorded where the weights were served from; keep saying so
+            // instead of "not downloaded".
+            let weights_home = widx
+                .home(r, &node)
+                .map(|l| show(&l.host))
+                .or_else(|| placed.as_ref().map(|p| show(&p.home)).filter(|h| !h.is_empty()));
             recipes.push(RecipeView {
                 index,
                 name: r.name.clone(),
@@ -682,7 +693,8 @@ impl Deck {
                 weights_on: locs.iter().map(|l| show(&l.host)).collect(),
                 source_repo: r.source.as_ref().map(|s| s.repo.clone()),
                 source_ref: r.source.as_ref().and_then(|s| s.git_ref.clone()),
-                weights_home: widx.home(r, &node).map(|l| show(&l.host)),
+                weights_home,
+                fetched_by_scripts: r.model.fetched_by_scripts(),
                 nodes,
                 placed_on,
                 cluster_phase: crec.as_ref().map(|c| c.phase.clone()),

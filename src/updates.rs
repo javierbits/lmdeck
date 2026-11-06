@@ -422,7 +422,11 @@ pub fn views<'a>(
 fn view_with(paths: &Paths, s: &Settings, r: &Recipe, entry: Option<&Entry>) -> Option<UpdateView> {
     let src = wrapped(r)?;
     let dir = checkout_dir(&paths.checkouts_dir(), &r.name);
-    let local = if dir.join(".git").exists() { local_head(&dir) } else { None };
+    let checkout = if dir.join(".git").exists() { local_head(&dir) } else { None };
+    // Reason: a recipe placed on another Spark has no checkout here, but a
+    // commit pin is what that host cloned and runs; it is still worth comparing.
+    let pin = norm(&src.git_ref).filter(|r| is_hex_sha(r));
+    let local = checkout.clone().or_else(|| pin.clone());
     let entry = entry.filter(|e| e.matches(src));
     let mut v = UpdateView {
         state: State::Unknown,
@@ -438,20 +442,20 @@ fn view_with(paths: &Paths, s: &Settings, r: &Recipe, entry: Option<&Entry>) -> 
     };
     v.state = if !s.enabled {
         State::Disabled
-    } else if local.is_none() {
-        State::NotCloned
-    } else if let (Some(e), Some(rem)) = (entry, v.remote.as_deref()) {
-        if local.as_deref() == Some(rem) {
+    } else if let (Some(l), Some(e), Some(rem)) = (local.as_deref(), entry, v.remote.as_deref()) {
+        if l == rem {
             v.behind = Some(0);
             State::Current
         } else {
-            v.behind = e.behind.filter(|_| e.local == local);
+            v.behind = e.behind.filter(|_| e.local.as_deref() == Some(l));
             if e.pinned {
                 State::PinnedNewer
             } else {
                 State::Behind
             }
         }
+    } else if checkout.is_none() && pin.is_none() {
+        State::NotCloned
     } else {
         State::Unknown
     };
@@ -475,8 +479,12 @@ pub fn refresh<'a>(
     let cache = load_cache(paths);
     let due: Vec<&Recipe> = recipes
         .into_iter()
-        // Nothing to compare until the checkout exists (it is cloned at the latest commit).
-        .filter(|r| checkout_dir(&paths.checkouts_dir(), &r.name).join(".git").exists())
+        // Without a checkout there is nothing to compare, except a commit pin:
+        // that is what a run placed on another Spark cloned there.
+        .filter(|r| {
+            checkout_dir(&paths.checkouts_dir(), &r.name).join(".git").exists()
+                || wrapped(r).and_then(|s| norm(&s.git_ref)).is_some_and(|r| is_hex_sha(&r))
+        })
         .filter(|r| match (wrapped(r), cache.recipes.get(&r.name)) {
             (None, _) => false,
             (Some(_), _) if force => true,
@@ -687,6 +695,34 @@ mod tests {
         // A branch recipe is not "bumped".
         let b = wrapper("pin", &repo, Some("main"));
         assert!(bump_pin(&file, &b, s.timeout).unwrap().is_none());
+    }
+
+    /// A recipe placed on another Spark has no checkout on the controller;
+    /// its commit pin still tells whether upstream has moved on.
+    #[test]
+    fn a_pinned_recipe_without_a_checkout_still_checks_upstream() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = fixture_repo(d.path(), &[("start.sh", "v1\n")]);
+        let first = git_out(Some(&repo), &["rev-parse", "HEAD"], Duration::from_secs(5)).unwrap();
+        let p = paths(d.path());
+        let s = on();
+        let r = wrapper("placed", &repo, Some(&first));
+        assert_eq!(view(&p, &s, &r).unwrap().state, State::Unknown, "not checked yet");
+        assert_eq!(refresh(&p, &s, [&r], false, s.timeout, false), 1);
+        let v = view(&p, &s, &r).unwrap();
+        assert_eq!(v.state, State::Current, "{v:?}");
+        assert_eq!(v.local.as_deref(), Some(first.as_str()), "the pin is what the run host cloned");
+
+        let tip = commit(&repo, "v2\n");
+        refresh(&p, &s, [&r], true, s.timeout, false);
+        let v = view(&p, &s, &r).unwrap();
+        assert_eq!(v.state, State::PinnedNewer, "{v:?}");
+        assert_eq!(v.remote.as_deref(), Some(tip.as_str()));
+        assert_eq!(v.hint("placed").as_deref(), Some("lmdeck pull --latest placed"));
+
+        // A branch ref has no commit to compare until it is cloned.
+        let b = wrapper("branch", &repo, Some("main"));
+        assert_eq!(view(&p, &s, &b).unwrap().state, State::NotCloned);
     }
 
     #[test]

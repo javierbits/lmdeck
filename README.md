@@ -941,8 +941,10 @@ $ lmdeck outdated
   `lmdeck pull --latest <name>` rewrites `ref` in your deck recipe to the new
   head and updates the checkout. The branch compared against is the remote's
   default branch, or `branch = "…"` in `[source]`.
-- Only recipes whose checkout exists are checked; recipes that aren't cloned yet
-  show `not cloned`, and native recipes show nothing.
+- A recipe whose checkout exists is checked. So is a commit-pinned recipe
+  with no checkout here, because a run placed on another Spark clones and runs
+  exactly that pin. A branch recipe that isn't cloned yet shows `not cloned`,
+  and native recipes show nothing.
 - The check is `git ls-remote` with a timeout (no fetch, never a credential
   prompt). Offline, or for a remote that's gone, the state is `unknown` and
   nothing fails.
