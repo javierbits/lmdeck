@@ -105,6 +105,10 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    directory). There is no default source. A model repo with its own start
    scripts isn't a source: run `lmdeck add <url>` for it instead.
 
+5. **Usage statistics**: whether lmdeck should record local token counts for
+   the Stats tab (default off). It is the last question; see
+   [Usage statistics](#usage-statistics).
+
 
 Answers are saved to `~/.config/lmdeck/` (`hosts.toml`, `config.toml`) and
 `[setup] done = true` keeps the wizard from asking again; `lmdeck setup` runs
@@ -122,7 +126,8 @@ pills, rounded panels, and a status bar with key hints.
   download state (✓ on disk, ↓ pulling, · not yet) and fit (✓ fits, ! tight,
   ✗ no fit). The list groups models by family under `── Qwen ──`-style
   separators (`F` toggles it; the web dashboard has a Group families button).
-  Next to the list are a details pane with the checks and the exact
+  Running recipes show their live tok/s in the list next to the size. Next to
+  the list are a details pane with the checks and the exact
   launch command, and the live log of the selected recipe. A running recipe
   also shows its process RSS and share of RAM, VRAM on discrete GPUs, tok/s
   when the engine exposes metrics, and GPU / power / temperature sparklines.
@@ -143,6 +148,12 @@ pills, rounded panels, and a status bar with key hints.
   recipes, per-GPU memory, and which engines and tools are installed.
 - **Sources**: the deck and every recipe source, with recipe counts and when
   each source was last fetched.
+- **Stats**: local usage recorded from the engines' metrics (opt-in, see
+  [Usage statistics](#usage-statistics)): a GitHub-style activity calendar,
+  all-time and per-model token totals, the selected day's models, and that
+  day's hour-by-hour token profile. On a controller it merges every watched
+  host's own usage (per-host totals in the All time panel). `←→` walks days,
+  `↑↓` weeks, `G` jumps to today.
 
 The screen refreshes every 2 s in the background. Starting, stopping and
 pulling run off the UI thread, so nothing freezes while a server loads.
@@ -162,7 +173,7 @@ Quitting leaves servers running.
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |
-| `1`–`5`, `tab` | deck · hosts · topology · machine · sources (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there) |
+| `1`–`6`, `tab` | deck · hosts · topology · machine · sources · stats (on Hosts, `↑ ↓` picks a host, `← →` a model on it, `↵`/`s`/`x`/`l` act there; on Stats, `← →` picks a day, `↑ ↓` a week, `G` today) |
 | `t` | next theme (saved to config) |
 | `T` | theme picker: `↑ ↓` previews live, `↵` saves, `esc` reverts |
 | `r` | refresh now (re-probes engines) |
@@ -346,7 +357,8 @@ API (JSON unless noted):
 | `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors |
 | `GET` | `/api/sources` | the deck and sources with recipe counts |
 | `GET` | `/api/telemetry?history=1&since=MS` | this machine's live telemetry (memory, GPUs, temperatures, power, load, running models with RSS and tok/s); with `history=1` also the samples newer than `since` (ms since the epoch) |
-| `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry` and `history` |
+| `GET` | `/api/usage` | this machine's usage statistics (`[stats] record`): days, per-model totals, hourly buckets; the Stats tab's fleet view reads it from each host |
+| `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry`, `history` and (when it answers `/api/usage`) `usage` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
 | `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
 | `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks; `{"latest": true}` on `pull` moves a pinned wrapped recipe to the upstream head (`pull --latest`). On `start` / `switch`, `{"on": "<host>"}` runs it on that host, and `{"auto": true}` runs it where its weights are, as `lmdeck use` without `--on` does (the dashboard's Start and Switch send it); without either it runs on this machine, which is how a controller starts a recipe on the host it picked. |
@@ -438,7 +450,7 @@ What gets measured, and where it comes from:
 | system power | `spbm` `sys_total` / `dc_input` if loaded; otherwise the GPU's draw. NVIDIA doesn't expose CPU power on GB10. | GPU draw | powermetrics (opt-in) |
 | CPU use, load | `/proc/stat`, `/proc/loadavg` | same | `sysctl vm.loadavg` |
 | per model | PID from the run record, RSS of its process tree (`ps`), its share of RAM, VRAM from `nvidia-smi --query-compute-apps` | same | RSS and share |
-| tok/s | the engine's Prometheus `/metrics`: vLLM `vllm:generation_tokens_total`, SGLang `sglang:generation_tokens_total`, llama.cpp `llamacpp:tokens_predicted_total` (lmdeck adds `--metrics` to llama-server). A rate between two samples; otherwise "n/a". | same | same (MLX / LM Studio have no metrics, so n/a) |
+| tok/s | the engine's Prometheus `/metrics`: vLLM `vllm:generation_tokens_total`, SGLang `sglang:generation_tokens_total`, llama.cpp `llamacpp:tokens_predicted_total` (lmdeck adds `--metrics` to llama-server), TensorFold `tensorfold:generation_tokens_total` and `generation_tokens_running` (wrapped `custom` recipes are scraped when they expose it). A rate between two samples; otherwise "n/a". | same | same (MLX / LM Studio have no metrics, so n/a) |
 
 Anything a machine doesn't report is shown as `–`, never guessed. Docker
 recipes show tok/s (the metrics port is published) but no RSS, because the
@@ -962,6 +974,56 @@ ttl_hours = 6         # how long a result is reused; 0 re-checks every time
 timeout_secs = 5      # per ls-remote, 1-120
 ```
 
+## Usage statistics
+
+The Stats tab is built from local counters, and recording is opt-in. The
+first-run wizard asks (`record usage statistics? [y/N]`, default off) and the
+answer is saved as:
+
+```toml
+# ~/.config/lmdeck/config.toml
+[stats]
+record = true         # false (or no table) records nothing
+```
+
+lmdeck already scrapes each local engine's Prometheus `/metrics` for the live
+tok/s it shows. With recording on, the same counters (`vllm:generation_tokens_total`
+and `:prompt_tokens_total`, `sglang:…`, `llamacpp:tokens_predicted_total` and
+`:prompt_tokens_total`, `tensorfold:generation_tokens_total` and
+`:prompt_tokens_total`, plus a finished-request counter where the engine has
+one) are sampled and their deltas stored per model, local hour and day. There
+is no Prometheus server and no cloud service: the store stays local, and a
+controller reads the other hosts' stores over lmdeck's own API (see Fleet
+view below).
+
+- The data file is `~/.local/state/lmdeck/usage.json`, pruned to 400 days.
+- Recording happens while a lmdeck front-end samples telemetry (`lmdeck` TUI
+  or `lmdeck serve`). A `flock` on `usage.lock` makes exactly one of them
+  record, so two open dashboards never count the same tokens twice.
+- Counter resets (a server restart) are handled as a new baseline; restarting
+  lmdeck does not double count.
+- Turning it on improves the Stats tab and keeps the per-day history the deck
+  cannot reconstruct later. `lmdeck setup` asks again and rewrites `[stats]`.
+- Engines without `/metrics` (LM Studio, MLX) contribute nothing; llama.cpp
+  needs `--metrics`, which lmdeck already adds.
+
+**Fleet view.** A controller never mixes up whose tokens are whose: each host
+records its own usage, and the Stats tab on a machine with `hosts.toml`
+entries fetches `GET /api/usage` from those hosts (every 60 s, with the same
+tokens as the rest of the API) and sums their days and models into the same
+calendar, totals and hourly charts. The All time panel shows the per-host
+split (`ember 18.8K · faraday 4.2K`), with `?` on a host that is offline and
+showing its last known data. So work done on ember appears in ember's own
+Stats tab and, once its `lmdeck serve` is watched by this controller, in this
+one too.
+
+- A host contributes only if its `lmdeck serve` is new enough to answer
+  `/api/usage` and its `[stats] record` is on; an older host is simply absent.
+- Usage statistics stay inside your machines (the controller's own API
+  request); there is no cloud service and no Prometheus server.
+- Hosts are bucketed by their own local date/hour; run the cluster in one
+  timezone if you want the merged calendar aligned exactly.
+
 ## Files
 
 | what | where |
@@ -973,6 +1035,7 @@ timeout_secs = 5      # per ls-remote, 1-120
 | upstream update checks | `~/.cache/lmdeck/update-check.json` |
 | hosts to watch | `~/.config/lmdeck/hosts.toml` (mode 0600, holds tokens) |
 | run records and logs | `~/.local/state/lmdeck/{run,logs}/` (`$XDG_STATE_HOME`) |
+| usage statistics | `~/.local/state/lmdeck/usage.json` (opt-in `[stats] record`; `usage.lock` keeps one recorder) |
 | harness pushes | `~/.local/state/lmdeck/harness-lanes.json` (the hub's last push to this machine); on the hub, `harness-hub.json` (what it pushed last, to whom, and each host's last-known models and failed looks in a row) |
 | harness configs | written into each harness's own file: `~/.config/opencode/opencode.json`, `~/.omp/agent/models.yml`, `~/.grok/config.toml`, `~/.pi/agent/models.json`, `~/.hermes/config.yaml` (see [Harness sync](#harness-sync)) |
 | model weights | the Hugging Face cache (`$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`), where `lmdeck pull` downloads, GGUFs included; `models_dir` (config default `~/models`, wizard default the HF cache, or `$LMDECK_MODELS_DIR`) for local-only weights and `[model] path` |
@@ -1013,6 +1076,9 @@ asked = true
 sync = ["opencode", "omp"]
 # hosts = ["spark2"]       # whose running models are included (all configured by default)
 # hub = true               # push every host's models to every host (lmdeck harness hub on)
+
+[stats]                    # local usage statistics (Stats tab); off unless set
+# record = true
 ```
 
 ## Recipes in this repo

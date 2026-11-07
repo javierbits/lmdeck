@@ -241,6 +241,10 @@ pub struct HostView {
     /// Latest telemetry; stale (last known) when `online` is false.
     pub telemetry: Option<Telemetry>,
     pub history: Vec<Sample>,
+    /// The host's own usage statistics from `GET /api/usage`, when it runs a
+    /// version that has it; stale while it is offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::usage::UsageView>,
 }
 
 /// What `/api/telemetry` returns.
@@ -287,27 +291,69 @@ pub fn fetch(entry: &HostEntry, since: u64, timeout: Duration) -> Result<(Teleme
     Ok((reply, t0.elapsed().as_millis() as u64))
 }
 
+/// How often the controller refreshes each host's usage statistics. Slower
+/// than telemetry: it is history, not a gauge, and the payload is a year of
+/// days.
+pub const USAGE_EVERY: Duration = Duration::from_secs(60);
+
+/// Fetches one host's own usage statistics (`GET /api/usage`).
+pub fn fetch_usage(entry: &HostEntry, timeout: Duration) -> Result<crate::usage::UsageView, String> {
+    let agent = ureq::AgentBuilder::new().timeout_connect(timeout).timeout(timeout).build();
+    let url = format!("{}/api/usage", entry.url);
+    let mut req = agent.get(&url);
+    if let Some(t) = entry.resolved_token() {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let resp = req.call().map_err(describe)?;
+    resp.into_json().map_err(|e| format!("bad usage reply: {e}"))
+}
+
 /// Polls the configured hosts and remembers what it last saw.
 #[derive(Default)]
 pub struct Aggregator {
     known: HashMap<String, (HostView, History)>,
+    usage_at: HashMap<String, Instant>,
     pub timeout: Option<Duration>,
 }
 
 impl Aggregator {
     /// One round: the local view first, then every entry (fetched in parallel).
-    pub fn refresh(&mut self, entries: &[HostEntry], local: &Telemetry, local_hist: &History) -> Vec<HostView> {
+    /// With `with_usage`, each host's `/api/usage` is refreshed at most once
+    /// per [`USAGE_EVERY`].
+    pub fn refresh(
+        &mut self,
+        entries: &[HostEntry],
+        local: &Telemetry,
+        local_hist: &History,
+        with_usage: bool,
+    ) -> Vec<HostView> {
         let timeout = self.timeout.unwrap_or(FETCH_TIMEOUT);
         let since: Vec<u64> = entries
             .iter()
             .map(|e| self.known.get(&e.name).and_then(|k| k.1.samples.back()).map(|s| s.at).unwrap_or(0))
             .collect();
-        let results: Vec<Result<(TelemetryReply, u64), String>> = std::thread::scope(|s| {
-            let jobs: Vec<_> =
-                entries.iter().zip(&since).map(|(e, since)| s.spawn(move || fetch(e, *since, timeout))).collect();
-            jobs.into_iter().map(|j| j.join().unwrap_or_else(|_| Err("fetch panicked".into()))).collect()
+        let usage_due: Vec<bool> = if with_usage {
+            entries.iter().map(|e| self.usage_at.get(&e.name).is_none_or(|at| at.elapsed() >= USAGE_EVERY)).collect()
+        } else {
+            vec![false; entries.len()]
+        };
+        let (results, usages) = std::thread::scope(|s| {
+            let mut telemetry_jobs = Vec::with_capacity(entries.len());
+            let mut usage_jobs = Vec::with_capacity(entries.len());
+            for ((e, since), due) in entries.iter().zip(&since).zip(&usage_due) {
+                telemetry_jobs.push(s.spawn(move || fetch(e, *since, timeout)));
+                usage_jobs.push(due.then(|| s.spawn(move || fetch_usage(e, timeout))));
+            }
+            let results: Vec<Result<(TelemetryReply, u64), String>> =
+                telemetry_jobs.into_iter().map(|j| j.join().unwrap_or_else(|_| Err("fetch panicked".into()))).collect();
+            let usages: Vec<Option<Result<crate::usage::UsageView, String>>> = usage_jobs
+                .into_iter()
+                .map(|j| j.map(|j| j.join().unwrap_or_else(|_| Err("usage fetch panicked".into()))))
+                .collect();
+            (results, usages)
         });
         self.known.retain(|k, _| entries.iter().any(|e| &e.name == k));
+        self.usage_at.retain(|k, _| entries.iter().any(|e| &e.name == k));
         let mut out = vec![HostView {
             name: LOCAL.into(),
             url: None,
@@ -318,11 +364,19 @@ impl Aggregator {
             last_seen: Some(local.at),
             telemetry: Some(local.clone()),
             history: local_hist.samples.iter().cloned().collect(),
+            usage: None,
         }];
-        for (e, r) in entries.iter().zip(results) {
+        for (i, (e, r)) in entries.iter().zip(results).enumerate() {
             let (view, hist) = self.known.entry(e.name.clone()).or_default();
             view.name = e.name.clone();
             view.url = Some(e.url.clone());
+            if let Some(u) = usages.get(i).and_then(Option::as_ref) {
+                // A failed refresh keeps the last known usage: it is history.
+                self.usage_at.insert(e.name.clone(), Instant::now());
+                if let Ok(u) = u {
+                    view.usage = Some(u.clone());
+                }
+            }
             match r {
                 Ok((reply, ms)) => {
                     hist.merge(&reply.history);
@@ -474,7 +528,7 @@ pub fn snapshot_once(paths: &Paths, with_hosts: bool) -> Vec<HostView> {
         return demo_hosts(&t, &history, now_ms());
     }
     let entries = if with_hosts { HostsFile::load(paths).map(|f| f.hosts).unwrap_or_default() } else { vec![] };
-    Aggregator::default().refresh(&entries, &t, &history)
+    Aggregator::default().refresh(&entries, &t, &history, with_hosts)
 }
 
 /// What each host is running, as the last sampler round saw it; lets
@@ -603,17 +657,29 @@ impl Sampler {
                 let mut collector = Collector::new();
                 let mut agg = Aggregator::default();
                 let mut history = History::default();
+                let mut cfg = crate::config::Config::load(&paths).unwrap_or_default();
+                let mut recorder = crate::usage::Recorder::new(&paths, cfg.stats.record);
+                let mut cfg_at = Instant::now();
                 loop {
                     let started = Instant::now();
+                    // Pick up `[stats] record` changes without a restart.
+                    if cfg_at.elapsed() > Duration::from_secs(60) {
+                        cfg = crate::config::Config::load(&paths).unwrap_or_default();
+                        if cfg.stats.record != recorder.enabled() {
+                            recorder = crate::usage::Recorder::new(&paths, cfg.stats.record);
+                        }
+                        cfg_at = Instant::now();
+                    }
                     let t = collector.collect(&paths);
+                    recorder.observe(&t);
                     history.push(Sample::from(&t));
                     let hosts = if collector.demo {
                         demo_hosts(&t, &history, now_ms())
                     } else if with_hosts {
                         let entries = HostsFile::load(&paths).map(|f| f.hosts).unwrap_or_default();
-                        agg.refresh(&entries, &t, &history)
+                        agg.refresh(&entries, &t, &history, true)
                     } else {
-                        agg.refresh(&[], &t, &history)
+                        agg.refresh(&[], &t, &history, true)
                     };
                     write_live(&paths, &hosts);
                     {
@@ -790,6 +856,24 @@ mod tests {
     }
 
     #[test]
+    fn fetches_a_hosts_usage_with_its_token() {
+        let usage = crate::usage::UsageView {
+            recording: true,
+            today: 20_000,
+            total: crate::usage::Counts { gen: 10, prompt: 2, requests: 1 },
+            ..Default::default()
+        };
+        let body = serde_json::to_string(&usage).unwrap();
+        let (url, srv) = fake_host("200 OK", body, 1);
+        let entry = HostEntry { name: "ember".into(), url, token: Some("tok".into()), ..Default::default() };
+        let got = fetch_usage(&entry, Duration::from_millis(800)).unwrap();
+        assert_eq!(got.total.tokens(), 12);
+        let reqs = srv.join().unwrap();
+        assert!(reqs[0].contains("GET /api/usage"), "{}", reqs[0]);
+        assert!(reqs[0].contains("Authorization: Bearer tok"), "{}", reqs[0]);
+    }
+
+    #[test]
     fn aggregates_online_offline_and_unauthorized_hosts() {
         let remote = Telemetry {
             hostname: "spark2".into(),
@@ -809,7 +893,7 @@ mod tests {
         ];
         let local = Telemetry { hostname: "spark1".into(), at: 4_000, ..Default::default() };
         let mut agg = Aggregator { timeout: Some(Duration::from_millis(800)), ..Default::default() };
-        let v = agg.refresh(&entries, &local, &History::default());
+        let v = agg.refresh(&entries, &local, &History::default(), false);
         assert_eq!(v.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["local", "spark2", "spark3", "mac"]);
         assert!(v[0].local && v[0].online);
         assert!(v[1].online, "{:?}", v[1].error);
@@ -823,12 +907,12 @@ mod tests {
 
         // Second round: the host asks only for newer history; then it goes away
         // and keeps its last telemetry, greyed out by the UIs.
-        let v = agg.refresh(&entries[..1], &local, &History::default());
+        let v = agg.refresh(&entries[..1], &local, &History::default(), false);
         assert!(v[1].online);
         let reqs = ok_srv.join().unwrap();
         assert!(reqs[0].contains("since=0") && reqs[0].contains("Authorization: Bearer tok"), "{}", reqs[0]);
         assert!(reqs[1].contains("since=5000"), "{}", reqs[1]);
-        let v = agg.refresh(&entries[..1], &local, &History::default());
+        let v = agg.refresh(&entries[..1], &local, &History::default(), false);
         assert!(!v[1].online);
         assert_eq!(v[1].telemetry.as_ref().map(|t| t.at), Some(5_000), "last known telemetry is kept");
         assert_eq!(v[1].last_seen, Some(5_000));

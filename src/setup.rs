@@ -105,6 +105,8 @@ pub struct Outcome {
     pub sources: Vec<(String, String)>,
     /// Where weights should land; `None` when the answer did not change it.
     pub models_dir: Option<String>,
+    /// Whether usage statistics should be recorded (saved to `[stats]`).
+    pub stats_record: bool,
 }
 
 /// What the wizard proposes for the models dir: the Hugging Face cache unless
@@ -362,8 +364,19 @@ pub fn run_wizard(
         println!("{}", crate::ui::dim("no sources added."));
     }
 
+    println!("{}", crate::ui::bold("usage statistics"));
+    println!(
+        "{}",
+        crate::ui::dim(
+            "  lmdeck can keep local counts of the tokens each model produces and when: the deck's\n\
+             tok/s column, an activity calendar, per-model totals and busy hours. It improves the\n\
+             Stats tab; nothing leaves this machine (stored in ~/.local/state/lmdeck/usage.json)."
+        )
+    );
+    let stats_record = ask_yes(p, "  record usage statistics?", cfg.stats.record);
+    Config::save_stats(paths, stats_record)?;
     Config::save_setup(paths, true)?;
-    Ok(Outcome { hosts: added, sources, models_dir: Some(models_dir).filter(|m| m != &cfg.models_dir) })
+    Ok(Outcome { hosts: added, sources, models_dir: Some(models_dir).filter(|m| m != &cfg.models_dir), stats_record })
 }
 
 /// Finds the peers, shows them, and asks about each. Returns the names added.
@@ -1258,6 +1271,23 @@ pub(crate) mod tests {
         let mut health = |_: &str, _: u16| true;
         let mut net = Net { ssh, port: 7979, find: &mut find, health: &mut health };
         run_wizard(paths, &Config::default(), p, &fab, &mut net).unwrap()
+    }
+
+    #[test]
+    fn wizard_asks_for_usage_statistics_and_saves_the_answer() {
+        let (_d, paths) = tmp("wizard-stats");
+        let mut p = Script::new(&["", "", "", "y"]);
+        let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
+        assert!(out.stats_record);
+        let text = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.contains("[stats]\nrecord = true"), "{text}");
+        // The next wizard run proposes the saved choice? No: it asks again,
+        // defaulting to off, and `n` turns recording back off.
+        let mut p = Script::new(&["", "", "", "n"]);
+        let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
+        assert!(!out.stats_record);
+        let text = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.contains("[stats]\nrecord = false"), "{text}");
     }
 
     #[test]

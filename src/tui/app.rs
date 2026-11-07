@@ -17,10 +17,11 @@ pub enum Tab {
     Topology,
     Machine,
     Sources,
+    Stats,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Deck, Tab::Hosts, Tab::Topology, Tab::Machine, Tab::Sources];
+    pub const ALL: [Tab; 6] = [Tab::Deck, Tab::Hosts, Tab::Topology, Tab::Machine, Tab::Sources, Tab::Stats];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -29,6 +30,7 @@ impl Tab {
             Tab::Topology => "Topology",
             Tab::Machine => "Machine",
             Tab::Sources => "Sources",
+            Tab::Stats => "Stats",
         }
     }
 
@@ -156,6 +158,9 @@ pub struct App {
     /// host's `lmdeck serve`: `remote_log`, or the selected recipe's run on
     /// another host.
     pub log_from: Option<(String, String)>,
+    /// Stats tab: selected day (days since 1970-01-01); `None` opens on the
+    /// latest day with activity, else today.
+    pub stats_day: Option<i64>,
 }
 
 impl Default for App {
@@ -187,6 +192,7 @@ impl Default for App {
             model_cursor: 0,
             remote_log: None,
             log_from: None,
+            stats_day: None,
         }
     }
 }
@@ -289,6 +295,14 @@ impl App {
             .and_then(|h| h.telemetry.as_ref())
             .map(|t| t.models.iter().map(|m| m.name.clone()).collect())
             .unwrap_or_default()
+    }
+
+    /// Stats tab: the day the calendar has selected (latest activity first,
+    /// else today).
+    pub fn stats_selected_day(&self) -> i64 {
+        self.stats_day
+            .or_else(|| self.snap.as_ref().and_then(|s| s.usage.days.last().map(|d| d.day)))
+            .unwrap_or_else(crate::usage::today)
     }
 
     pub fn selected_model(&self) -> Option<String> {
@@ -484,6 +498,25 @@ impl App {
         Action::None
     }
 
+    /// Stats-tab keys: walk the activity calendar day by day or week by week.
+    fn stats_key(&mut self, k: KeyEvent) -> Option<Action> {
+        let today = crate::usage::today();
+        let cur = self.stats_selected_day();
+        let moved = match k.code {
+            KeyCode::Left | KeyCode::Char('h') => cur - 1,
+            KeyCode::Right | KeyCode::Char('l') => cur + 1,
+            KeyCode::Up | KeyCode::Char('k') => cur - 7,
+            KeyCode::Down | KeyCode::Char('j') => cur + 7,
+            KeyCode::PageUp => cur - 28,
+            KeyCode::PageDown => cur + 28,
+            KeyCode::Home | KeyCode::Char('g') => today - 364,
+            KeyCode::End | KeyCode::Char('G') => today,
+            _ => return None,
+        };
+        self.stats_day = Some(moved.clamp(today - crate::usage::KEEP_DAYS, today));
+        Some(Action::None)
+    }
+
     /// Hosts-tab keys: run the deck's selected recipe on the selected host,
     /// stop or tail one of that host's servers.
     fn hosts_key(&mut self, k: KeyEvent) -> Option<Action> {
@@ -570,6 +603,11 @@ impl App {
     fn normal_key(&mut self, k: KeyEvent) -> Action {
         if self.tab == Tab::Hosts && !self.logs_max {
             if let Some(a) = self.hosts_key(k) {
+                return a;
+            }
+        }
+        if self.tab == Tab::Stats && !self.logs_max {
+            if let Some(a) = self.stats_key(k) {
                 return a;
             }
         }
@@ -671,7 +709,7 @@ impl App {
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => self.tab = Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()],
             KeyCode::BackTab => self.tab = Tab::ALL[(self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
-            KeyCode::Char(c @ '1'..='5') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
+            KeyCode::Char(c @ '1'..='6') => self.tab = Tab::ALL[(c as u8 - b'1') as usize],
             _ => {}
         }
         self.clamp();

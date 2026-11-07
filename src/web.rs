@@ -9,6 +9,7 @@
 //! - `GET  /api/logs/{recipe}?n=200[&offset=B]` its tail, or the whole lines after byte B (a follower's poll)
 //! - `GET  /api/logs/{recipe}/stream`  Server-Sent Events, one `data:` per line
 //! - `GET  /api/telemetry[?history=1&since=<unix ms>]`  this machine, live
+//! - `GET  /api/usage`                  this machine's usage statistics (opt-in recording)
 //! - `GET  /api/hosts`                 this machine plus every `hosts.toml` entry
 //!
 //! - `GET  /api/weights` · `/api/weights/files?repo=&revision=`  this machine's weights
@@ -364,6 +365,10 @@ fn handle(st: &State, mut req: Request) {
                 let history = query_param(&query, "history").is_some_and(|v| v == "1" || v == "true");
                 let since = query_param(&query, "since").and_then(|v| v.parse().ok()).unwrap_or(0);
                 json_reply(req, 200, &json!(st.sampler.reply(history, since)))
+            }
+            "usage" => {
+                let usage = crate::usage::view(&st.deck.paths, st.deck.cfg.stats.record);
+                json_reply(req, 200, &json!(usage))
             }
             "hosts" => {
                 st.sampler.wait_first(Duration::from_secs(8));

@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod hostsview;
+pub mod statsview;
 pub mod theme;
 pub mod topoview;
 pub mod view;

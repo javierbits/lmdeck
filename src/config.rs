@@ -53,6 +53,24 @@ pub struct Config {
     /// `[setup]`: first-run wizard bookkeeping.
     #[serde(default, skip_serializing_if = "SetupConfig::is_default")]
     pub setup: SetupConfig,
+    /// `[stats]`: local usage statistics (opt-in).
+    #[serde(default, skip_serializing_if = "StatsConfig::is_default")]
+    pub stats: StatsConfig,
+}
+
+/// `[stats]` in config.toml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct StatsConfig {
+    /// Record tokens per model, hour and day while a front-end samples
+    /// telemetry. Off unless the wizard (or the user) turns it on.
+    #[serde(default)]
+    pub record: bool,
+}
+
+impl StatsConfig {
+    pub fn is_default(&self) -> bool {
+        !self.record
+    }
 }
 
 /// `[setup]` in config.toml.
@@ -306,6 +324,7 @@ impl Default for Config {
             weights: WeightsConfig::default(),
             index: IndexConfig::default(),
             harness: HarnessConfig::default(),
+            stats: StatsConfig::default(),
         }
     }
 }
@@ -394,6 +413,12 @@ impl Config {
     /// of the file: comments and other settings stay as they are.
     pub fn save_setup(paths: &Paths, done: bool) -> Result<PathBuf> {
         Self::save_table(paths, "setup", &format!("done = {done}\n"))
+    }
+
+    /// Saves `[stats]` (replacing any existing one) without touching the rest
+    /// of the file.
+    pub fn save_stats(paths: &Paths, record: bool) -> Result<PathBuf> {
+        Self::save_table(paths, "stats", &format!("record = {record}\n"))
     }
 
     /// Replaces the `[name]` table in config.toml with `body`, leaving the

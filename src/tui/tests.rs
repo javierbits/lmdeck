@@ -42,6 +42,8 @@ fn recipe(name: &str, engine: &str, status: Status, downloaded: bool, fit: Level
         weights_on: if downloaded { vec!["local".into()] } else { vec![] },
         source_repo: None,
         source_ref: None,
+        source_checkout: None,
+        source_checkout_ready: false,
         weights_home: downloaded.then(|| "local".into()),
         fetched_by_scripts: false,
         nodes: vec![],
@@ -93,6 +95,7 @@ pub(super) fn demo() -> Snapshot {
         inventory: Inventory { engines, tools: BTreeMap::new() },
         recipes,
         sources: vec![],
+        usage: Default::default(),
         recipe_errors: vec![],
     }
 }
@@ -109,6 +112,131 @@ fn app() -> App {
     let mut a = App::default();
     a.set_snapshot(demo());
     a
+}
+
+#[test]
+fn deck_list_shows_live_tok_s_for_a_running_recipe() {
+    let mut a = app();
+    a.set_hosts(demo_hosts());
+    let text = buffer_text(&render(&a, 170, 42));
+    let row = text.lines().find(|l| l.contains('▎') && l.contains("qwen3-4b-gguf")).expect("running recipe row");
+    assert!(row.contains("42.5"), "tok/s belongs on the recipe's row: {row}");
+    assert!(text.contains("tok/s"), "{text}");
+}
+
+#[test]
+fn deck_list_shows_tok_s_for_a_run_placed_on_another_host() {
+    let mut a = app();
+    let mut hosts = demo_hosts();
+    let spark = hosts.iter_mut().find(|h| h.name == "spark2").expect("spark2");
+    let tel = spark.telemetry.as_mut().expect("remote telemetry");
+    tel.models[0].name = "gpt-oss-20b-vllm".into();
+    tel.models[0].tokens_per_s = Some(7.5);
+    let mut s = demo();
+    let idx = s.recipes.iter().position(|r| r.name == "gpt-oss-20b-vllm").unwrap();
+    s.recipes[idx].placed_on = Some("spark2".into());
+    a.set_snapshot(s);
+    a.set_hosts(hosts);
+    let text = buffer_text(&render(&a, 170, 42));
+    let row = text.lines().find(|l| l.contains("gpt-oss-20b-vllm")).expect("placed recipe row");
+    assert!(row.contains("7.5"), "a remote run's tok/s in its row: {row}");
+}
+
+#[test]
+fn stats_tab_merges_watched_hosts_usage() {
+    let mut a = app();
+    let mut s = demo();
+    s.usage = usage_demo();
+    let today = crate::usage::today();
+    let remote = crate::usage::UsageView {
+        recording: true,
+        today,
+        days: vec![crate::usage::DayView { day: today, gen: 5_000, prompt: 500, requests: 2, ..Default::default() }],
+        ..Default::default()
+    };
+    let mut hosts = demo_hosts();
+    hosts.iter_mut().find(|h| h.name == "spark2").expect("spark2").usage = Some(remote);
+    a.set_snapshot(s);
+    a.set_hosts(hosts);
+    a.on_key(key('6'));
+    let text = buffer_text(&render(&a, 180, 48));
+    assert!(text.contains("2 hosts"), "{text}");
+    assert!(text.contains("spark2"), "per-host totals: {text}");
+    assert!(text.contains("hosts"), "{text}");
+}
+
+fn usage_demo() -> crate::usage::UsageView {
+    let today = crate::usage::today();
+    let mut view = crate::usage::UsageView { recording: false, today, ..Default::default() };
+    for (offset, gen) in [(0i64, 1_000u64), (1, 2_000), (3, 300)] {
+        let day = today - offset;
+        let mut d = crate::usage::DayView { day, gen, prompt: gen / 10, requests: 2, ..Default::default() };
+        d.hours[14] = gen + gen / 10;
+        d.models.insert("qwen3-4b-gguf".into(), crate::usage::Counts { gen, prompt: gen / 10, requests: 2 });
+        view.days.push(d);
+        view.total.gen += gen;
+        view.total.prompt += gen / 10;
+        view.total.requests += 2;
+        if day == today {
+            view.today_counts.gen += gen;
+            view.today_counts.prompt += gen / 10;
+            view.today_counts.requests += 2;
+        }
+        view.last7.gen += gen;
+        view.last7.prompt += gen / 10;
+        view.last7.requests += 2;
+    }
+    view.days.sort_by_key(|d| d.day);
+    view.active_days = view.days.len() as u64;
+    view.streak_days = 2;
+    view.peak_hour = Some(crate::usage::HourUse { hour: 14, tokens: 1_100 });
+    view.best_day = Some(crate::usage::DayTotal { day: today - 1, tokens: 2_200 });
+    view.models = vec![crate::usage::ModelUse {
+        name: "qwen3-4b-gguf".into(),
+        gen: view.total.gen,
+        prompt: view.total.prompt,
+        requests: view.total.requests,
+        days: 3,
+        last_day: today,
+    }];
+    view.all_hours[14] = view.total.gen + view.total.prompt;
+    view
+}
+
+#[test]
+fn stats_tab_draws_the_calendar_models_and_hours() {
+    let mut a = app();
+    let mut s = demo();
+    s.usage = usage_demo();
+    a.set_snapshot(s);
+    a.on_key(key('6'));
+    assert_eq!(a.tab, Tab::Stats);
+    let text = buffer_text(&render(&a, 170, 48));
+    assert!(text.contains("Usage"), "{text}");
+    assert!(text.contains("All time"), "{text}");
+    assert!(text.contains("qwen3-4b-gguf"), "{text}");
+    assert!(text.contains("Hours"), "{text}");
+    assert!(text.contains("recording is off"), "{text}");
+    assert!(text.chars().any(|c| matches!(c, '░' | '▒' | '▓' | '█')), "activity cells\n{text}");
+    let today = crate::usage::today();
+    assert_eq!(a.stats_selected_day(), today);
+    a.on_key(code(KeyCode::Left));
+    assert_eq!(a.stats_selected_day(), today - 1);
+    a.on_key(code(KeyCode::Up));
+    assert_eq!(a.stats_selected_day(), today - 8);
+    a.on_key(key('G'));
+    assert_eq!(a.stats_selected_day(), today);
+    // A narrow terminal still renders the tab.
+    let _ = render(&a, 70, 20);
+}
+
+#[test]
+fn stats_tab_works_without_recorded_days() {
+    let mut a = app();
+    a.on_key(key('6'));
+    let text = buffer_text(&render(&a, 150, 40));
+    assert!(text.contains("Usage"), "{text}");
+    assert!(text.contains("recording is off"), "{text}");
 }
 
 #[test]
@@ -249,6 +377,8 @@ fn tabs_help_theme_and_quit() {
     a.on_key(code(KeyCode::Tab));
     a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Sources);
+    a.on_key(code(KeyCode::Tab));
+    assert_eq!(a.tab, Tab::Stats);
     a.on_key(code(KeyCode::Tab));
     assert_eq!(a.tab, Tab::Deck);
     a.on_key(key('?'));
@@ -563,7 +693,7 @@ fn wrapped_recipes_show_an_update_badge_and_u_takes_it() {
     s.recipes[2].update = Some(upd(U::PinnedNewer));
     let mut a = App::default();
     a.set_snapshot(s);
-    let text = buffer_text(&render(&a, 160, 42));
+    let text = buffer_text(&render(&a, 176, 42));
     assert!(text.contains("qwen3-4b-gguf ⬆ update"), "{text}");
     assert!(text.contains("glm-big-exl3 ⬆ newer"), "{text}");
     assert!(!text.contains("gpt-oss-20b-vllm ⬆"), "{text}");
@@ -879,6 +1009,8 @@ fn details_show_the_running_commit_and_an_update_pill() {
     let r = &mut s.recipes[0];
     r.source_repo = Some("https://github.com/MiaAI-Lab/example".into());
     r.source_ref = Some("fcef6cf2117460f8453714d4ee756537c1a29995".into());
+    r.source_checkout = Some("~/.cache/lmdeck/checkouts/qwen3-4b-gguf".into());
+    r.source_checkout_ready = false;
     let mut u = upd(U::PinnedNewer);
     u.local = Some("fcef6cf2117460f8453714d4ee756537c1a29995".into());
     r.update = Some(u);
@@ -887,9 +1019,23 @@ fn details_show_the_running_commit_and_an_update_pill() {
     a.cursor = a.visible().iter().position(|r| r.name == name).unwrap();
     let text = buffer_text(&render(&a, 170, 50));
     assert!(text.contains("source    MiaAI-Lab/example @ fcef6cf"), "{text}");
+    assert!(text.contains("checkout  ~/.cache/lmdeck/"), "{text}");
+    assert!(text.contains("not cloned"), "{text}");
     let head = text.lines().find(|l| l.contains("⬆ newer")).expect("update pill");
     assert!(head.contains("running"), "the pill sits in the details header, not only the list: {head}");
     assert!(text.contains("pinned; upstream"), "{text}");
+    assert!(text.contains("· press u to update"), "{text}");
+    assert!(!text.contains("move the pin"), "{text}");
+}
+
+#[test]
+fn fit_middle_keeps_both_ends_of_a_long_checkout() {
+    let s = "~/.cache/lmdeck/checkouts/deepseek-v4.1-flash-1017-4x-spark-tensorfold-nvfp4";
+    let cut = super::view::fit_middle(s, 40);
+    assert_eq!(cut.chars().count(), 40, "{cut}");
+    assert!(cut.starts_with("~/.cache/lmdeck/"), "{cut}");
+    assert!(cut.ends_with("nvfp4"), "{cut}");
+    assert_eq!(super::view::fit_middle("~/x", 40), "~/x");
 }
 
 #[test]

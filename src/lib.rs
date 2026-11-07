@@ -40,6 +40,7 @@ pub mod topology;
 pub mod tui;
 pub mod ui;
 pub mod updates;
+pub mod usage;
 pub mod util;
 pub mod vars;
 pub mod web;

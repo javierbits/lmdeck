@@ -369,6 +369,14 @@ pub fn pull_argv(cfg: &Config, r: &Recipe) -> Result<Vec<String>> {
     Ok(argv)
 }
 
+/// `~`-shortened path for display; the cache lives under the home directory.
+fn tilde(p: &Path) -> String {
+    match p.strip_prefix(crate::paths::home_dir()) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 /// Hint shown when the download tool for `r` is not installed.
 pub fn pull_tool_hint(r: &Recipe) -> &'static str {
     match r.engine.name {
@@ -433,6 +441,11 @@ pub struct RecipeView {
     pub source_repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// Wrapped recipes: the `[source]` checkout on this machine, `~`-shortened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_checkout: Option<String>,
+    /// That checkout exists (it is cloned on first start otherwise).
+    pub source_checkout_ready: bool,
     /// The one host the weights are served from (`[model] home`, else the
     /// first holder, this machine first; a placement's home when the index
     /// has no answer).
@@ -479,6 +492,8 @@ pub struct Snapshot {
     pub recipes: Vec<RecipeView>,
     pub sources: Vec<SourceView>,
     pub recipe_errors: Vec<(String, String)>,
+    /// Local usage statistics (empty until recording has seen a model).
+    pub usage: crate::usage::UsageView,
 }
 
 impl Snapshot {
@@ -652,6 +667,11 @@ impl Deck {
                 None => format!("http://localhost:{port}/v1"),
             };
             let locs = widx.locate(r);
+            // The scripts run from here; say where, since the cache is hidden.
+            let checkout = r.source.as_ref().map(|_| {
+                let dir = engine::checkout_dir(&self.paths.checkouts_dir(), &r.name);
+                (tilde(&dir), dir.join(".git").exists())
+            });
             // Reason: the index drops a host that is offline, but a placement made for
             // this run recorded where the weights were served from; keep saying so
             // instead of "not downloaded".
@@ -693,6 +713,8 @@ impl Deck {
                 weights_on: locs.iter().map(|l| show(&l.host)).collect(),
                 source_repo: r.source.as_ref().map(|s| s.repo.clone()),
                 source_ref: r.source.as_ref().and_then(|s| s.git_ref.clone()),
+                source_checkout: checkout.as_ref().map(|(p, _)| p.clone()),
+                source_checkout_ready: checkout.as_ref().is_some_and(|(_, ok)| *ok),
                 weights_home,
                 fetched_by_scripts: r.model.fetched_by_scripts(),
                 nodes,
@@ -732,6 +754,7 @@ impl Deck {
             recipes,
             sources,
             recipe_errors: cat.errors.clone(),
+            usage: crate::usage::view(&self.paths, self.cfg.stats.record),
         }
     }
 

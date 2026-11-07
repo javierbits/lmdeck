@@ -50,6 +50,7 @@ one explicitly. Keep names unique.
 | Source mirrors | `~/.cache/lmdeck/sources/<name>/` |
 | Wrapped checkout | `~/.cache/lmdeck/checkouts/<recipe>/` |
 | Run records / logs | `~/.local/state/lmdeck/{run,logs}/` |
+| Usage statistics (opt-in) | `~/.local/state/lmdeck/usage.json` (`usage.lock` elects one recorder) |
 | Model weights | HF cache (`$HF_HUB_CACHE`, `$HF_HOME/hub`, or `~/.cache/huggingface/hub`) or `models_dir` for local/path weights |
 
 `LMDECK_HOME=<dir>` relocates all of the above; use it for isolated tests.
@@ -70,6 +71,7 @@ one explicitly. Keep names unique.
 | `src/fabric.rs`, `mesh.rs`, `placement.rs`, `pick.rs` | CX7 fabric, peers, `host = "auto"` placement |
 | `src/hosts.rs`, `src/remote.rs` | Remote `lmdeck serve` machines and run-on |
 | `src/harness.rs` | Agent-harness config sync |
+| `src/usage.rs` | Opt-in per-machine usage statistics from engine counters; the Stats tab merges hosts via `GET /api/usage` |
 
 ## Recipe format
 

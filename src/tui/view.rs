@@ -41,6 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Tab::Topology => crate::tui::topoview::draw_topology(f, app, body),
             Tab::Machine => draw_machine(f, app, s, body),
             Tab::Sources => draw_sources(f, app, s, body),
+            Tab::Stats => crate::tui::statsview::draw_stats(f, app, body),
         },
     }
     draw_status(f, app, status);
@@ -275,6 +276,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
         ],
         _ if app.tab == Tab::Topology => vec![("tab", "view"), ("r", "refresh"), ("?", "help"), ("q", "quit")],
+        _ if app.tab == Tab::Stats => vec![("←→", "day"), ("↑↓", "week"), ("G", "today"), ("?", "help"), ("q", "quit")],
         _ if app.tab == Tab::Deck => {
             let mut h = vec![("↵", "start/stop"), ("s", "switch"), ("o", "run on…"), ("p", "pull"), ("l", "logs")];
             h.push(("F", if app.grouped { "flat" } else { "group by family" }));
@@ -316,8 +318,9 @@ fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
 }
 
 /// Deck list columns other than status and recipe: borders and padding (4),
-/// the highlight symbol (1), engine/quant/size/dl/fit (38) and six gaps.
-const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 2 + 8 + 6;
+/// the highlight symbol (1), engine/quant/size/tok per second/dl/fit (40) and
+/// seven gaps.
+const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 7 + 2 + 8 + 7;
 
 fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let t = app.theme();
@@ -364,6 +367,11 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
             Level::Fail => Span::styled("✗ no fit", Style::new().fg(t.err)),
         };
         let name = name_cell(r, t, name_w);
+        let tok_s = live_model(app, r)
+            .and_then(|m| m.tokens_per_s)
+            .filter(|v| *v >= 0.0)
+            .map(|v| if v >= 100.0 { format!("{v:.0}") } else { format!("{v:.1}") })
+            .unwrap_or_default();
         rows.push(
             Row::new(vec![
                 Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
@@ -373,6 +381,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
                 Cell::from(
                     Line::from(Span::styled(size_text(r), Style::new().fg(t.muted))).alignment(Alignment::Right),
                 ),
+                Cell::from(Line::from(Span::styled(tok_s, Style::new().fg(t.ok))).alignment(Alignment::Right)),
                 Cell::from(dl),
                 Cell::from(fit),
             ])
@@ -384,7 +393,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
             }),
         );
     }
-    let header = Row::new(["status", "recipe", "engine", "quant", "size", "dl", "fit"])
+    let header = Row::new(["status", "recipe", "engine", "quant", "size", "tok/s", "dl", "fit"])
         .style(Style::new().fg(t.dim))
         .bottom_margin(0);
     let table = Table::new(
@@ -394,6 +403,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
             Constraint::Min(14),
             Constraint::Length(10),
             Constraint::Length(11),
+            Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(2),
             Constraint::Length(8),
@@ -497,8 +507,57 @@ pub(super) fn fit_to(s: &str, w: usize) -> String {
     out
 }
 
+/// `s` cut to `w` columns keeping both ends (`~/.cache/…/<recipe>`): a path
+/// whose leaf matters more than its middle.
+pub(super) fn fit_middle(s: &str, w: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if s.width() <= w {
+        return s.to_string();
+    }
+    if w < 12 {
+        return fit_to(s, w);
+    }
+    let keep = w - 1;
+    let mut head = String::new();
+    let mut left = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if left + cw > keep / 2 {
+            break;
+        }
+        head.push(c);
+        left += cw;
+    }
+    let mut tail: Vec<char> = vec![];
+    let mut right = 0;
+    for c in s.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if right + cw > keep - left {
+            break;
+        }
+        tail.push(c);
+        right += cw;
+    }
+    tail.reverse();
+    format!("{head}…{}", tail.into_iter().collect::<String>())
+}
+
+/// The telemetry entry for a recipe's live server: this machine's sampler,
+/// else the host a placement runs it on.
+fn live_model<'a>(app: &'a App, r: &RecipeView) -> Option<&'a crate::telemetry::ModelTel> {
+    if let Some(m) = app.local().and_then(|t| t.model(&r.name)) {
+        return Some(m);
+    }
+    let host = r.placed_on.as_deref()?;
+    app.hosts
+        .iter()
+        .find(|h| !h.local && h.name == host)
+        .and_then(|h| h.telemetry.as_ref())
+        .and_then(|t| t.model(&r.name))
+}
+
 /// `⬆` after a wrapped recipe whose `[source]` repo has newer commits:
-/// the warn colour when a pull takes it, muted for a pin (`u` moves it).
+/// the warn colour when a pull takes it, muted for a pin (`u` updates it).
 fn update_badge<'a>(r: &RecipeView, t: &Theme) -> Option<Span<'a>> {
     let u = r.update.as_ref()?;
     match u.state {
@@ -514,7 +573,7 @@ fn update_line<'a>(r: &RecipeView, t: &Theme) -> Option<Line<'a>> {
     let (text, color) = match u.state {
         UpdState::Behind => (format!("update available{follows}: {} · press u or p", u.delta()), t.warn),
         UpdState::PinnedNewer => {
-            (format!("pinned; upstream{follows} is newer: {} · press u to move the pin", u.delta()), t.info)
+            (format!("pinned; upstream{follows} is newer: {} · press u to update", u.delta()), t.info)
         }
         UpdState::Current => {
             (format!("up to date{follows} at {}", u.local.as_deref().map(short).unwrap_or_default()), t.ok)
@@ -604,6 +663,17 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         let room = (area.width as usize).saturating_sub(14 + at.width());
         lines.push(kv("source", format!("{}{at}", fit_to(&repo_short(repo), room.max(8))), t));
     }
+    if let Some(co) = &r.source_checkout {
+        let note = if r.source_checkout_ready {
+            String::new()
+        } else if let Some(h) = &r.placed_on {
+            format!(" · cloned on {h}")
+        } else {
+            " · not cloned".to_string()
+        };
+        let room = (area.width as usize).saturating_sub(14 + note.width());
+        lines.push(kv("checkout", format!("{}{note}", fit_middle(co, room.max(12))), t));
+    }
     let weights = if r.pulling {
         "downloading…".to_string()
     } else if r.downloaded {
@@ -669,7 +739,7 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     if let (Some(pid), Some(at)) = (r.pid, r.started_at) {
         lines.push(kv("process", format!("pid {pid} · up {}", human_duration(now_secs().saturating_sub(at))), t));
     }
-    if let Some(m) = app.local().and_then(|l| l.model(&r.name)) {
+    if let Some(m) = live_model(app, r) {
         let mut parts = vec![];
         if let Some(g) = m.rss_gb {
             let share = m.mem_share_pct.map(|p| format!(" ({p:.0}% of RAM)")).unwrap_or_default();
@@ -975,7 +1045,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ("/", "fuzzy search (esc clears)"),
     ("f", "only recipes that fit this machine"),
     ("a", "deck ↔ every known recipe"),
-    ("1-5  tab", "deck · hosts · topology · machine · sources"),
+    ("1-6  tab", "deck · hosts · topology · machine · sources · stats"),
+    ("stats ← → ↑ ↓", "walk the activity calendar · G today"),
     ("t", "next theme (saved)"),
     ("T", "theme picker: live preview, ↵ saves"),
     ("r", "refresh now (re-probe engines)"),

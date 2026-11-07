@@ -110,6 +110,16 @@ pub struct ModelTel {
     pub gpu_mem_gb: Option<f64>,
     /// Generated tokens per second over the last sample interval.
     pub tokens_per_s: Option<f64>,
+    /// Monotonic generated-tokens counter as the engine reports it, for
+    /// usage statistics (the same value `tokens_per_s` is derived from).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_total: Option<f64>,
+    /// Monotonic prompt-tokens counter, when the engine has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_total: Option<f64>,
+    /// Monotonic finished-request counter, when the engine has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_total: Option<f64>,
     pub requests_running: Option<f64>,
     /// Where `tokens_per_s` came from, e.g. `vllm /metrics`.
     pub metrics: Option<String>,
@@ -456,6 +466,16 @@ pub fn parse_prometheus(text: &str) -> HashMap<String, f64> {
 pub struct EngineMetrics {
     /// Monotonic generated-tokens counter, when the engine has one.
     pub tokens_total: Option<f64>,
+    /// Monotonic prompt-tokens counter, when the engine has one.
+    pub prompt_total: Option<f64>,
+    /// Monotonic finished-request counter, when the engine has one.
+    pub requests_total: Option<f64>,
+    /// llama.cpp decode steps: a live generation-rate proxy while a slot is
+    /// still generating and the token counter has not moved yet.
+    pub decode_total: Option<f64>,
+    /// Tokens held by live streams (TensorFold): its delta while requests are
+    /// running is a live generation rate.
+    pub live_total: Option<f64>,
     /// An instantaneous throughput gauge, used when there is no counter.
     pub tokens_per_s: Option<f64>,
     pub requests_running: Option<f64>,
@@ -464,25 +484,52 @@ pub struct EngineMetrics {
 
 pub fn engine_metrics(engine: &str, m: &HashMap<String, f64>) -> Option<EngineMetrics> {
     let get = |k: &str| m.get(k).copied();
+    let tensorfold = || EngineMetrics {
+        tokens_total: get("tensorfold:generation_tokens_total"),
+        prompt_total: get("tensorfold:prompt_tokens_total"),
+        // The request-latency histogram's `_count` is its finished requests.
+        requests_total: get("tensorfold:request_latency_seconds_count"),
+        decode_total: None,
+        live_total: get("tensorfold:generation_tokens_running"),
+        tokens_per_s: None,
+        requests_running: get("tensorfold:requests_running"),
+        source: "tensorfold /metrics",
+    };
     let em = match engine {
         "vllm" => EngineMetrics {
             tokens_total: get("vllm:generation_tokens_total"),
-            tokens_per_s: None,
+            prompt_total: get("vllm:prompt_tokens_total"),
+            requests_total: get("vllm:request_success_total"),
+            decode_total: None,
+            live_total: None,
+            tokens_per_s: get("vllm:avg_generation_throughput_toks_per_s"),
             requests_running: get("vllm:num_requests_running"),
             source: "vllm /metrics",
         },
         "sglang" => EngineMetrics {
             tokens_total: get("sglang:generation_tokens_total"),
+            prompt_total: get("sglang:prompt_tokens_total"),
+            requests_total: get("sglang:num_requests_total"),
+            decode_total: None,
+            live_total: None,
             tokens_per_s: get("sglang:gen_throughput"),
             requests_running: get("sglang:num_running_reqs"),
             source: "sglang /metrics",
         },
         "llama.cpp" => EngineMetrics {
             tokens_total: get("llamacpp:tokens_predicted_total"),
+            prompt_total: get("llamacpp:prompt_tokens_total"),
+            requests_total: None,
+            decode_total: get("llamacpp:n_decode_total"),
+            live_total: None,
             tokens_per_s: None,
             requests_running: get("llamacpp:requests_processing"),
             source: "llama.cpp /metrics",
         },
+        "tensorfold" => tensorfold(),
+        // A wrapped recipe: scrape when the server speaks TensorFold's
+        // Prometheus names (the common case for `custom` DGX Spark recipes).
+        "custom" if m.keys().any(|k| k.starts_with("tensorfold:")) => tensorfold(),
         _ => return None,
     };
     (em.tokens_total.is_some() || em.tokens_per_s.is_some() || em.requests_running.is_some()).then_some(em)
@@ -611,6 +658,11 @@ pub fn demo_mode() -> bool {
 pub struct Collector {
     prev_cpu: Option<(u64, u64)>,
     prev_tokens: HashMap<String, (f64, Instant)>,
+    /// llama.cpp decodes per sample, for a live rate while a request is
+    /// still generating (its token counter only moves per finished slot).
+    prev_decode: HashMap<String, (f64, Instant)>,
+    /// TensorFold live-stream tokens per sample, the same kind of proxy.
+    prev_live: HashMap<String, (f64, Instant)>,
     nvidia_smi: Option<bool>,
     /// The last [`find_adopted`] result and when it ran.
     adopted: Option<(Instant, Vec<ModelTel>)>,
@@ -630,6 +682,8 @@ impl Collector {
         Collector {
             prev_cpu: None,
             prev_tokens: HashMap::new(),
+            prev_decode: HashMap::new(),
+            prev_live: HashMap::new(),
             nvidia_smi: None,
             adopted: None,
             hw: None,
@@ -776,10 +830,18 @@ impl Collector {
     fn collect_models(&mut self, t: &mut Telemetry, paths: &Paths) {
         let recs: Vec<RunRecord> = RunRecord::all(paths).into_iter().filter(|r| r.alive()).collect();
         let names: Vec<String> = recs.iter().map(|r| r.name.clone()).collect();
-        let adopted = self.adopted(paths, &names);
+        let mut adopted = self.adopted(paths, &names);
         if recs.is_empty() {
-            self.prev_tokens.clear();
+            // Adopted servers are real models too: their metrics feed tok/s
+            // and the usage recorder.
+            for m in &mut adopted {
+                self.engine_rate(m);
+            }
             t.models.extend(adopted);
+            let names: Vec<String> = t.models.iter().map(|m| m.name.clone()).collect();
+            self.prev_tokens.retain(|k, _| names.contains(k));
+            self.prev_decode.retain(|k, _| names.contains(k));
+            self.prev_live.retain(|k, _| names.contains(k));
             return;
         }
         let procs = run_with_timeout(Command::new("ps").args(["-A", "-o", "pid=,ppid=,rss="]), Duration::from_secs(3))
@@ -816,13 +878,18 @@ impl Collector {
             m.status = Some(if matches!(ready, Probe::Up(_)) { "loaded" } else { "loading" }.into());
             t.models.push(m);
         }
+        for m in &mut adopted {
+            self.engine_rate(m);
+        }
         t.models.extend(adopted);
         let names: Vec<String> = t.models.iter().map(|m| m.name.clone()).collect();
         self.prev_tokens.retain(|k, _| names.contains(k));
+        self.prev_decode.retain(|k, _| names.contains(k));
+        self.prev_live.retain(|k, _| names.contains(k));
     }
 
     fn engine_rate(&mut self, m: &mut ModelTel) {
-        if !matches!(m.engine.as_str(), "vllm" | "sglang" | "llama.cpp") {
+        if !matches!(m.engine.as_str(), "vllm" | "sglang" | "llama.cpp" | "tensorfold" | "custom") {
             return;
         }
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(700)).build();
@@ -831,18 +898,52 @@ impl Collector {
         let Some(em) = engine_metrics(&m.engine, &parse_prometheus(&body)) else { return };
         m.metrics = Some(em.source.to_string());
         m.requests_running = em.requests_running;
+        m.tokens_total = em.tokens_total;
+        m.prompt_tokens_total = em.prompt_total;
+        m.requests_total = em.requests_total;
         let now = Instant::now();
+        let mut rate: Option<f64> = None;
         if let Some(total) = em.tokens_total {
             if let Some((prev, at)) = self.prev_tokens.get(&m.name) {
                 let dt = now.duration_since(*at).as_secs_f64();
                 if total >= *prev && dt > 0.2 {
-                    m.tokens_per_s = Some((total - prev) / dt);
+                    rate = Some((total - prev) / dt);
                 }
             }
             self.prev_tokens.insert(m.name.clone(), (total, now));
-        } else {
-            m.tokens_per_s = em.tokens_per_s;
         }
+        // A llama.cpp slot reports predicted tokens only when it finishes;
+        // its decode counter moves per generated token, so use it while a
+        // request is still streaming (one decode step ≈ one token per busy
+        // slot).
+        if rate.is_none_or(|r| r <= 0.0) {
+            let running = m.requests_running.unwrap_or(0.0);
+            // TensorFold counts finished requests in its token totals too;
+            // its live-stream gauge moves while decoding.
+            if let Some(live) = em.live_total {
+                if running > 0.0 {
+                    if let Some((prev, at)) = self.prev_live.get(&m.name) {
+                        let dt = now.duration_since(*at).as_secs_f64();
+                        if live > *prev && dt > 0.2 {
+                            rate = Some((live - prev) / dt);
+                        }
+                    }
+                }
+                self.prev_live.insert(m.name.clone(), (live, now));
+            }
+            if let Some(dec) = em.decode_total {
+                if running > 0.0 {
+                    if let Some((prev, at)) = self.prev_decode.get(&m.name) {
+                        let dt = now.duration_since(*at).as_secs_f64();
+                        if dec > *prev && dt > 0.2 {
+                            rate = Some((dec - prev) / dt * running.clamp(1.0, 64.0));
+                        }
+                    }
+                }
+                self.prev_decode.insert(m.name.clone(), (dec, now));
+            }
+        }
+        m.tokens_per_s = rate.or(em.tokens_per_s);
     }
 }
 
@@ -871,6 +972,9 @@ pub mod demo {
                 mem_share_pct: Some((58.0 + 20.0 * seed) / 1.2),
                 gpu_mem_gb: None,
                 tokens_per_s: Some((38.0 + 30.0 * load + 3.0 * wave(t, 5.0, seed)).max(0.0)),
+                tokens_total: None,
+                prompt_tokens_total: None,
+                requests_total: None,
                 requests_running: Some((load * 6.0).round()),
                 metrics: Some("vllm /metrics".into()),
                 status: Some("loaded".into()),
@@ -1061,6 +1165,25 @@ mod tests {
         assert_eq!(e.tokens_total, Some(812.0));
         assert_eq!(engine_metrics("mlx", &parse_prometheus(llama)), None);
         assert_eq!(engine_metrics("vllm", &parse_prometheus("other 1\n")), None);
+
+        // TensorFold speaks its own names; wrapped recipes report engine
+        // "custom", so those are scraped too when the names are present.
+        let tf = "tensorfold:generation_tokens_total 500\n\
+                  tensorfold:prompt_tokens_total 100\n\
+                  tensorfold:request_latency_seconds_count 3\n\
+                  tensorfold:generation_tokens_running 42\n\
+                  tensorfold:requests_running 1\n";
+        let m = parse_prometheus(tf);
+        for engine in ["tensorfold", "custom"] {
+            let e = engine_metrics(engine, &m).unwrap();
+            assert_eq!(e.tokens_total, Some(500.0));
+            assert_eq!(e.prompt_total, Some(100.0));
+            assert_eq!(e.requests_total, Some(3.0));
+            assert_eq!(e.live_total, Some(42.0));
+            assert_eq!(e.requests_running, Some(1.0));
+            assert_eq!(e.source, "tensorfold /metrics");
+        }
+        assert_eq!(engine_metrics("custom", &parse_prometheus("other 1\n")), None);
     }
 
     #[test]

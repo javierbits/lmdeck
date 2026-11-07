@@ -549,8 +549,8 @@ fn run(cli: Cli) -> Result<()> {
 // ───────────────────────────── harnesses ─────────────────────────────
 
 /// The once-only first-run prompts: the setup wizard (machine, cluster,
-/// sources) on first use, then which agent harnesses lmdeck should point at
-/// served models. Both save their answers to config.toml.
+/// sources, usage statistics) on first use, then which agent harnesses lmdeck
+/// should point at served models. Both save their answers to config.toml.
 fn first_run(ctx: &mut Ctx) {
     if lmdeck::setup::should_run(&ctx.cfg) {
         setup_wizard(ctx);
@@ -578,6 +578,10 @@ fn setup_wizard(ctx: &mut Ctx) {
     {
         match lmdeck::setup::wizard(&ctx.paths, &ctx.cfg) {
             Ok(outcome) => {
+                // The wizard saved `[setup] done = true`; keep the in-memory copy
+                // in step so a full config save below doesn't drop it.
+                ctx.cfg.setup.done = true;
+                ctx.cfg.stats.record = outcome.stats_record;
                 if let Some(dir) = &outcome.models_dir {
                     ctx.cfg.models_dir = dir.clone();
                 }
@@ -958,6 +962,7 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
             "topology" | "topo" => lmdeck::tui::Tab::Topology,
             "machine" | "doctor" => lmdeck::tui::Tab::Machine,
             "sources" => lmdeck::tui::Tab::Sources,
+            "stats" => lmdeck::tui::Tab::Stats,
             other => bail!("unknown tab '{other}'"),
         };
         let buf = lmdeck::tui::render_snapshot(&deck, &opts, a.width, a.height, tab)?;
@@ -2498,11 +2503,9 @@ fn recipe_show(ctx: &Ctx, reference: &str, as_toml: bool) -> Result<()> {
     }
     if let Some(src) = &r.source {
         let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &r.name);
-        let state = if co.join(".git").exists() { "checked out" } else { "not cloned yet" };
-        kv(
-            "source",
-            format!("{}{} {}", src.repo, src.git_ref.as_ref().map(|v| format!("@{v}")).unwrap_or_default(), dim(state)),
-        );
+        let state = if co.join(".git").exists() { "checked out" } else { "not cloned yet (first start clones it)" };
+        kv("source", format!("{}{}", src.repo, src.git_ref.as_ref().map(|v| format!("@{v}")).unwrap_or_default()));
+        kv("checkout", format!("{} {}", co.display(), dim(state)));
         if let Some(u) = update_views(ctx, &[f]).remove(&r.name) {
             kv("upstream", upstream_text(&u, &r.name));
         }
