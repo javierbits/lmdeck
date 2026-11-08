@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist, e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Check tag against Cargo.toml
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Package
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
+          asset="lmdeck-$version-${{ matrix.target }}.tar.gz"
+          stage=$(mktemp -d)
+          cp "target/${{ matrix.target }}/release/lmdeck" "$stage/lmdeck"
+          cp README.md LICENSE "$stage/"
+          tar -czf "$asset" -C "$stage" lmdeck README.md LICENSE
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+          cat "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            lmdeck-*.tar.gz
+            lmdeck-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Assemble checksums and formula
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          cd dist
+          cat ./*.sha256 | sort -k2 > checksums.txt
+          rm -f ./*.sha256
+          cd ..
+          python3 scripts/gen-homebrew-formula.py \
+            --version "$TAG" --checksums dist/checksums.txt --repo "$REPO" > dist/lmdeck.rb
+          cat dist/checksums.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          assets="dist/lmdeck.rb dist/checksums.txt install.sh"
+          for f in dist/*.tar.gz; do assets="$assets $f"; done
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $assets --clobber
+          else
+            gh release create "$TAG" $assets --verify-tag \
+              --title "lmdeck ${TAG#v}" --generate-notes $prerelease
+          fi
+
+  crate:
+    name: crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN is not set; skipping crates.io publish" >&2
+            exit 0
+          fi
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A "lmdeck-release" \
+            "https://crates.io/api/v1/crates/lmdeck/$version")
+          if [ "$code" = 200 ]; then
+            echo "lmdeck $version is already on crates.io"
+            exit 0
+          fi
+          cargo publish --locked
+
+  homebrew:
+    name: Homebrew tap
+    needs: release
+    if: ${{ vars.HOMEBREW_TAP != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tap token
+        id: token
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not set; skipping the tap update"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.ok == '1'
+        with:
+          repository: ${{ vars.HOMEBREW_TAP }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Fetch formula
+        if: steps.token.outputs.ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          mkdir -p tap/Formula
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern lmdeck.rb --dir tap/Formula --clobber
+      - name: Commit and push
+        if: steps.token.outputs.ok == '1'
+        working-directory: tap
+        run: |
+          set -eu
+          git config user.name "lmdeck release bot"
+          git config user.email "release@users.noreply.github.com"
+          git add Formula/lmdeck.rb
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "lmdeck ${{ inputs.tag || github.ref_name }}"
+          git push

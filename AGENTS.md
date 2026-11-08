@@ -52,6 +52,9 @@ one explicitly. Keep names unique.
 | Run records / logs | `~/.local/state/lmdeck/{run,logs}/` |
 | Usage statistics (opt-in) | `~/.local/state/lmdeck/usage.json` (`usage.lock` elects one recorder) |
 | Model weights | HF cache (`$HF_HUB_CACHE`, `$HF_HOME/hub`, or `~/.cache/huggingface/hub`) or `models_dir` for local/path weights |
+| Release workflow | `.github/workflows/release.yml` (tag `v*` -> binaries, checksums, crates.io, Homebrew tap) |
+| Installer | `install.sh` (`curl \| sh`, verifies the release checksum) |
+| Release runbook | `RELEASING.md` |
 
 `LMDECK_HOME=<dir>` relocates all of the above; use it for isolated tests.
 

@@ -10,7 +10,12 @@ repository = "https://github.com/javierbits/lmdeck"
 readme = "README.md"
 keywords = ["llm", "local-ai", "llama-cpp", "vllm", "exllamav3"]
 categories = ["command-line-utilities"]
-publish = false
+exclude = ["docs", "shots", "shot.png", "scripts", "examples", ".github", "ansi2png.py"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
 
 [dependencies]
 anyhow = "1"

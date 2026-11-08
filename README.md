@@ -20,12 +20,43 @@ Recipes are TOML only.
 
 ## Install
 
+Prebuilt binaries for Linux and macOS (arm64 and x86_64), no Rust toolchain:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh
+# or, without curl:
+wget -qO- https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh
+```
+
+The installer verifies the release checksum and puts `lmdeck` in
+`~/.local/bin`. `--version X.Y.Z` and `--dir /some/bin` override the release and
+the directory. The Linux builds need glibc 2.35 or newer; on Alpine/musl use
+the cargo install below.
+
+From crates.io (Rust 1.85 or newer):
+
+```sh
+cargo install lmdeck
+cargo binstall lmdeck        # prebuilt release binary instead of a compile
+```
+
+`cargo binstall` needs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
+installed first.
+
+Homebrew (macOS or Linux):
+
+```sh
+brew install javierbits/lmdeck/lmdeck
+```
+
+Straight from the repository, latest `main`:
+
 ```sh
 cargo install --git https://github.com/javierbits/lmdeck
 ```
 
-You need Rust 1.85 or newer. lmdeck runs on Linux and macOS, on both arm64 and
-x86_64. Windows isn't supported.
+lmdeck runs on Linux and macOS, on both arm64 and x86_64. Windows isn't
+supported.
 
 ## Quick start
 
