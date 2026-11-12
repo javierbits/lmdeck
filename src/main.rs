@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -18,14 +18,13 @@ use lmdeck::hardware::{which, Hardware};
 use lmdeck::hosts::{self, HostView, HostsFile};
 use lmdeck::models::{self, hf_cache_dir, Presence};
 use lmdeck::paths::{home_dir, Paths};
-use lmdeck::recipe::{is_recipe_file, is_yaml_file, valid_name, Engine, Recipe, YAML_UNSUPPORTED};
+use lmdeck::recipe::{valid_name, Engine, Recipe};
 use lmdeck::runner::{self, Probe, Ready, RunRecord, Status};
 use lmdeck::sources::{self, Found, SourceSpec};
 use lmdeck::topology;
 use lmdeck::ui::{self, bold, cyan, dim, green, red, yellow, Table};
 use lmdeck::updates::{self, UpdateView};
 use lmdeck::util::{human_bytes, human_duration, human_gb, now_secs};
-use lmdeck::wrap;
 
 #[derive(Parser)]
 #[command(name = "lmdeck", version, about = "A deck of local LLM recipes: list, switch, search, and check what fits.")]
@@ -2254,77 +2253,6 @@ fn recipe_search(
     Ok(())
 }
 
-fn fetch_url(url: &str) -> Result<String> {
-    let url = if let Some(rest) = url.strip_prefix("https://github.com/") {
-        format!("https://raw.githubusercontent.com/{}", rest.replacen("/blob/", "/", 1))
-    } else if url.starts_with("https://huggingface.co/") {
-        url.replacen("/blob/", "/resolve/", 1)
-    } else {
-        url.to_string()
-    };
-    let resp = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .get(&url)
-        .call()
-        .map_err(|e| anyhow!("GET {url}: {e}"))?;
-    Ok(resp.into_string()?)
-}
-
-/// `lmdeck add <repo>`: clone it, read its scripts, write a wrapper recipe.
-/// A bare name (no `/`, `:` and not a directory) is looked up in the index.
-fn is_index_name(arg: &str) -> bool {
-    let a = arg.trim();
-    !a.is_empty() && !a.contains(['/', ':', '\\']) && !a.starts_with('~') && !lmdeck::paths::expand(a).is_dir()
-}
-
-fn add_from_index(ctx: &Ctx, arg: &str, name: Option<String>, git_ref: Option<String>, force: bool) -> Result<()> {
-    let loaded = lmdeck::index::load(&ctx.paths, &ctx.cfg.index, false);
-    if let Some(h) = &loaded.hint {
-        eprintln!("{} {h}", yellow("!"));
-    }
-    let Some(e) = loaded.index.find(arg) else {
-        let mut near: Vec<(i64, &str)> = loaded
-            .index
-            .entries
-            .iter()
-            .filter_map(|e| lmdeck::tui::app::fuzzy_score(arg, &e.name).map(|s| (s, e.name.as_str())))
-            .collect();
-        near.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
-        let near: Vec<&str> = near.into_iter().take(3).map(|x| x.1).collect();
-        let more = if near.is_empty() {
-            format!("{} entries in the index; see `lmdeck browse`", loaded.index.entries.len())
-        } else {
-            format!("did you mean: {}?", near.join(", "))
-        };
-        bail!("'{arg}' is not in the recipe index ({more}); for a repo pass owner/repo or a URL");
-    };
-    let e = e.clone();
-    println!("{} {} {}", cyan("◆"), bold(&e.name), dim(&format!("from the index ({})", loaded.url)));
-    if e.recipe.is_some() && git_ref.is_none() {
-        // A recipe that ships inside this binary needs no network at all.
-        let mut r = match catalog::builtin().into_iter().find(|f| f.recipe.name == e.name) {
-            Some(f) => {
-                println!("  {}", dim("using the built-in copy that ships with lmdeck"));
-                f.recipe
-            }
-            None => lmdeck::index::fetch_recipe(&ctx.cfg.index, &e)?.expect("entry has a recipe link"),
-        };
-
-        if let Some(n) = name {
-            if !valid_name(&n) {
-                bail!("invalid name '{n}'");
-            }
-            r.name = n;
-        }
-        let path = lmdeck::catalog::add_to_deck(&ctx.paths, &r, force)?;
-        println!("{} added {} to the deck {}", green("✓"), bold(&r.name), dim(&format!("({})", path.display())));
-        println!("  try: lmdeck use {} --dry-run", r.name);
-        return Ok(());
-    }
-    add_wrapper(ctx, &e.repo, Some(name.unwrap_or(e.name.clone())), git_ref.or(e.git_ref.clone()), force)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn browse(
     ctx: &Ctx,
@@ -2412,139 +2340,16 @@ fn browse(
 }
 
 fn add_wrapper(ctx: &Ctx, repo: &str, name: Option<String>, git_ref: Option<String>, force: bool) -> Result<()> {
-    if is_index_name(repo) {
-        return add_from_index(ctx, repo, name, git_ref, force);
-    }
-    let (url, url_ref, default_name) = wrap::parse_repo_arg(repo)?;
-    // A repo a built-in recipe already wraps (tuned by hand) gets that recipe.
-    if name.is_none() && git_ref.is_none() && url_ref.is_none() {
-        let same = |r: &str| r.trim_end_matches('/').trim_end_matches(".git").eq_ignore_ascii_case(&url);
-        let built = catalog::builtin().into_iter().find(|f| f.recipe.source.as_ref().is_some_and(|s| same(&s.repo)));
-        if let Some(f) = built {
-            println!(
-                "{} the built-in recipe {} already wraps this repo; adding that copy {}",
-                cyan("◆"),
-                bold(&f.recipe.name),
-                dim("(pass --name to write a fresh wrapper instead)")
-            );
-            let path = catalog::add_to_deck(&ctx.paths, &f.recipe, force)?;
-            println!(
-                "{} added {} to the deck {}",
-                green("✓"),
-                bold(&f.recipe.name),
-                dim(&format!("({})", path.display()))
-            );
-            println!("  try: lmdeck use {} --dry-run", f.recipe.name);
-            return Ok(());
-        }
-    }
-    let name = name.unwrap_or(default_name);
-    if !valid_name(&name) {
-        bail!("invalid name '{name}': use letters, digits, '.', '_' or '-' (or pass --name)");
-    }
-    let deck_file = ctx.paths.recipes_dir().join(format!("{name}.toml"));
-    if deck_file.exists() && !force {
-        bail!("{name} is already in the deck ({}); use --force to overwrite", deck_file.display());
-    }
-    let wanted_ref = git_ref.or(url_ref);
-    let co = engine::checkout_dir(&ctx.paths.checkouts_dir(), &name);
-    if co.join(".git").exists() {
-        let origin = checkout::origin_url(&co).unwrap_or_default();
-        if origin != url {
-            if !force {
-                bail!("{} already holds a checkout of {origin}; use --force to replace it", co.display());
-            }
-            std::fs::remove_dir_all(&co).with_context(|| format!("removing {}", co.display()))?;
-        }
-    }
-    println!("{} {} {}", cyan("↓"), url, dim(&format!("→ {}", co.display())));
-    let src = lmdeck::recipe::GitSource { repo: url.clone(), git_ref: wanted_ref.clone(), branch: None };
-    let outcome = checkout::sync(&src, &co, true)?;
-    let branch = checkout::default_branch(&co);
-    // Pin the commit unless a ref was asked for.
-    let pinned = wanted_ref.clone().unwrap_or_else(|| outcome.commit().to_string());
-    let display = url.rsplit(['/', ':']).next().unwrap_or(&name).trim_end_matches(".git").to_string();
-    let pin = wrap::SourcePin {
-        repo: &url,
-        git_ref: &pinned,
-        branch: if wanted_ref.is_none() { branch.as_deref() } else { None },
-    };
-    // The repo's own native recipe wins over wrapper detection.
-    if let Some(recipe) = wrap::from_manifest(&co, &name, &pin)? {
-        let path = catalog::add_to_deck(&ctx.paths, &recipe, force)?;
-        println!(
-            "{} added {} to the deck {} {}",
-            green("✓"),
-            bold(&name),
-            dim(&format!("({})", path.display())),
-            dim(&format!("from {}", wrap::MANIFEST))
-        );
-        println!("  try: lmdeck use {name} --dry-run");
-        return Ok(());
-    }
-    let det = wrap::detect(&co, &url)?;
-    let text = wrap::recipe_toml(&name, &display, &pin, &det);
-    Recipe::parse(&text, &name).context("the generated recipe does not parse (please report this)")?;
-    std::fs::create_dir_all(ctx.paths.recipes_dir())?;
-    std::fs::write(&deck_file, &text).with_context(|| format!("writing {}", deck_file.display()))?;
-    println!("{} added {} to the deck {}", green("✓"), bold(&name), dim(&format!("({})", deck_file.display())));
-    let found = |label: &str, v: Option<String>| match v {
-        Some(v) => println!("  {label:<10} {v}"),
-        None => println!("  {label:<10} {}", yellow("not found (TODO in the recipe)")),
-    };
-    found("port", det.port.map(|p| format!("{p} (from {})", det.port_var.clone().unwrap_or_default())));
-    if det.uses_docker || det.container.is_some() {
-        found("container", det.container.clone());
-    }
-    println!("  {:<10} {}", "detached", if det.detached { "yes" } else { "no (TODO: check)" });
-    for (k, s) in &det.by_fabric {
-        println!("  {:<10} ./{s} on a {k}", "launcher");
-    }
-    if let Some(n) = det.hosts {
-        println!("  {:<10} {n} Sparks (its scripts reach the others)", "needs");
-    }
-    println!("  {:<10} {}s", "ready in", wrap::ready_timeout(&det));
-    if let Some(note) = wrap::script_note(&det, &deck_file) {
-        println!("{} {note}", yellow("!"));
-    }
-
-    let todos = text.matches("TODO").count();
-    if todos > 0 {
-        println!("{} {todos} TODO(s) to review in {}", yellow("!"), deck_file.display());
-    }
-    println!("  try: lmdeck use {name} --dry-run");
+    let mut say = |l: &str| println!("{l}");
+    let mut warn = |l: &str| eprintln!("{} {l}", yellow("!"));
+    let mut reply = lmdeck::install::Reply { say: &mut say, warn: &mut warn };
+    lmdeck::install::add(&ctx.paths, &ctx.cfg, repo, name, git_ref, force, &mut reply)?;
     Ok(())
 }
 
 fn recipe_add(ctx: &Ctx, reference: &str, name: Option<String>, force: bool) -> Result<()> {
-    let mut recipe = if catalog::is_file_ref(reference) {
-        Recipe::load(Path::new(reference))?
-    } else if reference.starts_with("https://") || reference.starts_with("http://") {
-        let path_part = reference.split(['?', '#']).next().unwrap_or(reference);
-        if is_yaml_file(Path::new(path_part)) {
-            bail!("{YAML_UNSUPPORTED}");
-        }
-        if !is_recipe_file(Path::new(path_part)) {
-            bail!("URL must end in .toml (to wrap a repo's start.sh / stop.sh, use `lmdeck add <repo>`)");
-        }
-        let stem = Path::new(path_part).file_stem().and_then(|s| s.to_str()).unwrap_or("recipe").to_string();
-        Recipe::parse(&fetch_url(reference)?, &stem)?
-    } else {
-        let cat = ctx.catalog();
-        let f = cat.resolve(reference)?;
-        if f.origin == DECK && name.is_none() {
-            bail!("{} is already in the deck", f.recipe.name);
-        }
-        f.recipe.clone()
-    };
-    if let Some(n) = name {
-        if !valid_name(&n) {
-            bail!("invalid name '{n}': use letters, digits, '.', '_' or '-'");
-        }
-        recipe.name = n;
-    }
-    let path = catalog::add_to_deck(&ctx.paths, &recipe, force)?;
-    println!("{} added {} to the deck {}", green("✓"), bold(&recipe.name), dim(&format!("({})", path.display())));
+    let added = lmdeck::install::add_recipe(&ctx.paths, &ctx.cfg, reference, name, force)?;
+    println!("{} added {} to the deck {}", green("✓"), bold(&added.name), dim(&format!("({})", added.path.display())));
     Ok(())
 }
 

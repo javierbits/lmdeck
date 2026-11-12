@@ -72,6 +72,8 @@ one explicitly. Keep names unique.
 | `src/wrap.rs` | `lmdeck add`: repo manifest vs `start.sh`/`stop.sh` wrapper |
 | `src/compat.rs` | Fit checks against hardware and installed engines |
 | `src/vars.rs` | Machine placeholders (`{hf_home}`, `{llama_server}`, ...) |
+| `src/install.rs` | `lmdeck add` and `lmdeck recipe add` (index lookup, repo wrap, manifest, file/URL); shared by the CLI and the dashboard |
+| `src/web.rs`, `src/web/index.html` | `lmdeck serve`: the JSON API and the embedded dashboard (Deck, Library, Stats, Weights, Sources, Hosts, Topology, Doctor). A route that writes config or the deck reloads the running deck |
 | `src/fabric.rs`, `mesh.rs`, `placement.rs`, `pick.rs` | CX7 fabric, peers, `host = "auto"` placement |
 | `src/hosts.rs`, `src/remote.rs` | Remote `lmdeck serve` machines and run-on |
 | `src/harness.rs` | Agent-harness config sync |

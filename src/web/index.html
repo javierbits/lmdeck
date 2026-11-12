@@ -111,14 +111,14 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 .chk .ok{color:var(--ok)} .chk .warn{color:var(--warn)} .chk .fail{color:var(--err)}
 .cmd{margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--bg);color:var(--muted);font:11.5px/1.5 var(--mono);word-break:break-all}
 .cmd b{color:var(--accent)}
-.actions{display:flex;gap:7px;margin-top:3px}
+.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:3px}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:9px;border:1px solid var(--line2);background:color-mix(in srgb,var(--fg) 3%,transparent);cursor:pointer;font-weight:600;font-size:12.5px;transition:background .15s,border-color .15s}
 .btn:hover{background:color-mix(in srgb,var(--fg) 8%,transparent);border-color:var(--dim)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .btn.primary:hover{background:color-mix(in srgb,var(--accent) 85%,var(--fg))}
 .btn.danger{background:color-mix(in srgb,var(--err) 11%,transparent);color:var(--err);border-color:color-mix(in srgb,var(--err) 33%,transparent)}
-.btn.icon{padding:7px 9px;margin-left:auto}
+.btn.icon{padding:7px 9px;margin-left:0}
 .btn.upd{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 9%,transparent)}
 .btn.upd.pin{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 35%,transparent);background:color-mix(in srgb,var(--cyan) 7%,transparent)}
 .spin{width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
@@ -178,15 +178,18 @@ details.checks summary::before{content:"▸ ";color:var(--dim)} details[open].ch
 .sparks{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
 .spark .k{display:flex;justify-content:space-between;font:600 10.5px var(--mono);color:var(--muted)}
 .spark svg{display:block;width:100%;height:34px}
-.host .models{font:12px var(--mono);display:flex;flex-direction:column;gap:3px}
-.host .models .m{display:flex;gap:8px;align-items:baseline}
-.host .models .m b{color:var(--fg)} .host .models .m .tps{margin-left:auto;color:var(--ok);font-weight:700}
+.host .models{font:12px var(--mono);display:flex;flex-direction:column;gap:6px}
+.host .models .m{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;align-items:baseline}
+.host .models .m b{color:var(--fg);grid-column:1;min-width:0;overflow-wrap:anywhere}
+.host .models .m .tps{grid-column:2;grid-row:1;text-align:right;color:var(--ok);font-weight:700;white-space:nowrap}
+.host .models .m .dim{grid-column:1/-1;color:var(--dim);overflow-wrap:anywhere}
+.host .models .m .acts{grid-column:2;grid-row:2;justify-self:end;display:inline-flex;gap:4px}
 .live-line{font:600 11.5px var(--mono);color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
 .live-line b{color:var(--ok)}
 
 /* theme picker */
 .themesel{position:relative}
-.thbtn{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--line2);background:var(--card);border-radius:10px;cursor:pointer;font:600 12px var(--mono);color:var(--muted)}
+.thbtn{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;padding:6px 10px;border:1px solid var(--line2);background:var(--card);border-radius:10px;cursor:pointer;font:600 12px var(--mono);color:var(--muted)}
 .thbtn:hover,.thbtn.open{border-color:var(--accent);color:var(--fg)}
 .sw{display:inline-flex;align-items:center;gap:3px;padding:3px 4px;border-radius:6px;border:1px solid color-mix(in srgb,var(--fg) 14%,transparent)}
 .sw i{width:8px;height:8px;border-radius:50%}
@@ -213,8 +216,7 @@ select.runon:hover{border-color:var(--violet)}
 .plan{font:12px/1.6 var(--mono);white-space:pre-wrap;color:var(--muted);background:var(--bg);border-radius:8px;padding:10px 12px;max-height:46vh;overflow:auto;margin:10px 0}
 .plan .k{color:var(--fg);font-weight:700} .plan .w{color:var(--warn)} .plan .e{color:var(--err)}
 .mbtns{display:flex;gap:8px;justify-content:flex-end}
-.host .models .m b{white-space:nowrap}
-.host .models .m .acts{display:inline-flex;gap:4px;margin-left:6px}
+.host .models .m .acts{margin-left:0}
 .host .models .m .acts button{padding:2px 8px;font-size:11px;border-radius:7px}
 .host .runrow{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
 .host .runrow select{max-width:none;flex:1}
@@ -238,6 +240,75 @@ select.runon:hover{border-color:var(--violet)}
 .linkswrap{overflow-x:auto;max-width:100%}
 @keyframes flow{to{stroke-dashoffset:-24}}
 .edge.busy{stroke-dasharray:10 6;animation:flow 1s linear infinite}
+
+/* ---- tabs ---- */
+.tabs{display:flex;gap:2px;padding:8px 22px 0;overflow-x:auto;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 60%,transparent)}
+.tabs button{border:0;background:none;color:var(--muted);font:700 12.5px var(--sans);padding:9px 14px 10px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;letter-spacing:.2px}
+.tabs button:hover{color:var(--fg)}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.pane{display:block}
+.pane.hidden{display:none}
+.pane>.toolbar,.pane>main{padding-left:22px;padding-right:22px}
+.panelhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:18px 22px 0}
+.panelhead h2{margin:0;font:700 16px var(--mono);letter-spacing:-.2px}
+.panelhead .grow{flex:1}
+.panelnote{padding:2px 22px 0;color:var(--muted);font-size:12.5px;max-width:90ch}
+.small{font-size:12px}
+.formrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.formrow input{padding:8px 10px;background:var(--bg);border:1px solid var(--line2);border-radius:8px;min-width:0}
+.formrow input.wide{flex:1 1 320px}
+.formrow input.mid{flex:0 1 220px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 22px 0}
+.chipbtn.small{font-size:11.5px;padding:3px 10px}
+.out{display:none;margin:8px 0 0;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;font:11.5px/1.5 var(--mono);white-space:pre-wrap;max-height:38vh;overflow:auto;color:var(--muted)}
+.out.show{display:block}
+.libgrid{padding:12px 22px 100px;align-items:start}
+.tablewrap{max-height:66vh;overflow:auto;border:1px solid var(--line);border-radius:12px}
+.tablewrap .utable th{position:sticky;top:0;background:var(--card);z-index:1}
+.libcard .acts{display:flex;gap:6px;margin-top:2px}
+.libcard .acts .btn{margin-left:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding:12px 22px 0}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.kpi .k{font:600 10.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.7px}
+.kpi .v{font:700 20px var(--mono);margin-top:2px}
+.kpi .d{font-size:11.5px;color:var(--muted)}
+.statsgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:14px;padding:12px 22px 100px}
+@media (max-width:1000px){.statsgrid{grid-template-columns:1fr}}
+.calwrap{overflow-x:auto}
+.cal{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);gap:3px;min-width:max-content}
+.cal i{display:block;width:13px;height:13px;border-radius:3px;background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.cal i.l1{background:color-mix(in srgb,var(--ok) 22%,transparent)} .cal i.l2{background:color-mix(in srgb,var(--ok) 45%,transparent)}
+.cal i.l3{background:color-mix(in srgb,var(--ok) 70%,transparent)} .cal i.l4{background:var(--ok)}
+.cal i.today{outline:1px solid var(--accent);outline-offset:1px}
+.cal i.sel{outline:2px solid var(--fg);outline-offset:1px}
+.calhead{display:flex;justify-content:space-between;font:600 11px var(--mono);color:var(--dim);margin:0 0 6px}
+.hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;align-items:end;height:110px;padding-top:6px}
+.hours i{display:block;background:linear-gradient(180deg,var(--cyan),color-mix(in srgb,var(--cyan) 40%,transparent));border-radius:3px 3px 0 0;min-height:2px}
+.hourlbl{display:grid;grid-template-columns:repeat(24,1fr);font:9px var(--mono);color:var(--dim);text-align:center}
+.hourlbl span:nth-child(3n+1){visibility:visible}
+.utable{width:100%;border-collapse:collapse;font:12px var(--mono);table-layout:fixed}
+.utable th,.utable td{padding:5px 8px;border-top:1px solid var(--line);text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0}
+.utable th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.utable td.n{color:var(--fg);font-weight:700}
+.utable .barcell{width:34%}
+.utable .barcell .bar{height:5px}
+.docgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;padding:12px 22px 100px;align-items:start}
+.docgrid .box{margin:0}
+.docgrid .box h4{display:flex;align-items:center;gap:8px}
+.docgrid .box h4 .grow{flex:1}
+.errlist{display:flex;flex-direction:column;gap:6px;font:12px var(--mono)}
+.errlist .e{border-left:3px solid var(--err);padding:4px 8px;background:color-mix(in srgb,var(--err) 7%,transparent);word-break:break-word}
+.srcrow{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px dashed color-mix(in srgb,var(--fg) 8%,transparent);font:12px var(--mono)}
+.srcrow .nm{font-weight:700;min-width:110px}
+.srcrow .spec{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srcrow .acts{display:flex;gap:6px}
+.srcrow .acts .btn{padding:3px 9px;font-size:11.5px}
+.herr{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed color-mix(in srgb,var(--fg) 7%,transparent);font:12px var(--mono)}
+.herr .nm{font-weight:700;min-width:100px}
+.herr .st{font-size:11px;color:var(--muted)}
+.herr .grow{flex:1}
+.modal .box.outbox{width:min(720px,94vw)}
+.modal .box.outbox pre{font:11.5px/1.55 var(--mono);white-space:pre-wrap;max-height:52vh;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0 0;color:var(--muted)}
 </style>
 <script>
 // Apply the last theme before first paint, so there is no flash of the default.
@@ -262,20 +333,18 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   </div>
 </header>
 
-<section class="hosts hidden" id="hostsec">
-  <h2>Hosts <span class="dim" id="hostsum"></span><span class="demo hidden" id="demo" title="LMDECK_DEMO is set: synthetic numbers for screenshots">DEMO DATA</span></h2>
-  <div class="hgrid" id="hosts"></div>
-</section>
+<nav class="tabs" id="tabs" role="tablist">
+  <button data-tab="deck" class="on" role="tab" aria-selected="true">Deck</button>
+  <button data-tab="library" role="tab" aria-selected="false">Library</button>
+  <button data-tab="stats" role="tab" aria-selected="false">Stats</button>
+  <button data-tab="weights" role="tab" aria-selected="false">Weights</button>
+  <button data-tab="sources" role="tab" aria-selected="false">Sources</button>
+  <button data-tab="hosts" role="tab" aria-selected="false">Hosts</button>
+  <button data-tab="topology" role="tab" aria-selected="false">Topology</button>
+  <button data-tab="doctor" role="tab" aria-selected="false">Doctor</button>
+</nav>
 
-<section class="topo hidden" id="toposec">
-  <h2>Topology <span class="dim" id="toposum"></span><span class="demo hidden" id="topodemo" title="LMDECK_DEMO is set: simulated fabric">DEMO DATA</span></h2>
-  <div class="topobox"><div id="topo"></div>
-    <div class="legend"><span><i style="border-color:var(--accent)"></i>cx7 cable</span><span><i style="border-color:var(--ok)"></i>busy (nfs weights / cluster)</span>
-      <span><i style="border-color:var(--sky);border-top-style:dashed"></i>lan</span><span><i style="border-color:var(--dim);border-top-style:dotted"></i>management (controller → serve)</span>
-      <span><i style="border-color:var(--err)"></i>unreachable</span></div>
-    <div class="linkswrap"><table class="links" id="links"></table></div></div>
-</section>
-
+<section class="pane" id="pane-deck">
 <section class="toolbar">
   <label class="search">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -287,6 +356,8 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   <button class="chipbtn deckonly" data-f="running" title="recipes with a server answering: running, loading, or outside lmdeck">Running</button>
   <button class="chipbtn deckonly" data-f="disk">On disk</button>
   <button class="chipbtn deckonly" id="groupbtn" title="group the cards by model family (Qwen, GLM, …)">Group families</button>
+  <button class="chipbtn" id="updbtn" title="ask every wrapped recipe's repo for new commits (lmdeck outdated)">⇡ Check upstream</button>
+  <button class="chipbtn" id="stopall" title="stop everything lmdeck started on this machine (lmdeck stop --all)">■ Stop all</button>
   <div class="grow"></div>
   <span class="live" id="live"><i></i><span>live</span></span>
 </section>
@@ -301,6 +372,125 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
     <div class="box"><h4>Sources</h4><div id="sources"></div></div>
   </div>
 </main>
+</section>
+
+<section class="pane hidden" id="pane-library">
+  <div class="panelhead"><h2>Recipe index</h2><span class="muted small" id="libmeta"></span><div class="grow"></div><span class="dim small" id="libage"></span></div>
+  <div class="panelnote">Browse the public index and install with one click: a <span class="mono">lmdeck.toml</span> or a wrapped <span class="mono">start.sh</span> / <span class="mono">stop.sh</span> repo, pinned as <span class="mono">lmdeck add</span> does.</div>
+  <div class="toolbar">
+    <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="libq" placeholder="Search the index: model, engine, tag…" autocomplete="off" spellcheck="false"><span class="kbd">/</span></label>
+    <div class="toggle" id="libsort"><button data-v="name" class="on">Name</button><button data-v="speed">Speed</button><button data-v="sparks">Sparks</button></div>
+    <button class="chipbtn" id="libfits">Fits this machine</button>
+    <button class="btn" id="librefresh">↻ Refresh index</button>
+  </div>
+  <div class="chips" id="libtags"></div>
+  <div class="grid libgrid" id="libgrid"></div>
+  <div class="panelhead"><h2 class="small">Add a repo or recipe</h2></div>
+  <div style="padding:0 22px 100px">
+    <form id="addform" class="formrow">
+      <input id="addrepo" class="wide" placeholder="index name, github:owner/repo, owner/repo, git URL, or a local directory" autocomplete="off" spellcheck="false">
+      <input id="addname" class="mid" placeholder="save as (optional)" autocomplete="off">
+      <input id="addref" class="mid" placeholder="branch / tag / commit (optional)" autocomplete="off">
+      <label class="muted small"><input type="checkbox" id="addforce"> force</label>
+      <button class="btn primary" type="submit">＋ Add repo</button>
+    </form>
+    <form id="recipeform" class="formrow">
+      <input id="reciperef" class="wide" placeholder="deck/name, builtin/name, source/name, a .toml path or raw URL" autocomplete="off" spellcheck="false">
+      <input id="recipename" class="mid" placeholder="save as (optional)" autocomplete="off">
+      <label class="muted small"><input type="checkbox" id="recipeforce"> force</label>
+      <button class="btn" type="submit">＋ Add recipe</button>
+    </form>
+    <pre class="out" id="addout"></pre>
+  </div>
+</section>
+
+<section class="pane hidden" id="pane-stats">
+  <div class="panelhead"><h2>Usage</h2><span class="muted small" id="statsmeta"></span><div class="grow"></div><span class="dim small">tokens recorded from engine counters · opt-in</span></div>
+  <div class="kpis" id="statskpis"></div>
+  <div class="statsgrid">
+    <div class="box"><h4>Activity <span class="dim small" id="calmeta"></span></h4><div class="calwrap"><div class="cal" id="statcal"></div></div><div class="calhead"><span>less</span><span>more</span></div></div>
+    <div class="box"><h4>This machine</h4><div class="kv" id="statslocal"></div><div style="height:8px"></div><div class="kv" id="statshosts"></div></div>
+    <div class="box"><h4>Tokens by model</h4><div id="statsmodels"></div></div>
+    <div class="box"><h4>Hour of day</h4><div class="hours" id="statshours"></div><div class="hourlbl" id="statshourlbl"></div></div>
+  </div>
+</section>
+
+<section class="pane hidden" id="pane-weights">
+  <div class="panelhead"><h2>Weights</h2><span class="muted small" id="weightsmeta"></span><div class="grow"></div><button class="btn" id="weightsrefresh">↻ Refresh</button></div>
+  <div class="panelnote">Which host holds which checkpoint. lmdeck never copies a checkpoint to run it elsewhere: the other host mounts the holder's directory read-only over the CX7 link.</div>
+  <div style="padding:12px 22px 100px"><div id="weightstable"></div></div>
+</section>
+
+<section class="pane hidden" id="pane-sources">
+  <div class="panelhead"><h2>Recipe sources</h2><span class="muted small" id="srcmeta"></span></div>
+  <div class="panelnote">Sources are read-only recipe repos (GitHub, Hugging Face, local directories). Add one, re-fetch it, or copy a recipe into the deck from Library.</div>
+  <div style="padding:8px 22px 0"><div id="srclist"></div></div>
+  <div class="panelhead"><h2 class="small">Add a source</h2></div>
+  <div style="padding:0 22px 100px">
+    <form id="srcform" class="formrow">
+      <input id="srcspec" class="wide" placeholder="github:owner/repo[/dir][@ref], hf:owner/repo, https://…, or a local directory" autocomplete="off" spellcheck="false">
+      <input id="srcname" class="mid" placeholder="name (optional)" autocomplete="off">
+      <label class="muted small"><input type="checkbox" id="srcfetch" checked> fetch now</label>
+      <button class="btn primary" type="submit">＋ Add source</button>
+    </form>
+    <pre class="out" id="srcout"></pre>
+  </div>
+</section>
+
+<section class="pane hidden" id="pane-hosts">
+<section class="hosts hidden" id="hostsec">
+  <h2>Hosts <span class="dim" id="hostsum"></span><span class="demo hidden" id="demo" title="LMDECK_DEMO is set: synthetic numbers for screenshots">DEMO DATA</span></h2>
+  <div class="hgrid" id="hosts"></div>
+</section>
+  <div class="panelhead"><h2 class="small">Manage hosts</h2></div>
+  <div style="padding:0 22px 100px">
+    <form id="hostform" class="formrow">
+      <input id="hostname" class="mid" placeholder="name (spark1)" autocomplete="off" required>
+      <input id="hosturl" class="wide" placeholder="http://spark1:7979" autocomplete="off" required>
+      <input id="hosttoken" class="mid" placeholder="token (optional)" type="password" autocomplete="off">
+      <input id="hosttokenenv" class="mid" placeholder="token env var (optional)" autocomplete="off">
+      <input id="hostlink" class="mid" placeholder="CX7 address (optional)" autocomplete="off">
+      <label class="muted small"><input type="checkbox" id="hostcheck" checked> check now</label>
+      <button class="btn primary" type="submit">＋ Add host</button>
+    </form>
+    <div class="formrow"><button class="btn" id="hostsync">⇅ Sync cluster</button><span class="muted small">writes the whole cluster into every host's hosts.toml over ssh; safe to rerun</span></div>
+    <pre class="out" id="hostout"></pre>
+  </div>
+</section>
+
+<section class="pane hidden" id="pane-topology">
+<section class="topo hidden" id="toposec">
+  <h2>Topology <span class="dim" id="toposum"></span><span class="demo hidden" id="topodemo" title="LMDECK_DEMO is set: simulated fabric">DEMO DATA</span></h2>
+  <div class="topobox"><div id="topo"></div>
+    <div class="legend"><span><i style="border-color:var(--accent)"></i>cx7 cable</span><span><i style="border-color:var(--ok)"></i>busy (nfs weights / cluster)</span>
+      <span><i style="border-color:var(--sky);border-top-style:dashed"></i>lan</span><span><i style="border-color:var(--dim);border-top-style:dotted"></i>management (controller → serve)</span>
+      <span><i style="border-color:var(--err)"></i>unreachable</span></div>
+    <div class="linkswrap"><table class="links" id="links"></table></div></div>
+</section>
+</section>
+
+<section class="pane hidden" id="pane-doctor">
+  <div class="panelhead"><h2>Doctor</h2><span class="muted small" id="docmeta"></span><div class="grow"></div>
+    <button class="btn" id="doccupdates">⇡ Check upstream</button><button class="btn primary" id="docinstall">⤓ Install llama.cpp</button></div>
+  <div class="docgrid">
+    <div class="box"><h4>Machine</h4><div class="kv" id="docmachine"></div></div>
+    <div class="box"><h4>Paths</h4><div class="kv mono" id="docpaths" style="font-size:11.5px"></div></div>
+    <div class="box"><h4>Engines <span class="grow"></span><span class="dim small" id="docenginecount"></span></h4><div id="docengines"></div><div style="height:8px"></div><div id="doctools"></div></div>
+    <div class="box"><h4>Recipe errors <span class="grow"></span><span class="dim small" id="docerrcount"></span></h4><div class="errlist" id="docerrors"></div></div>
+    <div class="box" style="grid-column:1/-1"><h4>Agent harnesses <span class="grow"></span><span class="dim small" id="dochmeta"></span></h4>
+      <div id="docharness"></div>
+      <div class="formrow" style="margin-top:10px">
+        <button class="btn" id="harsync">↻ Sync now</button>
+        <span class="muted small">sync hosts</span><span id="harhosts" class="chips" style="padding:0"></span>
+        <label class="muted small"><input type="checkbox" id="harexport"> opencode-export</label>
+        <label class="muted small"><input type="checkbox" id="harhub"> hub</label>
+        <span class="dim small" id="harpushed"></span>
+      </div>
+    </div>
+  </div>
+  <pre class="out" id="docout" style="margin:0 22px 100px"></pre>
+</section>
 
 <div class="drawer" id="drawer">
   <header>
@@ -318,6 +508,8 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
   <div class="muted" id="runonsub"></div>
   <div class="plan" id="runonplan">planning…</div>
   <div class="mbtns"><button class="btn" id="runoncancel">Cancel</button><button class="btn" id="runonswitch">⇄ Switch there</button><button class="btn primary" id="runongo">▶ Start there</button></div></div></div>
+<div class="modal hidden" id="outbox"><div class="box outbox"><h4 id="outtitle">Output</h4><pre id="outtext"></pre>
+  <div class="mbtns"><button class="btn primary" id="outclose">Close</button></div></div></div>
 <div class="modal hidden" id="auth"><div class="box"><h4>Token required</h4>
   <div class="muted">This lmdeck server was started with <span class="mono">--token</span>.</div>
   <input id="tok" type="password" placeholder="paste the token" autocomplete="off">
@@ -453,7 +645,9 @@ function card(r){
       <button class="btn" data-act="switch" data-ref="${ref}" title="stop the others, start this one" ${busy||up(r)?"disabled":""}>⇄ Switch</button>
       ${pullBtn}
       <button class="btn" data-act="logs" data-ref="${ref}">≡ Logs</button>
-      <button class="btn icon" data-act="copy" data-url="${esc(r.endpoint)}" title="copy ${esc(r.endpoint)}">⧉</button></div>
+      <button class="btn" data-act="toml" data-ref="${ref}" title="show the recipe as TOML">TOML</button>
+      ${r.origin === "deck" ? `<button class="btn danger" data-act="remove" data-name="${esc(r.name)}" title="remove this recipe from the deck">Remove</button>` : ""}
+      <button class="btn" data-act="copy" data-url="${esc(r.endpoint)}" title="copy ${esc(r.endpoint)}">Copy</button></div>
   </article>`;
 }
 
@@ -492,6 +686,8 @@ function render(){
     .concat(count("builtin") ? [["builtin","shipped with lmdeck",count("builtin")]] : [])
     .concat(s.sources.map(x => [x.name, x.spec + (x.fetched_at ? " · " + ago(x.fetched_at) + " ago" : " · never fetched"), x.recipes ?? 0]))
     .map(([n,d,c]) => `<div class="tool ok"><span class="n">${esc(n)}</span><span class="d" title="${esc(d)}">${esc(d)}</span><span class="grow"></span><span style="color:var(--accent)">${c}</span></div>`).join("");
+  if (activeTab === "stats") renderStats();
+  if (activeTab === "sources") renderSources();
 }
 
 
@@ -528,6 +724,7 @@ const telUtil = t => { const u = (t.gpus||[]).map(x => x.util_pct).filter(v => v
 const telTps = t => { const v = (t.models||[]).map(m => m.tokens_per_s).filter(v => v != null); return v.length ? v.reduce((a,b) => a+b, 0) : null; };
 function hostCard(h, idx){
   const t = h.telemetry, hist = h.history || [];
+  const hk = esc(hostKey(h));
   const lat = h.online ? `● ${h.local ? "this machine" : (h.latency_ms ?? 0) + " ms"}` : `offline · seen ${h.last_seen ? ago(h.last_seen/1000) + " ago" : "never"}`;
   let body = "";
   if (t) {
@@ -542,7 +739,6 @@ function hostCard(h, idx){
       const last = hist.length ? hist[hist.length-1][key] : null;
       return `<div class="spark"><div class="k"><span>${label}</span><span>${fmt(last)}${unit}</span></div>${sparkSvg(hist, key, h.online ? color : "var(--dim)", range, idx + "_" + j)}</div>`;
     }).join("") + `</div>`;
-    const hk = esc(hostKey(h));
     const models = (t.models||[]).map(m => `<div class="m"><b>${esc(m.name)}</b><span class="dim">${esc(m.engine)} :${m.port}${m.pid ? " · pid " + m.pid : ""}${m.rss_gb != null ? " · " + gb(m.rss_gb) + (m.mem_share_pct != null ? " (" + fmt(m.mem_share_pct) + "%)" : "") : ""}</span><span class="tps">${m.tokens_per_s != null ? fmt(m.tokens_per_s, 1) + " tok/s" : ""}</span>${h.online ? `<span class="acts"><button class="btn" data-hact="logs" data-host="${hk}" data-name="${esc(m.name)}">≡</button><button class="btn danger" data-hact="stop" data-host="${hk}" data-name="${esc(m.name)}">■</button></span>` : ""}</div>`).join("");
     body += `<div class="models">${models || `<span class="dim">no models running</span>`}</div>`;
     if (h.online && st.snap) {
@@ -554,7 +750,8 @@ function hostCard(h, idx){
     body += `<div class="dim mono" style="font-size:11px">${esc(extra.join(" · "))}</div>`;
   }
   return `<article class="host ${h.online ? "on" : "off"}">
-    <div class="hd"><span class="st"></span><b>${esc(h.name)}</b><span class="url">${esc(h.url || (t ? t.hostname : ""))}</span><span class="lat">${esc(lat)}</span></div>
+    <div class="hd"><span class="st"></span><b>${esc(h.name)}</b><span class="url">${esc(h.url || (t ? t.hostname : ""))}</span><span class="lat">${esc(lat)}</span>
+      ${h.local ? "" : `<button class="btn" data-hact="remove" data-host="${hk}" title="forget this host">✕</button>`}</div>
     ${t ? `<div class="plat">${esc(t.platform)} · ${esc(t.os)}/${esc(t.arch)} · ${t.cpu_cores} cores${t.unified_memory ? " · unified memory" : ""}</div>` : ""}
     ${h.error ? `<div class="err">${esc(h.error)}</div>` : ""}${body}</article>`;
 }
@@ -611,6 +808,14 @@ $("#hosts").addEventListener("click", async e => {
   const b = e.target.closest("button[data-hact]"); if (!b) return;
   const {host, name} = b.dataset;
   if (b.dataset.hact === "logs") return host === "local" ? openLogs(name) : openRemoteLogs(host, name);
+  if (b.dataset.hact === "remove") {
+    if (!confirm("Forget host " + host + "?")) return;
+    b.disabled = true;
+    try { const j = await api(`host/remove/${encodeURIComponent(host)}`, {method:"POST", body:"{}"}); toast(j.message); }
+    catch (err) { toast(err.message, false); }
+    finally { refreshHosts(); setTimeout(refreshHosts, 2400); }
+    return;
+  }
   b.disabled = true;
   try {
     const j = host === "local" ? await api(`stop/${encodeURIComponent(name)}`, {method:"POST", body:"{}"})
@@ -1098,6 +1303,8 @@ $("#grid").addEventListener("click", e => {
   const b = e.target.closest("button[data-act]"); if (!b) return;
   const ref = b.dataset.ref, a = b.dataset.act;
   if (a === "logs") return openLogs(ref);
+  if (a === "toml") return openRecipe(ref);
+  if (a === "remove") return removeRecipe(b.dataset.name);
   if (a === "copy") { navigator.clipboard?.writeText(b.dataset.url).then(() => toast("copied " + b.dataset.url)); return; }
   // Start and Switch name no host: the server runs the model where its weights are.
   act(a, ref, b.dataset.latest ? {latest:true} : a === "start" || a === "switch" ? {auto:true} : {});
@@ -1105,13 +1312,19 @@ $("#grid").addEventListener("click", e => {
 $("#grid").addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details.checks")) { d.open ? st.open.add(d.dataset.ref) : st.open.delete(d.dataset.ref); } }, true);
 $("#q").addEventListener("input", e => { st.q = e.target.value.trim(); render(); });
 $("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; st.scope = b.dataset.v; [...$("#scope").children].forEach(x => x.classList.toggle("on", x === b)); render(); });
-document.querySelectorAll(".chipbtn").forEach(b => b.onclick = () => { const f = b.dataset.f; st.f.has(f) ? st.f.delete(f) : st.f.add(f); b.classList.toggle("on"); render(); });
+document.querySelectorAll(".chipbtn[data-f]").forEach(b => b.onclick = () => { const f = b.dataset.f; st.f.has(f) ? st.f.delete(f) : st.f.add(f); b.classList.toggle("on"); render(); });
 $("#groupbtn").onclick = () => { st.group = !st.group; localStorage.setItem("lmdeck-group", st.group ? "1" : "0"); $("#groupbtn").classList.toggle("on", st.group); render(); };
 $("#groupbtn").classList.toggle("on", st.group);
 document.addEventListener("keydown", e => {
-  if (e.key === "/" && document.activeElement !== $("#q")) { e.preventDefault(); $("#q").focus(); }
+  const search = activeTab === "library" ? $("#libq") : $("#q");
+  if (e.key === "/" && document.activeElement !== search) { e.preventDefault(); search.focus(); }
   if (e.key === "Escape" && !$("#thmenu").classList.contains("hidden")) { closeThemeMenu(); $("#thbtn").focus(); return; }
-  if (e.key === "Escape") { if (document.activeElement === $("#q")) { $("#q").value = ""; st.q = ""; $("#q").blur(); render(); } else $("#logclose").click(); }
+  if (e.key === "Escape") {
+    if (!$("#outbox").classList.contains("hidden")) { $("#outbox").classList.add("hidden"); return; }
+    if (document.activeElement === $("#q")) { $("#q").value = ""; st.q = ""; $("#q").blur(); render(); }
+    else if (document.activeElement === $("#libq")) $("#libq").blur();
+    else $("#logclose").click();
+  }
 });
 // ---- themes ----
 const THEME_KEY = "lmdeck-theme";
@@ -1164,11 +1377,490 @@ $("#thmenu").addEventListener("keydown", e => {
 });
 document.addEventListener("click", e => { if (!e.target.closest(".themesel")) closeThemeMenu(); });
 
+
+// ───────────────────────── tabs ─────────────────────────
+const TABS = ["deck","library","stats","weights","sources","hosts","topology","doctor"];
+let activeTab = "deck";
+function showTab(name, remember=true){
+  if (!TABS.includes(name)) name = "deck";
+  activeTab = name;
+  for (const t of TABS) $(`#pane-${t}`).classList.toggle("hidden", t !== name);
+  [...$("#tabs").children].forEach(b => {
+    const on = b.dataset.tab === name; b.classList.toggle("on", on); b.setAttribute("aria-selected", on);
+  });
+  if (remember) history.replaceState(null, "", location.pathname + (name === "deck" ? "" : "?tab=" + name));
+  if (name === "library") refreshLibrary();
+  if (name === "weights") refreshWeights();
+  if (name === "doctor") refreshDoctor();
+  if (name === "stats") renderStats();
+  if (name === "sources") renderSources();
+  if (name === "hosts") refreshHosts();
+  if (name === "topology") refreshTopo();
+}
+$("#tabs").addEventListener("click", e => { const b = e.target.closest("button[data-tab]"); if (b) showTab(b.dataset.tab); });
+
+function showOut(title, lines){
+  $("#outtitle").textContent = title;
+  $("#outtext").textContent = (lines || []).join("\n");
+  $("#outbox").classList.remove("hidden");
+}
+$("#outclose").onclick = () => $("#outbox").classList.add("hidden");
+
+// ─────────────── library: the recipe index ───────────────
+const lib = {q:"", sort:"name", tags:new Set(), fits:false, data:null};
+function libQuery(force){
+  const p = new URLSearchParams();
+  if (lib.q) p.set("q", lib.q);
+  if (lib.sort !== "name") p.set("sort", lib.sort);
+  if (lib.fits) p.set("fits", "1");
+  if (lib.tags.size) p.set("tag", [...lib.tags].join(","));
+  if (force) p.set("refresh", "1");
+  return p.toString();
+}
+async function refreshLibrary(force=false){
+  $("#libmeta").textContent = "loading…";
+  try {
+    lib.data = await api("browse?" + libQuery(force));
+    renderLibrary();
+  } catch (e) {
+    $("#libmeta").textContent = "index unavailable";
+    $("#libgrid").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+function libCard(e){
+  const busy = st.busy.has(e.name);
+  const fit = {ok:["ok","fits"], warn:["warn","tight"], fail:["fail","doesn't fit"]}[e.fit] || ["warn","?"];
+  const installed = e.installed === "deck" ? `<span class="tag disk">✓ in deck${e.installed_as ? " as " + esc(e.installed_as) : ""}</span>`
+    : e.installed === "builtin" ? `<span class="tag eng">◆ ships with lmdeck</span>` : `<span class="tag remote">not installed</span>`;
+  const tags = e.tags || {};
+  const speed = e.speed ? `${fmt(e.speed.tok_s, 1)} tok/s${e.speed.note ? " · " + esc(e.speed.note) : ""}` : "speed ?";
+  const sparks = (tags.sparks || e.sparks || 1) > 1 ? `${tags.sparks || e.sparks} Sparks` : "1 Spark";
+  const size = e.size_gb ? "~" + gb(e.size_gb) : "size ?";
+  const tagHtml = Object.entries(tags).filter(([k,v]) => v != null && v !== "").map(([k,v]) => `<span class="tag">${esc(k)}=${esc(v)}</span>`).join("");
+  const upd = e.update ? `<div class="why warn">${esc(e.update)}</div>` : "";
+  const why = e.fit !== "ok" && e.fit_reason ? `<div class="why ${e.fit === "fail" ? "fail" : "warn"}">${esc(e.fit_reason)}</div>` : "";
+  const btn = e.installed === "deck"
+    ? `<button class="btn" data-install="${esc(e.name)}" data-save-as="${esc(e.installed_as || e.name)}" data-force="1" ${busy?"disabled":""}>↻ Reinstall</button>`
+    : `<button class="btn primary" data-install="${esc(e.name)}" ${busy?"disabled":""}>＋ Install</button>`;
+  return `<article class="card libcard">
+    <div class="r1"><span class="fit ${fit[0]}">${fit[1]}</span><span class="grow"></span><span class="port">${esc(sparks)}</span></div>
+    <h3>${esc(e.name)}</h3>
+    <div class="sub">${esc(e.repo || "")}</div>
+    ${e.description ? `<p class="desc">${esc(e.description)}</p>` : ""}
+    <div class="tags">${installed}<span class="tag">${esc(size)}</span><span class="tag">${esc(speed)}</span>${tagHtml}</div>
+    ${upd}${why}
+    <div class="acts">${btn}<a class="btn" href="${esc(e.readme)}" target="_blank" rel="noopener">README</a></div>
+  </article>`;
+}
+function renderLibrary(){
+  const d = lib.data; if (!d) return;
+  $("#libmeta").textContent = `${d.shown} of ${d.total} entries · sort ${d.sort}`;
+  $("#libage").textContent = `${d.from_cache ? "cached" : "fetched"} · ${d.age}`;
+  $("#libtaghint")?.remove();
+  if (d.hint) {
+    const h = document.createElement("div"); h.id = "libtaghint"; h.className = "panelnote"; h.style.color = "var(--warn)";
+    h.textContent = d.hint; $("#libtags").after(h);
+  }
+  $("#libtags").innerHTML = (d.tags || []).slice(0, 18).map(t => {
+    const key = `${t.key}=${t.value}`;
+    return `<button class="chipbtn small ${lib.tags.has(key) ? "on" : ""}" data-ltag="${esc(key)}">${esc(t.key)}=${esc(t.value)} <span class="dim">${t.count}</span></button>`;
+  }).join("");
+  $("#libgrid").innerHTML = (d.entries || []).map(libCard).join("") ||
+    `<div class="empty">Nothing matches.<br><span class="dim">Try another query, fewer tags, or refresh the index.</span></div>`;
+}
+async function installEntry(name, force, saveAs){
+  st.busy.add(name); renderLibrary();
+  try {
+    const j = await api("add", {method:"POST", body: JSON.stringify({repo:name, name: saveAs || null, force:!!force})});
+    toast(j.message);
+    const out = $("#addout");
+    out.classList.add("show");
+    out.textContent = [(j.message || ""), ...(j.lines || []), ...(j.warnings || []).map(w => "! " + w)].join("\n");
+    await refreshLibrary(); await refresh();
+  } catch (e) { toast(e.message, false); }
+  finally { st.busy.delete(name); renderLibrary(); }
+}
+$("#libgrid").addEventListener("click", e => {
+  const b = e.target.closest("button[data-install]"); if (!b) return;
+  installEntry(b.dataset.install, b.dataset.force === "1", b.dataset.saveAs);
+});
+$("#libtags").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ltag]"); if (!b) return;
+  const t = b.dataset.ltag; lib.tags.has(t) ? lib.tags.delete(t) : lib.tags.add(t);
+  refreshLibrary();
+});
+$("#libq").addEventListener("input", e => { lib.q = e.target.value.trim(); clearTimeout(st.libTimer); st.libTimer = setTimeout(() => refreshLibrary(), 220); });
+$("#libsort").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  lib.sort = b.dataset.v;
+  [...$("#libsort").children].forEach(x => x.classList.toggle("on", x === b));
+  refreshLibrary();
+});
+$("#libfits").onclick = () => { lib.fits = !lib.fits; $("#libfits").classList.toggle("on", lib.fits); refreshLibrary(); };
+$("#librefresh").onclick = () => refreshLibrary(true);
+
+async function runAdd(form, kind){
+  const out = $("#addout");
+  out.classList.add("show"); out.textContent = "working…";
+  try {
+    const j = kind === "repo"
+      ? await api("add", {method:"POST", body: JSON.stringify({repo: $("#addrepo").value.trim(), name: ($("#addname").value.trim() || null), ref: ($("#addref").value.trim() || null), force: $("#addforce").checked})})
+      : await api("recipe/add", {method:"POST", body: JSON.stringify({reference: $("#reciperef").value.trim(), name: ($("#recipename").value.trim() || null), force: $("#recipeforce").checked})});
+    toast(j.message);
+    out.textContent = [(j.message || ""), ...(j.lines || []), ...(j.warnings || []).map(w => "! " + w)].join("\n");
+    form.reset();
+    await refresh(); await refreshLibrary();
+  } catch (e) { out.textContent = "✗ " + e.message; toast(e.message, false); }
+}
+$("#addform").addEventListener("submit", e => { e.preventDefault(); runAdd(e.target, "repo"); });
+$("#recipeform").addEventListener("submit", e => { e.preventDefault(); runAdd(e.target, "recipe"); });
+
+// ─────────────── stats: recorded usage ───────────────
+function uTok(c){ return ((c && c.gen) || 0) + ((c && c.prompt) || 0); }
+function compact(n){
+  n = Number(n || 0);
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n/1e3).toFixed(1) + "K";
+  if (n < 1e9) return (n/1e6).toFixed(1) + "M";
+  return (n/1e9).toFixed(2) + "B";
+}
+function usageViews(){
+  const out = [];
+  if (st.snap && st.snap.usage) out.push({name: (st.snap.hardware && st.snap.hardware.hostname) || "this machine", local:true, u:st.snap.usage});
+  for (const h of (st.hosts?.hosts || [])) if (!h.local && h.usage) out.push({name:h.name, local:false, online:h.online, u:h.usage});
+  return out;
+}
+function mergedUsage(){
+  const views = usageViews();
+  const days = new Map(), models = new Map();
+  const out = {recording:false, today:0, days:[], total:{gen:0,prompt:0,requests:0}, last7:{gen:0,prompt:0,requests:0},
+    models:[], active_days:0, streak_days:0, best_day:null, peak_hour:null, all_hours:new Array(24).fill(0)};
+  for (const v of views) {
+    const u = v.u; if (!u) continue;
+    out.recording = out.recording || !!u.recording;
+    out.today = Math.max(out.today, u.today || 0);
+    for (const k of ["gen","prompt","requests"]) {
+      out.total[k] += (u.total && u.total[k]) || 0;
+      out.last7[k] += (u.last7 && u.last7[k]) || 0;
+    }
+    for (const d of (u.days || [])) {
+      const cur = days.get(d.day) || {day:d.day, gen:0, prompt:0, requests:0, hours:new Array(24).fill(0)};
+      cur.gen += d.gen || 0; cur.prompt += d.prompt || 0; cur.requests += d.requests || 0;
+      (d.hours || []).forEach((x, i) => cur.hours[i] += x);
+      days.set(d.day, cur);
+    }
+    for (const m of (u.models || [])) {
+      const cur = models.get(m.name) || {name:m.name, gen:0, prompt:0, requests:0, days:0, last_day:0};
+      cur.gen += m.gen || 0; cur.prompt += m.prompt || 0; cur.requests += m.requests || 0;
+      cur.days += m.days || 0; cur.last_day = Math.max(cur.last_day, m.last_day || 0);
+      models.set(m.name, cur);
+    }
+    (u.all_hours || []).forEach((x, i) => out.all_hours[i] += x);
+  }
+  out.days = [...days.values()].sort((a,b) => a.day - b.day);
+  out.models = [...models.values()].sort((a,b) => uTok(b) - uTok(a));
+  out.active_days = out.days.length;
+  const active = new Set(out.days.map(d => d.day));
+  let d0 = active.has(out.today) ? out.today : active.has(out.today - 1) ? out.today - 1 : out.today + 1;
+  while (active.has(d0)) { out.streak_days++; d0--; }
+  if (out.days.length) out.best_day = out.days.reduce((a,b) => uTok(b) > uTok(a) ? b : a);
+  const peak = out.all_hours.reduce((best, x, i) => x > best[0] ? [x, i] : best, [0, -1]);
+  if (peak[0] > 0) out.peak_hour = {hour: peak[1], tokens: peak[0]};
+  out.views = views;
+  return out;
+}
+function civilToday(){
+  const n = new Date();
+  return Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000);
+}
+function civilKey(day){ return new Date(Date.UTC(1970,0,1) + day*86400000).toISOString().slice(0,10); }
+function renderStats(){
+  const u = mergedUsage();
+  const local = usageViews().find(v => v.local);
+  $("#statsmeta").textContent = `${local ? (local.u.recording ? "recording on this machine" : "recording off (set [stats] record = true)") : "no usage yet"} · ${u.views.length} machine${u.views.length === 1 ? "" : "s"}`;
+  const kpis = [
+    ["total tokens", compact(uTok(u.total)), `${compact(u.total.requests)} requests`],
+    ["last 7 days", compact(uTok(u.last7)), "generated + prompt"],
+    ["active days", String(u.active_days), "recorded activity"],
+    ["streak", String(u.streak_days), "days in a row"],
+    ["peak hour", u.peak_hour ? `${String(u.peak_hour.hour).padStart(2,"0")}:00` : "–", u.peak_hour ? compact(u.peak_hour.tokens) + " tokens" : "no data"],
+    ["best day", u.best_day ? civilKey(u.best_day.day) : "–", u.best_day ? compact(uTok(u.best_day)) + " tokens" : "no data"],
+  ];
+  $("#statskpis").innerHTML = kpis.map(([k,v,d]) => `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
+
+  // Calendar: the last 26 weeks, one column per week, Sunday first.
+  const today = u.today || civilToday();
+  const wd = ((today + 4) % 7 + 7) % 7;
+  const start = today - wd - 25*7;
+  const byDay = new Map(u.days.map(d => [d.day, d]));
+  const max = Math.max(1, ...u.days.map(d => uTok(d)));
+  let cells = "";
+  for (let c = 0; c < 26; c++) for (let r = 0; r < 7; r++) {
+    const day = start + c*7 + r;
+    const d = byDay.get(day);
+    const t = d ? uTok(d) : 0;
+    let lv = 0;
+    if (t > 0) { const frac = Math.log(t + 1) / Math.log(max + 1); lv = Math.max(1, Math.min(4, Math.floor(1 + frac*3.999))); }
+    cells += `<i class="l${lv}${day === today ? " today" : ""}" title="${civilKey(day)} · ${t} tokens${d ? " · " + d.requests + " requests" : ""}"></i>`;
+  }
+  $("#statcal").innerHTML = cells;
+  $("#calmeta").textContent = u.days.length ? `${u.days.length} active days · ${civilKey(u.days[0].day)} → ${civilKey(u.days[u.days.length-1].day)}` : "no recorded days";
+
+  const kv = (rows) => rows.map(([k,v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join("");
+  $("#statslocal").innerHTML = local ? kv([
+    ["machine", (st.snap.hardware && st.snap.hardware.hostname) || "this machine"],
+    ["tokens", compact(uTok(local.u.total))],
+    ["requests", compact(local.u.total.requests)],
+    ["today", compact(uTok(local.u.today_counts))],
+    ["last 7 d", compact(uTok(local.u.last7))],
+    ["recording", local.u.recording ? "on" : "off"],
+  ]) : `<span>usage</span><span class="dim">nothing recorded yet (opt-in: [stats] record = true)</span>`;
+  const hosts = u.views.filter(v => !v.local);
+  $("#statshosts").innerHTML = hosts.length ? kv(hosts.map(v => [v.name, `${compact(uTok(v.u.total))} tokens · ${v.online ? "online" : "offline"}`])) : kv([["hosts", "no /api/usage from the watched hosts"]]);
+
+  const modelMax = Math.max(1, ...u.models.map(uTok));
+  $("#statsmodels").innerHTML = u.models.length ? `<table class="utable"><tr><th>model</th><th>tokens</th><th>requests</th><th class="barcell"></th></tr>` +
+    u.models.slice(0, 14).map(m => `<tr><td class="n" title="${esc(m.name)}">${esc(m.name)}</td><td>${compact(uTok(m))}</td><td>${compact(m.requests)}</td>
+      <td class="barcell"><div class="bar"><i style="width:${(uTok(m)/modelMax*100).toFixed(1)}%"></i></div></td></tr>`).join("") + `</table>`
+    : `<div class="muted small">no tokens recorded yet</div>`;
+
+  const hmax = Math.max(1, ...u.all_hours);
+  $("#statshours").innerHTML = u.all_hours.map((v, i) => `<i style="height:${Math.max(2, v/hmax*100).toFixed(1)}%" title="${String(i).padStart(2,"0")}:00 · ${compact(v)} tokens"></i>`).join("");
+  $("#statshourlbl").innerHTML = u.all_hours.map((_, i) => `<span>${i}</span>`).join("");
+}
+
+// ─────────────── weights: who holds what ───────────────
+async function refreshWeights(force=false){
+  try {
+    st.weights = await api("weights/index" + (force ? "?refresh=1" : ""));
+    renderWeights();
+  } catch (e) {
+    $("#weightstable").innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+  }
+}
+function renderWeights(){
+  const w = st.weights; if (!w) return;
+  const rows = w.rows || [];
+  const models = new Map();
+  for (const r of rows) {
+    const m = models.get(r.model) || {model:r.model, rows:[]};
+    m.rows.push(r); models.set(r.model, m);
+  }
+  const hosts = w.hosts && typeof w.hosts === "object" ? Object.keys(w.hosts) : [];
+  $("#weightsmeta").textContent = `${models.size} model${models.size === 1 ? "" : "s"} · ${hosts.length} host${hosts.length === 1 ? "" : "s"}${w.demo ? " · DEMO DATA" : ""}${w.at ? " · indexed " + ago(w.at) + " ago" : ""}`;
+  $("#weightstable").innerHTML = models.size ? `<div class="tablewrap"><table class="utable"><tr><th style="width:30%">model</th><th style="width:16%">host</th><th style="width:11%">size</th><th style="width:10%">kind</th><th>path</th></tr>` +
+    [...models.values()].map(m => m.rows.map((r, i) => `<tr><td class="${i ? "" : "n"}" title="${esc(m.model)}">${i ? "" : esc(m.model)}</td>
+      <td>${r.size ? (r.size < 1073741824 ? Math.round(r.size / 1048576) + " MB" : gb(r.size / 1073741824)) : "?"}</td><td>${esc(r.kind || "")}</td><td title="${esc(r.path || "")}">${esc(r.path || "")}</td></tr>`).join("")).join("") + `</table></div>`
+    : `<div class="empty">No weights indexed yet.<br><span class="dim">Run <span class="mono">lmdeck weights</span> or pull a recipe.</span></div>`;
+}
+$("#weightsrefresh").onclick = () => refreshWeights(true);
+
+// ─────────────── sources ───────────────
+function renderSources(){
+  const list = (st.snap && st.snap.sources) || [];
+  $("#srcmeta").textContent = `${list.length} configured`;
+  $("#srclist").innerHTML = list.map(x => `<div class="srcrow">
+      <span class="nm">${esc(x.name)}</span><span class="spec" title="${esc(x.spec)}">${esc(x.spec)}</span>
+      <span class="dim">${x.recipes == null ? "?" : x.recipes} recipes</span>
+      <span class="dim">${x.fetched_at ? ago(x.fetched_at) + " ago" : "never fetched"}</span>
+      <span class="acts"><button class="btn" data-src="update" data-name="${esc(x.name)}" title="re-fetch this source">↻</button>
+      <button class="btn danger" data-src="remove" data-name="${esc(x.name)}" title="remove the source and its cache">✕</button></span></div>`).join("")
+    || `<div class="muted small">No sources yet; add a recipe repo below.</div>`;
+}
+async function sourceAction(verb, name){
+  const out = $("#srcout");
+  out.classList.add("show"); out.textContent = "working…";
+  try {
+    const j = verb === "remove"
+      ? await api("source/remove/" + encodeURIComponent(name), {method:"POST", body:"{}"})
+      : await api("source/update", {method:"POST", body: JSON.stringify({name})});
+    toast(j.message || verb);
+    out.textContent = j.message + ((j.errors || []).length ? "\n" + j.errors.join("\n") : "") +
+      ((j.results || []).length ? "\n" + j.results.map(r => `${r.name}: ${r.recipes} recipes`).join("\n") : "");
+    await refresh(); renderSources();
+  } catch (e) { out.textContent = "✗ " + e.message; toast(e.message, false); }
+}
+$("#srclist").addEventListener("click", e => {
+  const b = e.target.closest("button[data-src]"); if (!b) return;
+  if (b.dataset.src === "remove" && !confirm("Remove source " + b.dataset.name + " and its cache?")) return;
+  sourceAction(b.dataset.src, b.dataset.name);
+});
+$("#srcform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const out = $("#srcout"); out.classList.add("show"); out.textContent = "fetching…";
+  try {
+    const j = await api("source/add", {method:"POST", body: JSON.stringify({spec: $("#srcspec").value.trim(), name: ($("#srcname").value.trim() || null), fetch: $("#srcfetch").checked})});
+    toast(j.message); out.textContent = j.message + "\n" + j.spec;
+    e.target.reset(); await refresh(); renderSources();
+  } catch (err) { out.textContent = "✗ " + err.message; toast(err.message, false); }
+});
+
+// ─────────────── doctor, harness, engine install ───────────────
+async function refreshDoctor(){
+  try {
+    const [d, h] = await Promise.all([api("doctor"), api("harness")]);
+    st.doctor = d; st.harness = h; renderDoctor();
+  } catch (e) { toast(e.message, false); }
+}
+function renderDoctor(){
+  const d = st.doctor; if (!d) return;
+  const hw = d.hardware || {};
+  const inv = d.inventory || {};
+  const gpus = (hw.gpus || []).map(g => `${g.vendor || ""} ${g.name || ""}${g.memory_gb ? " · " + gb(g.memory_gb) : ""}`).join(", ") || "none";
+  $("#docmeta").textContent = `v${d.version} · schema ${d.schema} · updates ${d.updates && d.updates.enabled ? "on" : "off"} · stats ${d.stats_recording ? "recording" : "off"}`;
+  const kv = rows => rows.map(([k,v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join("");
+  $("#docmachine").innerHTML = kv([
+    ["host", hw.hostname || "?"], ["platform", hw.platform || "?"],
+    ["system", `${hw.os || "?"}/${hw.arch || "?"}`], ["cpu", `${hw.cpu || "?"} (${hw.cores || "?"} cores)`],
+    ["memory", gb(hw.total_memory_gb) + (hw.unified_memory ? " unified" : "")], ["gpu", gpus],
+  ]);
+  const paths = d.paths || {};
+  $("#docpaths").innerHTML = kv([["config", paths.config || "?"], ["recipes", paths.recipes || "?"], ["models", paths.models_dir || "?"],
+    ["hf cache", paths.hf_cache || "?"], ["cache", paths.cache || "?"], ["state", paths.state || "?"]]);
+  const tool = t => `<div class="tool ${t.available?"ok":"no"}"><span class="m">${t.available?"✓":"✗"}</span><span class="n">${esc(t.name)}</span><span class="d" title="${esc(t.detail||"")}">${esc(t.detail||"")}</span></div>`;
+  const engines = Object.values(inv.engines || {}), tools = Object.values(inv.tools || {});
+  $("#docengines").innerHTML = engines.map(tool).join("") || `<div class="muted small">no engines detected</div>`;
+  $("#doctools").innerHTML = tools.map(tool).join("");
+  $("#docenginecount").textContent = `${engines.filter(t => t.available).length}/${engines.length} available`;
+  const llama = engines.some(t => /llama\.cpp/.test(t.name || "") && t.available);
+  $("#docinstall").textContent = llama ? "⤓ Reinstall llama.cpp" : "⤓ Install llama.cpp";
+  const errs = (d.recipe_errors || []).map(x => Array.isArray(x) ? {file:x[0], error:x[1]} : x);
+  $("#docerrcount").textContent = errs.length ? `${errs.length} file(s)` : "none";
+  $("#docerrors").innerHTML = errs.length
+    ? errs.map(x => `<div class="e"><b>${esc(x.file)}</b><br>${esc(x.error)}</div>`).join("")
+    : `<div class="muted small">✓ every recipe file parsed</div>`;
+  renderHarness();
+}
+function renderHarness(){
+  const h = st.harness; if (!h) return;
+  const rows = h.harnesses || [];
+  $("#dochmeta").textContent = `${rows.filter(x => x.enabled).length}/${rows.length} enabled${h.asked ? "" : " · first-run defaults"}`;
+  $("#docharness").innerHTML = rows.map(x => `<div class="herr">
+      <span class="nm">${esc(x.label)}</span><span class="st">${x.enabled ? (x.detected ? "synced" : "not installed") : "off"}</span>
+      <span class="dim" title="${esc(x.config || x.hint || "")}" style="font-size:11.5px">${esc(x.config || x.hint || "")}</span>
+      <span class="grow"></span>
+      <button class="btn" data-har="${x.enabled ? "disable" : "enable"}" data-name="${esc(x.id)}">${x.enabled ? "Turn off" : "Turn on"}</button></div>`).join("");
+  const known = h.known_hosts || [];
+  const cur = h.hosts;
+  const all = cur === null || cur === undefined;
+  const sel = new Set(all ? known : (cur || []));
+  $("#harhosts").innerHTML = `<label class="small"><input type="checkbox" id="harall" ${all ? "checked" : ""}> all</label>` +
+    known.map(n => `<label class="small"><input type="checkbox" data-harhost="${esc(n)}" ${sel.has(n) ? "checked" : ""}> ${esc(n)}</label>`).join("") +
+    (known.length ? "" : `<span class="dim small">no hosts.toml entries</span>`);
+  $("#harexport").checked = !!h.export;
+  $("#harhub").checked = !!h.hub;
+  $("#harpushed").textContent = h.pushed ? `last push from ${h.pushed.from} · ${h.pushed.lanes} lanes · ${ago(h.pushed.at)} ago` : "";
+}
+$("#docharness").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-har]"); if (!b) return;
+  try {
+    const j = await api("harness/" + b.dataset.har, {method:"POST", body: JSON.stringify({name: b.dataset.name})});
+    toast(j.message); await refreshDoctor();
+  } catch (err) { toast(err.message, false); }
+});
+$("#harsync").onclick = async () => {
+  try {
+    const j = await api("harness/sync", {method:"POST", body:"{}"});
+    const lines = (j.synced || []).map(x => `${x.id}: ${x.error ? "✗ " + x.error : !x.installed ? "not installed" : x.changed ? "updated" : "unchanged"}`);
+    lines.push(...(j.took || []).map(h => "pushed " + h), ...(j.missed || []).map(m => "push failed: " + m));
+    toast(j.message || "synced"); showOut("Harness sync", lines); await refreshDoctor();
+  } catch (err) { toast(err.message, false); }
+};
+$("#harhosts").addEventListener("change", async e => {
+  if (!e.target.matches("input")) return;
+  const boxes = [...document.querySelectorAll("#harhosts [data-harhost]")];
+  if (e.target.id === "harall") boxes.forEach(x => { x.checked = e.target.checked; });
+  const names = boxes.filter(x => x.checked).map(x => x.dataset.harhost);
+  const all = boxes.length > 0 && names.length === boxes.length;
+  if ($("#harall")) $("#harall").checked = all;
+  try {
+    const j = await api("harness/hosts", {method:"POST", body: JSON.stringify({hosts: all ? null : names})});
+    toast(j.message); await refreshDoctor();
+  } catch (err) { toast(err.message, false); }
+});
+$("#harexport").onchange = async e => {
+  try { const j = await api("harness/export", {method:"POST", body: JSON.stringify({on:e.target.checked})}); toast(j.message); await refreshDoctor(); }
+  catch (err) { toast(err.message, false); }
+};
+$("#harhub").onchange = async e => {
+  try { const j = await api("harness/hub", {method:"POST", body: JSON.stringify({on:e.target.checked})}); toast(j.message); await refreshDoctor(); }
+  catch (err) { toast(err.message, false); }
+};
+async function checkUpstream(){
+  toast("asking every wrapped recipe's repo…");
+  try {
+    const j = await api("outdated", {method:"POST", body: JSON.stringify({fetch:true})});
+    const lines = (j.rows || []).map(r => `${r.name}: ${r.available ? "⬆ " + (r.hint || "update available") : "✓ current"}`);
+    toast(`${j.available || 0} update(s) of ${j.rows.length} wrapped recipe(s)`);
+    showOut("Upstream check", lines.length ? lines : ["no wrapped recipes (recipes with a [source])"]);
+    await refresh();
+  } catch (e) { toast(e.message, false); }
+}
+$("#doccupdates").onclick = checkUpstream;
+$("#updbtn").onclick = checkUpstream;
+$("#stopall").onclick = async () => {
+  if (!confirm("Stop everything lmdeck started on this machine?")) return;
+  try { const j = await api("stop-all", {method:"POST", body:"{}"}); toast(j.message); await refresh(); await refreshHosts(); }
+  catch (e) { toast(e.message, false); }
+};
+$("#docinstall").onclick = async e => {
+  const b = e.currentTarget; b.disabled = true; const old = b.textContent; b.textContent = "installing…";
+  try {
+    const j = await api("engine/install/llama.cpp", {method:"POST", body: JSON.stringify({force:false})});
+    toast(j.message); showOut("Installed llama.cpp", [...(j.lines || []), j.binary || ""].filter(Boolean));
+    await refreshDoctor();
+  } catch (err) { toast(err.message, false); }
+  finally { b.disabled = false; b.textContent = old; }
+};
+
+// ─────────────── hosts management ───────────────
+$("#hostform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const out = $("#hostout"); out.classList.add("show"); out.textContent = "checking…";
+  try {
+    const j = await api("host/add", {method:"POST", body: JSON.stringify({
+      name: $("#hostname").value.trim(), url: $("#hosturl").value.trim(),
+      token: ($("#hosttoken").value.trim() || null), token_env: ($("#hosttokenenv").value.trim() || null),
+      link_addr: ($("#hostlink").value.trim() || null), check: $("#hostcheck").checked,
+    })});
+    const reach = j.reachable ? (j.reachable.ok ? `reachable in ${j.reachable.ms} ms · ${j.reachable.hostname} ${j.reachable.platform}` : `not reachable yet: ${j.reachable.error}`) : "not checked";
+    toast(j.message); out.textContent = j.message + "\n" + reach;
+    e.target.reset(); $("#hostcheck").checked = true;
+    await refreshHosts(); setTimeout(refreshHosts, 2400);
+  } catch (err) { out.textContent = "✗ " + err.message; toast(err.message, false); }
+});
+$("#hostsync").onclick = async e => {
+  const b = e.currentTarget; b.disabled = true;
+  const out = $("#hostout"); out.classList.add("show"); out.textContent = "syncing hosts over ssh…";
+  try {
+    const j = await api("host/sync", {method:"POST", body: JSON.stringify({dry_run:false})});
+    toast(j.message); out.textContent = [...(j.lines || []).map(l => "✓ " + l), ...(j.failed || []).map(l => "✗ " + l)].join("\n") || j.message;
+    await refreshHosts(); await refreshTopo();
+  } catch (err) { out.textContent = "✗ " + err.message; toast(err.message, false); }
+  finally { b.disabled = false; }
+};
+
+// ─────────────── deck: TOML / remove ───────────────
+async function openRecipe(ref){
+  try {
+    const j = await api("recipe/" + encodeURIComponent(ref));
+    showOut(`${j.reference} — ${j.file}`, (j.toml || "").split("\n"));
+  } catch (e) { toast(e.message, false); }
+}
+async function removeRecipe(name){
+  if (!confirm(`Remove ${name} from the deck?`)) return;
+  try {
+    const j = await api("recipe/remove/" + encodeURIComponent(name), {method:"POST", body:"{}"});
+    toast(j.message); await refresh();
+  } catch (e) { toast(e.message, false); }
+}
+
 const params = new URLSearchParams(location.search);
 if (params.get("scope") === "all") $("#scope [data-v=all]").click();
 if (params.get("logs")) openLogs(params.get("logs"));
 if (params.get("themes") === "open") setTimeout(() => $("#thbtn").click(), 300);
 loadThemes(); refresh(); refreshHosts(); refreshTopo();
+showTab(params.get("tab") || "deck", false);
 setInterval(() => { if (!document.hidden) { refresh(); refreshHosts(); } }, 2500);
 setInterval(() => { if (!document.hidden) refreshTopo(); }, 20000);
 if (params.get("runon")) { const [ref, host] = params.get("runon").split("@"); setTimeout(() => runOn(ref, host), 900); }

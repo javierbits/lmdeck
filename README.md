@@ -351,16 +351,34 @@ lmdeck serve --port 8800
 lmdeck serve --host 0.0.0.0 --token "$(openssl rand -hex 16)"   # see the warning below
 ```
 
-`lmdeck serve` runs the same controls in a browser: a card for each recipe
-with status, fit, size, a memory bar, checks and the launch command; Start /
-Stop / Switch / Pull buttons (Start and Switch run a recipe on the host that
-holds its weights when this machine doesn't, as `lmdeck use` does; wrapped
-recipes with new upstream commits get a
-`⬆ update` badge and an `⬆ Update` button); search and filters (fits, running, on disk);
-machine, engine and source panels; a live log drawer; and a Hosts row with
-one card per host (memory, temperature, power, tok/s, sparklines, the
-running models) that updates every 2.5 s. The page and its
-JSON API are compiled into the binary, so nothing is fetched from a CDN.
+`lmdeck serve` runs the same controls in a browser, in tabs:
+
+- **Deck**: a card for each recipe with status, fit, size, a memory bar,
+  checks and the launch command; Start / Stop / Switch / Pull buttons (Start
+  and Switch run a recipe on the host that holds its weights when this machine
+  doesn't, as `lmdeck use` does; wrapped recipes with new upstream commits get
+  a `⬆ update` badge and an `⬆ Update` button); search and filters (fits,
+  running, on disk); a TOML viewer and a remove button; a live log drawer;
+  and **Check upstream** (`lmdeck outdated`) / **Stop all** (`lmdeck stop
+  --all`) buttons.
+- **Library**: the recipe index (`lmdeck browse`) with search, tag filters,
+  fits/speed sorting, one-click install (the same path as `lmdeck add`), and
+  forms for `lmdeck add <repo>` and `lmdeck recipe add <ref>`.
+- **Stats**: token usage recorded from engine counters (opt-in via
+  `[stats] record = true`, see [Usage statistics](#usage-statistics)) as an
+  activity calendar, per-model totals and the selected fleet's hourly profile.
+- **Weights**: which host holds which checkpoint (`lmdeck weights`).
+- **Sources**: add, re-fetch and remove recipe sources (`lmdeck source …`).
+- **Hosts**: one card per host (memory, temperature, power, tok/s, sparklines,
+  the running models) that updates every 2.5 s, plus add/forget and
+  `lmdeck host sync`.
+- **Topology**: the hosts and their CX7 / LAN / Tailscale links.
+- **Doctor**: hardware, engines and tools, recipe parse errors, the managed
+  llama.cpp install (`lmdeck engine install llama.cpp`), and the agent-harness
+  mirror (`lmdeck harness …`).
+
+The page and its JSON API are compiled into the binary, so nothing is fetched
+from a CDN.
 
 ![web dashboard](docs/screenshots/web-dashboard.png)
 
@@ -395,17 +413,33 @@ API (JSON unless noted):
 | `GET` | `/api/snapshot` | everything below in one document |
 | `GET` | `/api/recipes` | every recipe, with status, download state, size, fit, checks and the launch command |
 | `GET` | `/api/status` | running and deck recipes: status, port, endpoint |
-| `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors |
+| `GET` | `/api/doctor` | hardware, installed engines and tools, recipe parse errors, paths, update-check and stats settings |
 | `GET` | `/api/sources` | the deck and sources with recipe counts |
+| `GET` | `/api/browse?q=&tag=&sort=&fits=1&refresh=1&offline=1` | the recipe index joined with this machine (`lmdeck browse --json`), plus the tag list for filters |
+| `GET` | `/api/outdated?fetch=1` | every wrapped recipe's upstream state, refreshing the cache first (`lmdeck outdated`) |
+| `GET` | `/api/recipe/{reference}` | one recipe's file and full TOML (`lmdeck recipe show --toml`) |
+| `GET` | `/api/harness` | the harness mirror's state: enabled/installed harnesses, config paths, hosts, export and hub settings |
+| `GET` | `/api/weights/index?refresh=1` | every host's weights inventory and where each model is (`lmdeck weights`) |
 | `GET` | `/api/telemetry?history=1&since=MS` | this machine's live telemetry (memory, GPUs, temperatures, power, load, running models with RSS and tok/s); with `history=1` also the samples newer than `since` (ms since the epoch) |
 | `GET` | `/api/usage` | this machine's usage statistics (`[stats] record`): days, per-model totals, hourly buckets; the Stats tab's fleet view reads it from each host |
 | `GET` | `/api/hosts` | `{at, demo, hosts:[…]}`: this machine plus every host in `hosts.toml`, each with `online`, `error`, `latency_ms`, `last_seen`, `telemetry`, `history` and (when it answers `/api/usage`) `usage` |
 | `GET` | `/api/logs/{recipe}?n=200` | the tail of the server (or pull) log |
 | `GET` | `/api/logs/{recipe}/stream` | Server-Sent Events: a `reset` event, then one `data:` line per log line |
 | `POST` | `/api/start/{recipe}` · `/api/switch/{recipe}` · `/api/stop/{recipe}` · `/api/pull/{recipe}` | runs the action and returns `{ok, message}`; a refused action is `409` with `{ok:false, error}`. Optional body `{"force": true}` skips the fit checks; `{"latest": true}` on `pull` moves a pinned wrapped recipe to the upstream head (`pull --latest`). On `start` / `switch`, `{"on": "<host>"}` runs it on that host, and `{"auto": true}` runs it where its weights are, as `lmdeck use` without `--on` does (the dashboard's Start and Switch send it); without either it runs on this machine, which is how a controller starts a recipe on the host it picked. |
+| `POST` | `/api/add` | `{"repo": "<index name, owner/repo, URL or directory>", "name": …, "ref": …, "force": …}` installs like `lmdeck add` and returns the progress lines |
+| `POST` | `/api/recipe/add` · `/api/recipe/remove/{name}` | copy a recipe into the deck (`lmdeck recipe add`), or remove a deck recipe by name (`lmdeck recipe remove`) |
+| `POST` | `/api/source/add` · `/api/source/update` · `/api/source/remove/{name}` | `{"spec": …, "name": …, "fetch": true}` adds a source; `{"name": …}` (or nothing) re-fetches; remove forgets it and its cache |
+| `POST` | `/api/host/add` · `/api/host/sync` · `/api/host/remove/{name}` | `{"name","url","token","token_env","link_addr","check"}` adds a host; `{"dry_run": …}` runs `lmdeck host sync`; remove forgets one |
+| `POST` | `/api/harness/{enable,disable,sync,hosts,export,hub}` | the harness mirror: `{"name"}`, `{}`, `{"hosts": null or […]}` (`null` = all configured, `[]` = local only), `{"on": …}` |
+| `POST` | `/api/stop-all` | stops every server lmdeck started on this machine (`lmdeck stop --all`) |
+| `POST` | `/api/engine/install/{engine}` | installs a managed engine (currently `llama.cpp`); `{"force": true}` reinstalls |
 
-`{recipe}` is a name or an `origin/name` reference. Start and switch return as
-soon as the server process is launched; poll `/api/status` to see it come up.
+`{recipe}` is a name or an `origin/name` reference; a `remove` path takes the
+deck recipe name (the file stem). Management routes (`add`, `recipe/*`,
+`source/*`, `host/*`, `harness/*`) write the deck or config and reload the
+running server, so the catalog reflects them immediately. Start and switch
+return as soon as the server process is launched; poll `/api/status` to see it
+come up.
 
 Guards:
 

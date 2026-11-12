@@ -134,6 +134,14 @@ fn dashboard_and_read_endpoints() {
         "hosts/${encodeURIComponent(host)}/stop/",
         "weights on disk: ",
         "nodes · start order",
+        "id=\"tabs\"",
+        "pane-library",
+        "pane-stats",
+        "pane-weights",
+        "pane-sources",
+        "pane-doctor",
+        "recipe/remove/",
+        "harness/hosts",
     ] {
         assert!(body.contains(hook), "dashboard is missing {hook}");
     }
@@ -546,4 +554,204 @@ fn a_peers_deck_shows_in_list_and_resolves_to_it() {
     let out = lmdeck_cmd(root.path()).args(["use", "peer-only", "--dry-run"]).output().unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(text.contains("a's deck"), "{text}");
+}
+
+// ─────────────────── managing the deck from the dashboard ───────────────────
+
+const INDEX: &str = r#"
+schema = 1
+[[entry]]
+name = "tiny-qwen"
+repo = "https://github.com/example/tiny-qwen"
+description = "a small llama.cpp recipe"
+recipe = "recipes/tiny-qwen.toml"
+tags = { engine = "llama.cpp", quant = "gguf", family = "qwen3", sparks = 1 }
+speed = { tok_s = 30.0, note = "fixture" }
+[[entry]]
+name = "big-two"
+repo = "https://github.com/example/big-two"
+description = "needs two sparks"
+size_gb = 176.0
+tags = { engine = "tensorfold", quant = "exl3", sparks = 2 }
+speed = { tok_s = 60.0, note = "fixture" }
+"#;
+
+const TINY_RECIPE: &str = r#"
+schema = 1
+display_name = "Tiny Qwen"
+[model]
+repo = "unsloth/Qwen3-4B-GGUF"
+files = ["Qwen3-4B-Q4_K_M.gguf"]
+[quant]
+format = "gguf"
+label = "Q4_K_M"
+[engine]
+name = "llama.cpp"
+port = 8090
+"#;
+
+/// A tiny index server, so `/api/browse` and `/api/add` never touch the net.
+struct IndexServer {
+    base: String,
+    server: std::sync::Arc<tiny_http::Server>,
+}
+
+impl IndexServer {
+    fn start() -> IndexServer {
+        let server = std::sync::Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let s = server.clone();
+        std::thread::spawn(move || {
+            for req in s.incoming_requests() {
+                let path = req.url().split('?').next().unwrap_or("").to_string();
+                let body = match path.as_str() {
+                    "/index.toml" => INDEX,
+                    "/recipes/tiny-qwen.toml" => TINY_RECIPE,
+                    _ => "nope",
+                };
+                let code = if body == "nope" { 404 } else { 200 };
+                let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(code));
+            }
+        });
+        IndexServer { base, server }
+    }
+}
+
+impl Drop for IndexServer {
+    fn drop(&mut self) {
+        self.server.unblock();
+    }
+}
+
+impl Served {
+    fn post_json(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, ureq::Error> {
+        ureq::post(&format!("{}{path}", self.base))
+            .set("X-Lmdeck", "1")
+            .send_json(body)?
+            .into_json()
+            .map_err(ureq::Error::from)
+    }
+}
+
+#[test]
+fn management_api_covers_the_cli_commands() {
+    let index = IndexServer::start();
+    let s = serve_with(
+        &[],
+        &[("LMDECK_INDEX_URL", format!("{}/index.toml", index.base)), ("LMDECK_NO_PROBE", "1".into())],
+        |root| {
+            let dir = root.join("home/config/recipes");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("local.toml"),
+                "[model]\nsource = \"local\"\npath = \"models\"\n[engine]\nname = \"llama.cpp\"\nport = 8091\n",
+            )
+            .unwrap();
+        },
+    );
+
+    // Browse: the whole index, a tag filter, and fits.
+    let b = s.get("/api/browse").unwrap();
+    assert_eq!(b["total"], 2, "{b}");
+    assert_eq!(b["entries"].as_array().unwrap().len(), 2);
+    assert!(b["tags"].as_array().unwrap().iter().any(|t| t["value"] == "exl3"), "{b}");
+    let b = s.get("/api/browse?tag=exl3").unwrap();
+    assert_eq!(b["entries"].as_array().unwrap().len(), 1, "{b}");
+    assert_eq!(b["entries"][0]["name"], "big-two");
+    let b = s.get("/api/browse?fits=1").unwrap();
+    assert!(b["entries"].as_array().unwrap().iter().all(|e| e["fit"] != "fail"), "{b}");
+    let b = s.get("/api/browse?q=qwen&sort=speed").unwrap();
+    assert_eq!(b["entries"][0]["name"], "tiny-qwen", "{b}");
+
+    // Install an index entry, then read and remove it.
+    let j = s.post_json("/api/add", serde_json::json!({"repo": "tiny-qwen"})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["name"], "tiny-qwen");
+    assert!(s.get("/api/snapshot").unwrap()["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["reference"] == "deck/tiny-qwen"));
+    let err = s.post_json("/api/add", serde_json::json!({"repo": "tiny-qwen"})).unwrap_err();
+    assert_eq!(status(err), 409, "a second add needs force");
+    let r = s.get("/api/recipe/deck/tiny-qwen").unwrap();
+    assert!(r["toml"].as_str().unwrap().contains("llama.cpp"), "{r}");
+    let j = s.post("/api/recipe/remove/tiny-qwen").unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert!(!s.get("/api/snapshot").unwrap()["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["reference"] == "deck/tiny-qwen"));
+
+    // Add a recipe file, then remove it.
+    let file = s.path("extra.toml");
+    fs::write(&file, "[engine]\nname = \"llama.cpp\"\nport = 8092\n[model]\nsource = \"local\"\npath = \"models\"\n")
+        .unwrap();
+    let j = s.post_json("/api/recipe/add", serde_json::json!({"reference": file, "name": "extra"})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(s.get("/api/recipe/extra").unwrap()["name"], "extra");
+    s.post("/api/recipe/remove/extra").unwrap();
+
+    // Sources: a local directory, update, then remove.
+    let src = s.path("recipes-src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("from-source.toml"),
+        "[model]\nsource = \"local\"\npath = \"models\"\n[engine]\nname = \"llama.cpp\"\nport = 8093\n",
+    )
+    .unwrap();
+    let j = s.post_json("/api/source/add", serde_json::json!({"spec": src, "name": "mine"})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["recipes"], 1, "{j}");
+    assert!(s.get("/api/snapshot").unwrap()["sources"].as_array().unwrap().iter().any(|x| x["name"] == "mine"));
+    let j = s.post_json("/api/source/update", serde_json::json!({})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["results"][0]["name"], "mine", "{j}");
+    let j = s.post("/api/source/remove/mine").unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert!(s.get("/api/snapshot").unwrap()["sources"].as_array().unwrap().is_empty());
+
+    // Hosts: add without contacting it, then forget it.
+    let j = s
+        .post_json("/api/host/add", serde_json::json!({"name": "peer", "url": "http://127.0.0.1:9", "check": false}))
+        .unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let hosts = fs::read_to_string(s.path("home/config/hosts.toml")).unwrap();
+    assert!(hosts.contains("peer") && hosts.contains("127.0.0.1:9"), "{hosts}");
+    let j = s.post("/api/host/remove/peer").unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let err = s.post("/api/host/remove/peer").unwrap_err();
+    assert_eq!(status(err), 409);
+
+    // Harness: list, enable, restrict hosts, export, hub, disable.
+    let h = s.get("/api/harness").unwrap();
+    assert!(h["harnesses"].as_array().unwrap().iter().any(|x| x["id"] == "opencode"), "{h}");
+    let j = s.post_json("/api/harness/enable", serde_json::json!({"name": "opencode"})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let j = s.post_json("/api/harness/hosts", serde_json::json!({"hosts": []})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let j = s.post_json("/api/harness/export", serde_json::json!({"on": true})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let j = s.post_json("/api/harness/hub", serde_json::json!({"on": true})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let cfg = fs::read_to_string(s.path("home/config/config.toml")).unwrap();
+    assert!(cfg.contains("opencode_export = true") && cfg.contains("hub = true"), "{cfg}");
+    assert!(cfg.contains("\"opencode\""), "{cfg}");
+    let j = s.post_json("/api/harness/disable", serde_json::json!({"name": "opencode"})).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let err = s.post_json("/api/harness/hosts", serde_json::json!({"hosts": ["nope"]})).unwrap_err();
+    assert_eq!(status(err), 409);
+
+    // Stop all (nothing is running, so it is a no-op with a clear message).
+    let j = s.post("/api/stop-all").unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["message"], "nothing to stop", "{j}");
+
+    // Updates, doctor paths.
+    let j = s.get("/api/outdated?fetch=0").unwrap();
+    assert!(j["rows"].is_array(), "{j}");
+    let d = s.get("/api/doctor").unwrap();
+    assert!(d["paths"]["recipes"].is_string(), "{d}");
+    assert!(d["updates"]["enabled"].is_boolean(), "{d}");
 }

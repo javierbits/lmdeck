@@ -54,9 +54,9 @@ fn remote_start_stop_logs_with_and_without_token() {
     assert!(plan.contains("a"), "{plan}");
     let up = c.run(&["use", "web", "--on", "a"]);
     assert!(up.contains("web is up on a"), "{up}");
-    let st: serde_json::Value = ureq::get(&format!("{}/api/status", a.url)).call().unwrap().into_json().unwrap();
-    let web = st.as_array().unwrap().iter().find(|r| r["name"] == "web").unwrap_or_else(|| panic!("{st}"));
-    assert_eq!(web["status"], "loaded", "{st}");
+    // Readiness can lag the controller's own check by a probe; poll like the
+    // other multi-host tests instead of racing the status reply.
+    wait_loaded(&a.url, "web", 15);
     assert!(
         c.run(&["logs", "web", "--on", "a"]).contains("http.server") || c.run(&["logs", "web", "--on", "a"]).is_empty()
     );
