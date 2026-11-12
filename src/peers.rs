@@ -408,7 +408,11 @@ mod tests {
     }
 
     fn facts(arch: &str, extra: &str) -> String {
-        format!("host=faraday.lan\narch={arch}\nos=Linux\nuser=jvr0x\nhome=/home/jvr0x\nlmdeck=\n{extra}")
+        // The host's own OS, so the same-OS binary-copy branch is the one tested.
+        format!(
+            "host=faraday.lan\narch={arch}\nos={}\nuser=jvr0x\nhome=/home/jvr0x\nlmdeck=\n{extra}",
+            std::env::consts::OS
+        )
     }
 
     #[test]
