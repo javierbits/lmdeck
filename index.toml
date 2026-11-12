@@ -86,3 +86,35 @@ description = "LiquidAI LFM3 Omni 2B (text, image, video, audio in; text or 24 k
 size_gb = 1.4   # LFM3-Omni-2B-Q4_K_M.gguf + mmproj-LFM3-Omni-2B-Q4_K_M.gguf (HF API)
 recipe = "recipes/lfm3-omni-2b-gguf.toml"
 tags = { engine = "llama.cpp", model = "LFM3 Omni 2B", family = "lfm3", quant = "gguf", sparks = 1 }
+
+[[entry]]
+name = "javi0.4-4b-gguf"
+repo = "https://huggingface.co/javierbits/Javi0.4-4B-GGUF"
+description = "javierbits Javi0.4 4B (Qwen3.5-4B agent/tool fine-tune) Q4_K_M on llama.cpp: thinking off, 128K context in this recipe, text only."
+size_gb = 2.8   # Javi0.4-4B.Q4_K_M.gguf (HF API)
+recipe = "recipes/javi0.4-4b-gguf.toml"
+tags = { engine = "llama.cpp", model = "Javi0.4 4B", family = "javi", quant = "gguf", sparks = 1 }
+
+[[entry]]
+name = "gemma-4-12b-it-qat-gguf"
+repo = "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf"
+description = "Google Gemma 4 12B IT, official QAT Q4_0 GGUF plus projector on llama.cpp: text/image/audio input, 256K model context, ~7.2 GB."
+size_gb = 7.2   # gemma-4-12b-it-qat-q4_0.gguf + mmproj (HF API)
+recipe = "recipes/gemma-4-12b-it-qat-gguf.toml"
+tags = { engine = "llama.cpp", model = "Gemma 4 12B", family = "gemma", quant = "gguf", sparks = 1 }
+
+[[entry]]
+name = "qwen3.6-27b-gguf"
+repo = "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF"
+description = "Qwen3.6 27B dense hybrid Q4_K_M plus vision projector on llama.cpp: ~17.7 GB, 128K context in this recipe, single DGX Spark."
+size_gb = 17.7  # Qwen3.6-27B-Q4_K_M.gguf + mmproj-F16.gguf (HF API)
+recipe = "recipes/qwen3.6-27b-gguf.toml"
+tags = { engine = "llama.cpp", model = "Qwen3.6 27B", family = "qwen3.6", quant = "gguf", sparks = 1 }
+
+[[entry]]
+name = "qwen3.6-35b-a3b-nvfp4-spark"
+repo = "https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4"
+description = "NVIDIA NVFP4 Qwen3.6 35B-A3B (MoE) on vLLM in Docker, tuned for one DGX Spark: 64K context, vision, tool calling."
+size_gb = 23.5  # three safetensors shards (HF API)
+recipe = "recipes/qwen3.6-35b-a3b-nvfp4-spark.toml"
+tags = { engine = "vllm", model = "Qwen3.6 35B-A3B", family = "qwen3.6", quant = "nvfp4", sparks = 1 }

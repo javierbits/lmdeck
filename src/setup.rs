@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::fabric::{self, NicKind};
 use crate::hosts::HostsFile;
 use crate::paths::Paths;
-use crate::sources::SourceSpec;
+use crate::sources::{Found, SourceSpec};
 use crate::ssh::{Login, Ssh};
 use crate::util::run_with_timeout;
 use anyhow::Result;
@@ -105,6 +105,8 @@ pub struct Outcome {
     pub sources: Vec<(String, String)>,
     /// Where weights should land; `None` when the answer did not change it.
     pub models_dir: Option<String>,
+    /// Built-in starter recipes copied into the deck.
+    pub recipes: Vec<String>,
     /// Whether usage statistics should be recorded (saved to `[stats]`).
     pub stats_record: bool,
 }
@@ -364,6 +366,8 @@ pub fn run_wizard(
         println!("{}", crate::ui::dim("no sources added."));
     }
 
+    let recipes = starter_step(paths, p);
+
     println!("{}", crate::ui::bold("usage statistics"));
     println!(
         "{}",
@@ -376,7 +380,13 @@ pub fn run_wizard(
     let stats_record = ask_yes(p, "  record usage statistics?", cfg.stats.record);
     Config::save_stats(paths, stats_record)?;
     Config::save_setup(paths, true)?;
-    Ok(Outcome { hosts: added, sources, models_dir: Some(models_dir).filter(|m| m != &cfg.models_dir), stats_record })
+    Ok(Outcome {
+        hosts: added,
+        sources,
+        models_dir: Some(models_dir).filter(|m| m != &cfg.models_dir),
+        recipes,
+        stats_record,
+    })
 }
 
 /// Finds the peers, shows them, and asks about each. Returns the names added.
@@ -614,6 +624,109 @@ pub(crate) fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {
             _ => default,
         },
     }
+}
+
+/// Offers the built-in starter recipes, listing each one's size, engine and
+/// capability, then copies the selected recipes into the deck. Existing deck
+/// files are kept, so a rerun never overwrites edits.
+fn starter_step(paths: &Paths, p: &mut dyn Prompt) -> Vec<String> {
+    let built = crate::catalog::builtin();
+    let rows: Vec<(&Found, &str)> = crate::catalog::STARTER_RECIPES
+        .iter()
+        .filter_map(|(name, pitch)| built.iter().find(|f| f.recipe.name == *name).map(|f| (f, *pitch)))
+        .collect();
+    if rows.is_empty() {
+        return vec![];
+    }
+
+    println!("\n{}", crate::ui::bold("starter recipes"));
+    println!("{}", crate::ui::dim("  built into lmdeck; nothing is downloaded until `lmdeck pull <name>`."));
+    let name_w = rows.iter().map(|(f, _)| f.recipe.name.len()).max().unwrap_or(0);
+    for (i, (f, pitch)) in rows.iter().enumerate() {
+        let size = f.recipe.model.size_gb.map(|g| format!("~{g:.1} GB")).unwrap_or_else(|| "?".into());
+        println!(
+            "  {:>2}. {:<name_w$}  {:>9}  {:<10}  {}",
+            i + 1,
+            f.recipe.name,
+            size,
+            f.recipe.engine.name.as_str(),
+            pitch,
+            name_w = name_w,
+        );
+    }
+    println!("{}", crate::ui::dim("  some need a recent llama.cpp; `lmdeck doctor` checks the engines."));
+
+    let selected = loop {
+        let answer = p.line("  import which? [all, 1,3, none] (all) > ");
+        match parse_starter_selection(answer.as_deref().unwrap_or(""), rows.len()) {
+            Some(sel) => break sel,
+            None => println!("  {} pick all, none, or numbers from 1 to {}", crate::ui::yellow("!"), rows.len()),
+        }
+    };
+
+    let mut added = vec![];
+    let mut existing = 0;
+    for i in selected {
+        let f = rows[i].0;
+        if paths.recipes_dir().join(format!("{}.toml", f.recipe.name)).exists() {
+            existing += 1;
+            println!(
+                "  {} {} {}",
+                crate::ui::dim("·"),
+                crate::ui::bold(&f.recipe.name),
+                crate::ui::dim("already in the deck")
+            );
+            continue;
+        }
+        match crate::catalog::add_to_deck(paths, &f.recipe, false) {
+            Ok(_) => {
+                println!("  {} {}", crate::ui::green("✓"), crate::ui::bold(&f.recipe.name));
+                added.push(f.recipe.name.clone());
+            }
+            Err(e) => println!("  {} {e:#}", crate::ui::yellow("!")),
+        }
+    }
+    if added.is_empty() {
+        let msg = if existing > 0 {
+            "  all selected starter recipes are already in the deck."
+        } else {
+            "  no starter recipes imported."
+        };
+        println!("{}", crate::ui::dim(msg));
+    } else {
+        println!(
+            "  {} {}",
+            crate::ui::green("✓"),
+            crate::ui::dim(&format!("{} starter recipe(s) in the deck", added.len()))
+        );
+    }
+    added
+}
+
+/// `all`, `none`, or one or more 1-based numbers (`1,3` / `1 3`). An empty
+/// answer means all; `None` means the input was not a valid selection.
+fn parse_starter_selection(input: &str, count: usize) -> Option<Vec<usize>> {
+    let s = input.trim().to_ascii_lowercase();
+    if s.is_empty() || s == "all" || s == "y" || s == "yes" {
+        return Some((0..count).collect());
+    }
+    if s == "none" || s == "n" || s == "no" {
+        return Some(vec![]);
+    }
+    let mut picked = vec![];
+    for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
+        if part.is_empty() {
+            continue;
+        }
+        let n: usize = part.parse().ok()?;
+        if n == 0 || n > count {
+            return None;
+        }
+        if !picked.contains(&(n - 1)) {
+            picked.push(n - 1);
+        }
+    }
+    (!picked.is_empty()).then_some(picked)
 }
 
 /// The machine half of the wizard's first screen.
@@ -1276,14 +1389,14 @@ pub(crate) mod tests {
     #[test]
     fn wizard_asks_for_usage_statistics_and_saves_the_answer() {
         let (_d, paths) = tmp("wizard-stats");
-        let mut p = Script::new(&["", "", "", "y"]);
+        let mut p = Script::new(&["", "", "", "none", "y"]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
         assert!(out.stats_record);
         let text = std::fs::read_to_string(paths.config_file()).unwrap();
         assert!(text.contains("[stats]\nrecord = true"), "{text}");
         // The next wizard run proposes the saved choice? No: it asks again,
         // defaulting to off, and `n` turns recording back off.
-        let mut p = Script::new(&["", "", "", "n"]);
+        let mut p = Script::new(&["", "", "", "none", "n"]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
         assert!(!out.stats_record);
         let text = std::fs::read_to_string(paths.config_file()).unwrap();
@@ -1315,6 +1428,7 @@ pub(crate) mod tests {
             "n",                      // nor add it anyway
             "github:someone/recipes", // source
             "",                       // done with sources
+            "none",                   // no starter recipes
         ]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers);
         assert_eq!(out.hosts, vec!["ember"]);
@@ -1341,7 +1455,7 @@ pub(crate) mod tests {
             peer(Some("ember"), &["10.100.132.2", "10.100.133.2"], Some("1.2.3"), Login::Ok),
             peer(Some("gigabyte"), &["10.100.128.1"], Some("1.2.3"), Login::Ok),
         ];
-        let mut p = Script::new(&["", "", "", "", "tok", ""]);
+        let mut p = Script::new(&["", "", "", "", "tok", "", "none"]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers);
         assert_eq!(out.hosts, vec!["ember"], "gigabyte is already there under its own name");
         let hosts = HostsFile::load(&paths).unwrap();
@@ -1355,13 +1469,13 @@ pub(crate) mod tests {
         let (_d, paths) = tmp("wizard-noname");
         let peers = vec![peer(None, &["10.100.136.1"], None, Login::Denied)];
         // Not set up, added anyway; the name prompt has no default, so empty skips it.
-        let mut p = Script::new(&["", "", "n", "y", "", ""]);
+        let mut p = Script::new(&["", "", "n", "y", "", "", "none"]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers.clone());
         assert!(out.hosts.is_empty());
         assert!(HostsFile::load(&paths).unwrap().hosts.is_empty());
         // Typing one works.
         let (_d2, paths2) = tmp("wizard-noname2");
-        let mut p = Script::new(&["", "", "n", "y", "faraday", ""]);
+        let mut p = Script::new(&["", "", "n", "y", "faraday", "", "none"]);
         let out = wiz(&paths2, &mut p, &mut MockSsh::default(), peers);
         assert_eq!(out.hosts, vec!["faraday"]);
     }
@@ -1382,12 +1496,13 @@ pub(crate) mod tests {
         ssh.reply(ip, "serve.env", Out::ok(""));
         let peers = vec![peer(None, &[ip], None, Login::Denied)];
         let mut p = Script::new(&[
-            "", "", // machine, models dir
-            "", // set up lmdeck on 10.100.136.1: yes
-            "", // ssh-copy-id: yes
-            "", // service: yes
-            "", // name: the hostname it reported
-            "", // no sources
+            "", "",     // machine, models dir
+            "",     // set up lmdeck on 10.100.136.1: yes
+            "",     // ssh-copy-id: yes
+            "",     // service: yes
+            "",     // name: the hostname it reported
+            "",     // no sources
+            "none", // no starter recipes
         ]);
         let out = wiz(&paths, &mut p, &mut ssh, peers);
         assert_eq!(ssh.copied, vec![(ip.to_string(), PathBuf::from("id_ed25519"))]);
@@ -1414,6 +1529,7 @@ pub(crate) mod tests {
             "not a spec at all!", // rejected
             "github:o/r",         // accepted
             "",                   // finish
+            "none",               // no starter recipes
         ]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), peers);
         assert!(out.hosts.is_empty());
@@ -1421,6 +1537,36 @@ pub(crate) mod tests {
         assert_eq!(out.models_dir.as_deref(), Some(hf.as_str()), "the wizard default is the HF cache");
         assert_eq!(out.sources.len(), 1);
         assert!(HostsFile::load(&paths).unwrap().hosts.is_empty());
+    }
+
+    #[test]
+    fn wizard_imports_the_selected_starter_recipes_only() {
+        let (_d, paths) = tmp("wizard-starters");
+        let mut p = Script::new(&["", "", "", "1,3", "n"]);
+        let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
+        assert_eq!(out.recipes, vec!["lfm3-1.7b-gguf", "javi0.4-4b-gguf"]);
+        assert!(paths.recipes_dir().join("lfm3-1.7b-gguf.toml").is_file());
+        assert!(paths.recipes_dir().join("javi0.4-4b-gguf.toml").is_file());
+        assert!(!paths.recipes_dir().join("gemma-4-12b-it-qat-gguf.toml").exists());
+        assert!(!out.stats_record);
+    }
+
+    #[test]
+    fn wizard_keeps_edited_starter_recipes_and_rejects_bad_numbers() {
+        let (_d, paths) = tmp("wizard-starters-keep");
+        let built = crate::catalog::builtin();
+        let lfm = built.iter().find(|f| f.recipe.name == "lfm3-1.7b-gguf").unwrap();
+        crate::catalog::add_to_deck(&paths, &lfm.recipe, false).unwrap();
+        let path = paths.recipes_dir().join("lfm3-1.7b-gguf.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("# keep me\n");
+        std::fs::write(&path, &text).unwrap();
+
+        let mut p = Script::new(&["", "", "", "9", "all", "n"]);
+        let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
+        assert!(!out.recipes.contains(&"lfm3-1.7b-gguf".to_string()), "existing deck file is kept");
+        assert!(out.recipes.contains(&"javi0.4-4b-gguf".to_string()));
+        assert!(std::fs::read_to_string(&path).unwrap().ends_with("# keep me\n"));
     }
 
     #[test]

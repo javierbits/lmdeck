@@ -1,0 +1,37 @@
+# Javi0.4-4B is Javi0.3-4B with the =open_page embedding row scaled by 0.84.
+# Text-only GGUF: the base model's vision tower is not in this file.
+# Thinking is off and sampling follows the model card; it was trained and
+# evaluated with enable_thinking false. Needs a llama.cpp build with Qwen3.5
+# support and --chat-template-kwargs.
+schema = 1
+display_name = "Javi0.4 4B (GGUF Q4_K_M)"
+description = "Javierbits' Javi0.4 4B agent/tool fine-tune of Qwen3.5-4B, Q4_K_M on llama.cpp. ~2.8 GB, 128K context, thinking off. Text only."
+tags = ["javi", "qwen3.5", "gguf", "agent", "tool-use", "small", "dgx-spark"]
+
+[model]
+repo = "javierbits/Javi0.4-4B-GGUF"
+files = ["Javi0.4-4B.Q4_K_M.gguf"]
+size_gb = 2.8
+
+[quant]
+format = "gguf"
+bits = 4.0
+label = "Q4_K_M"
+
+[engine]
+name = "llama.cpp"
+ctx = 131072
+args = [
+  "--jinja",
+  "-fa", "on",
+  "-ctk", "q8_0",
+  "-ctv", "q8_0",
+  "--chat-template-kwargs", '{"enable_thinking": false}',
+  "--temp", "0.2",
+  "--top-p", "0.8",
+  "--top-k", "20",
+  "--min-p", "0",
+]
+
+[hardware]
+min_memory_gb = 8

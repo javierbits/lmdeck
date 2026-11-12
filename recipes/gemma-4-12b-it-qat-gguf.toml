@@ -1,0 +1,33 @@
+# Google's official QAT GGUF (Q4_0) plus its matching projector. QAT keeps
+# quality close to bf16 at about 7 GB. Gemma 4 12B accepts text, image and
+# audio; llama.cpp's text/image path is the mature one, so check audio support
+# in your build. Needs a current llama.cpp with gemma4 support.
+schema = 1
+display_name = "Gemma 4 12B (QAT Q4_0, vision+audio)"
+description = "Google Gemma 4 12B IT, official QAT Q4_0 GGUF on llama.cpp. ~7.2 GB, text/image/audio input, 128K context in this recipe. Apache-2.0."
+tags = ["gemma", "gemma4", "google", "gguf", "qat", "vision", "audio", "multimodal", "dgx-spark"]
+
+[model]
+repo = "google/gemma-4-12B-it-qat-q4_0-gguf"
+files = ["gemma-4-12b-it-qat-q4_0.gguf", "mmproj-gemma-4-12b-it-qat-q4_0.gguf"]
+size_gb = 7.2
+
+[quant]
+format = "gguf"
+bits = 4.0
+label = "Q4_0 (QAT)"
+
+[engine]
+name = "llama.cpp"
+ctx = 131072
+args = [
+  "--jinja",
+  "-fa", "on",
+  "--mmproj", "{model_dir}/mmproj-gemma-4-12b-it-qat-q4_0.gguf",
+  "--temp", "1.0",
+  "--top-p", "0.95",
+  "--top-k", "64",
+]
+
+[hardware]
+min_memory_gb = 16

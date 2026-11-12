@@ -201,7 +201,7 @@ fn local_source_with_toml_recipes() {
     e.run(&["recipe", "remove", "qwen3-4b"]);
     e.run(&["source", "remove", "mine"]);
     assert!(!e.run(&["source", "list"]).contains("mine"));
-    assert!(e.run(&["recipe", "list"]).contains("no recipes"));
+    assert!(!e.run(&["recipe", "list"]).contains("mine/"), "the source's recipes are gone");
 }
 
 #[test]

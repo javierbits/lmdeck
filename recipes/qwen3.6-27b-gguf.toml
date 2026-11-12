@@ -1,0 +1,35 @@
+# Unsloth's Q4_K_M GGUF of Qwen3.6-27B, a dense hybrid model with a vision
+# encoder. The F16 projector is from the same repo. Needs a llama.cpp build
+# with Qwen3.6 support. Sampling is the model's generation_config.
+schema = 1
+display_name = "Qwen3.6 27B (GGUF Q4_K_M, vision)"
+description = "Qwen3.6 27B dense hybrid on llama.cpp: Q4_K_M plus its vision projector, ~17.7 GB, 128K context. Single DGX Spark or a 32 GB-class GPU."
+tags = ["qwen3.6", "qwen", "gguf", "dense", "vision", "multimodal", "dgx-spark"]
+
+[model]
+repo = "unsloth/Qwen3.6-27B-GGUF"
+files = ["Qwen3.6-27B-Q4_K_M.gguf", "mmproj-F16.gguf"]
+size_gb = 17.7
+
+[quant]
+format = "gguf"
+bits = 4.0
+label = "Q4_K_M"
+
+[engine]
+name = "llama.cpp"
+ctx = 131072
+args = [
+  "--jinja",
+  "-fa", "on",
+  "-ctk", "q8_0",
+  "-ctv", "q8_0",
+  "--mmproj", "{model_dir}/mmproj-F16.gguf",
+  "--temp", "1.0",
+  "--top-p", "0.95",
+  "--top-k", "20",
+  "--min-p", "0",
+]
+
+[hardware]
+min_memory_gb = 32

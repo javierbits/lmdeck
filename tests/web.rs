@@ -3,6 +3,7 @@
 // Test helpers hand ureq's own error back so tests can match on status codes.
 #![allow(clippy::result_large_err)]
 
+use lmdeck::catalog::BUILTIN_RECIPES;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -140,13 +141,24 @@ fn dashboard_and_read_endpoints() {
     let snap = s.get("/api/snapshot").unwrap();
     assert_eq!(snap["version"], env!("CARGO_PKG_VERSION"));
     let recipes = snap["recipes"].as_array().unwrap();
-    assert_eq!(recipes.len(), 1);
-    assert!(recipes.iter().all(|r| r["status"] == "stopped" && r["listed"] == true));
-    assert!(recipes.iter().any(|r| r["reference"] == "deck/qwen3.5-2b-tensorfold" && r["engine"] == "tensorfold"));
+    let expected = 1 + BUILTIN_RECIPES.len();
+    assert_eq!(recipes.len(), expected);
+    assert!(recipes.iter().all(|r| r["status"] == "stopped"));
+    assert!(recipes
+        .iter()
+        .any(|r| r["reference"] == "deck/qwen3.5-2b-tensorfold" && r["engine"] == "tensorfold" && r["listed"] == true));
+    assert!(recipes
+        .iter()
+        .filter(|r| r["reference"].as_str().is_some_and(|x| x.starts_with("builtin/")))
+        .all(|r| r["listed"] == false));
     assert!(snap["hardware"]["total_memory_gb"].as_f64().unwrap() > 0.0);
 
-    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), 1);
-    assert_eq!(s.get("/api/status").unwrap().as_array().unwrap().len(), 1);
+    assert_eq!(s.get("/api/recipes").unwrap().as_array().unwrap().len(), expected);
+    assert_eq!(
+        s.get("/api/status").unwrap().as_array().unwrap().len(),
+        1,
+        "status lists the deck plus anything running"
+    );
     let doc = s.get("/api/doctor").unwrap();
     assert!(doc["inventory"]["engines"]["tensorfold"].is_object(), "{doc}");
     let sources = s.get("/api/sources").unwrap();

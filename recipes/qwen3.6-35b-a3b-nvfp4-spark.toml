@@ -1,8 +1,8 @@
 # NVFP4 needs Blackwell (compute capability 10.0+; GB10 is 12.1).
 schema = 1
-display_name = "Qwen3.6 35B-A3B (NVFP4, vLLM)"
+display_name = "Qwen3.6 35B-A3B (NVFP4, Vision, vLLM)"
 description = "NVIDIA's NVFP4 checkpoint of Qwen3.6 35B-A3B on vLLM in Docker, tuned for one DGX Spark."
-tags = ["qwen3.6", "moe", "dgx-spark", "nvfp4", "tools"]
+tags = ["qwen3.6", "moe", "dgx-spark", "nvfp4", "vision", "tools"]
 
 [model]
 repo = "nvidia/Qwen3.6-35B-A3B-NVFP4"

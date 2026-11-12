@@ -641,14 +641,16 @@ Rules:
 
 ### 4. Built-in recipes (shipped in the binary)
 
-`BUILTIN_RECIPES` in `src/catalog.rs` is empty: lmdeck ships no default
-recipes. To ship one:
+`BUILTIN_RECIPES` in `src/catalog.rs` ships the six starter recipes;
+`STARTER_RECIPES` is the first-run wizard's menu (name plus a one-line
+capability note). To ship another:
 
 1. Add `recipes/<name>.toml` with `schema = 1`.
 2. Add `("<name>.toml", include_str!("../recipes/<name>.toml"))` to
    `BUILTIN_RECIPES` in `src/catalog.rs`.
-3. If the model repo is public and worth browsing, add an `index.toml` entry.
-4. `cargo test` (the catalog test parses every built-in and checks unique
+3. Add it to `STARTER_RECIPES` if the wizard should offer it.
+4. If the model repo is public and worth browsing, add an `index.toml` entry.
+5. `cargo test` (the catalog test parses every built-in and checks unique
    names).
 
 `recipes/` also holds the files `index.toml` points at; those are installed

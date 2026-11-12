@@ -28,9 +28,28 @@ pub fn save_remote(paths: &Paths, recipe: &Recipe) -> Result<std::path::PathBuf>
     Ok(p)
 }
 
-/// Recipes compiled into the binary. lmdeck ships no default recipes; add
-/// `("<file>.toml", include_str!("../recipes/<file>.toml"))` here to ship one.
-pub const BUILTIN_RECIPES: &[(&str, &str)] = &[];
+/// Recipes compiled into the binary. These are the starter set the first-run
+/// wizard offers; add `("<file>.toml", include_str!("../recipes/<file>.toml"))`
+/// here to ship another.
+pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
+    ("lfm3-1.7b-gguf.toml", include_str!("../recipes/lfm3-1.7b-gguf.toml")),
+    ("lfm3-omni-2b-gguf.toml", include_str!("../recipes/lfm3-omni-2b-gguf.toml")),
+    ("javi0.4-4b-gguf.toml", include_str!("../recipes/javi0.4-4b-gguf.toml")),
+    ("gemma-4-12b-it-qat-gguf.toml", include_str!("../recipes/gemma-4-12b-it-qat-gguf.toml")),
+    ("qwen3.6-27b-gguf.toml", include_str!("../recipes/qwen3.6-27b-gguf.toml")),
+    ("qwen3.6-35b-a3b-nvfp4-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-nvfp4-spark.toml")),
+];
+
+/// The first-run wizard's menu: built-in recipe name and the one-line
+/// capability note it prints. Sizes and engines come from the recipe itself.
+pub const STARTER_RECIPES: &[(&str, &str)] = &[
+    ("lfm3-1.7b-gguf", "agent/tool use, 256K context"),
+    ("lfm3-omni-2b-gguf", "text/image/video/audio in, speech out, 32K context"),
+    ("javi0.4-4b-gguf", "agent/tool use, thinking off, 128K context"),
+    ("gemma-4-12b-it-qat-gguf", "text/image/audio in, 128K context"),
+    ("qwen3.6-27b-gguf", "dense vision+text, 128K context"),
+    ("qwen3.6-35b-a3b-nvfp4-spark", "MoE vision+text, 64K context, vLLM"),
+];
 
 pub fn builtin() -> Vec<Found> {
     BUILTIN_RECIPES
@@ -226,6 +245,17 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), b.len());
         assert!(b.iter().all(|f| f.recipe.quant.is_some()));
+    }
+
+    #[test]
+    fn every_starter_recipe_is_a_builtin() {
+        let b = builtin();
+        for (name, pitch) in STARTER_RECIPES {
+            assert!(b.iter().any(|f| f.recipe.name == *name), "starter '{name}' is not built in");
+            assert!(!pitch.is_empty(), "starter '{name}' has no capability note");
+            let f = b.iter().find(|f| f.recipe.name == *name).unwrap();
+            assert!(f.recipe.model.size_gb.is_some(), "starter '{name}' has no size_gb");
+        }
     }
 
     #[test]
