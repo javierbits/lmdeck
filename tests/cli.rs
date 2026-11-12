@@ -624,7 +624,8 @@ detached = true
     assert_eq!(r.engine.stop, ["bash", "scripts/stop.sh"]);
     assert_eq!(r.port(), 8123);
     assert_eq!(r.name, "native-server");
-    assert_eq!(r.source.unwrap().repo, repo.display().to_string());
+    // `add` stores the canonical repo path (`/private/var/...` on macOS).
+    assert_eq!(r.source.unwrap().repo, fs::canonicalize(&repo).unwrap().display().to_string());
     assert!(!text.contains("./start.sh"), "manifest should win over the wrapper: {text}");
 
     let plan = e.run(&["use", "native-server", "--dry-run"]);

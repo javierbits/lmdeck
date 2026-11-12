@@ -405,16 +405,28 @@ pub enum Ready {
 pub fn wait_ready(rec: &RunRecord, timeout: Duration, mut tick: impl FnMut(Duration)) -> Ready {
     let start = Instant::now();
     let mut last_tick = Duration::ZERO;
+    // When the wrapper's pid is gone but its exit file is not readable yet.
+    let mut gone_at: Option<Instant> = None;
     loop {
         if rec.detached {
             if !rec.pid.is_some_and(pid_alive) {
                 // The start command has exited (and any log follower with it).
                 let container_up = rec.container.as_deref().map(|c| container_running("docker", c));
                 match (rec.start_exit(), container_up) {
-                    (_, Some(true)) => {}
-                    (Some(0), None) => {} // exited cleanly: keep probing the port
+                    (_, Some(true)) => gone_at = None,
+                    (Some(0), None) => gone_at = None, // exited cleanly: keep probing the port
+                    // The wrapper writes the exit file as it exits; a slow or
+                    // network filesystem can show the pid gone first.
+                    (None, None) => {
+                        let at = *gone_at.get_or_insert_with(Instant::now);
+                        if at.elapsed() >= Duration::from_secs(3) {
+                            return Ready::Died;
+                        }
+                    }
                     _ => return Ready::Died,
                 }
+            } else {
+                gone_at = None;
             }
         } else if !rec.alive() {
             return Ready::Died;
