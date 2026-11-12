@@ -141,9 +141,10 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    LFM3 Omni 2B, Javi0.4 4B, Gemma 4 12B, Qwen3.6 27B, Qwen3.6 35B-A3B,
    Qwen3.8 Flash Next, DeepSeek V4.1 Flash 2x Spark and GLM-5.3 Flash 2x
    Spark. The wizard lists each one's size, engine and capabilities, then
-   imports the ones you pick into your deck. Nothing is downloaded until
-   `lmdeck pull <name>`; decline the menu and add one later with
-   `lmdeck recipe add builtin/<name>`.
+   imports the ones you pick into your deck. Nothing is downloaded at import
+   time: `lmdeck pull <name>` fetches weights for recipes lmdeck manages, and
+   wrapped recipes' scripts fetch theirs on first start. Decline the menu and
+   add one later with `lmdeck recipe add builtin/<name>`.
 
 6. **Usage statistics**: whether lmdeck should record local token counts for
    the Stats tab (default off). It is the last question; see

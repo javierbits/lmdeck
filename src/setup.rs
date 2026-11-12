@@ -648,7 +648,12 @@ fn starter_step(paths: &Paths, p: &mut dyn Prompt) -> Vec<String> {
     }
 
     println!("\n{}", crate::ui::bold("starter recipes"));
-    println!("{}", crate::ui::dim("  built into lmdeck; nothing is downloaded until `lmdeck pull <name>`."));
+    println!(
+        "{}",
+        crate::ui::dim(
+            "  built into lmdeck; `lmdeck pull` fetches weights, wrapped recipes fetch theirs on first start."
+        )
+    );
     let name_w = rows.iter().map(|(f, _)| f.recipe.name.len()).max().unwrap_or(0);
     for (i, (f, pitch)) in rows.iter().enumerate() {
         let size = f.recipe.model.size_gb.map(|g| format!("~{g:.1} GB")).unwrap_or_else(|| "?".into());
