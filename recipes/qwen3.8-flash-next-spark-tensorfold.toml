@@ -1,0 +1,58 @@
+# Wraps Mia's Qwen3.8 Flash Next single-Spark recipe as-is. ./start.sh builds
+# the TensorFold image, downloads NVIDIA's QAD FP4 checkpoint, starts the
+# container and exits once /v1/models answers. lmdeck applies no patches and
+# builds nothing itself.
+#
+# The checkpoint is ~96 GiB and the image needs ~40 GB more; the script
+# refuses to start unless MEM_NEED_GIB (about 107 GiB with the default 262K
+# window and vision) is available. The API is OpenAI-compatible on port 8888.
+# `lmdeck use` without --on runs it on the Spark holding the checkpoint, when
+# the fleet knows which one that is.
+schema = 1
+# "Vision" is load-bearing for harness sync.
+display_name = "Qwen3.8 Flash Next (FP4 QAD, Vision, TensorFold, 1x Spark)"
+description = "Qwen3.8-Flash-Next (125B-A5B), NVIDIA's QAD FP4 checkpoint, on one DGX Spark via Mia's start.sh. ~103 GB checkpoint, 262K context, vision, MTP drafts."
+tags = ["qwen3.8", "qwen", "tensorfold", "nvfp4", "vision", "dgx-spark", "wrapped"]
+
+[source]
+repo = "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold"
+ref = "20e15e41f2f514a0d287710f4665ee1b5009ba41"
+
+# The scripts download this checkpoint themselves; lmdeck only uses the name
+# and revision to find the Spark whose cache holds it.
+[model]
+repo = "nvidia/Qwen3.8-Flash-Next-FP4-Local"
+revision = "b9ce18a6887e18c089fdea8509a33e63429a3300"
+size_gb = 103.0
+pull = false
+
+[quant]
+format = "nvfp4"
+bits = 4.0
+label = "FP4 QAD"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "qwen38-flash-next-tf"
+logs = ["docker", "logs", "-f", "qwen38-flash-next-tf"]
+port = 8888
+ctx = 262144
+# The first run builds the image and downloads ~96 GiB.
+ready_timeout = 21600
+
+[engine.env]
+PORT = "{port}"
+HOST = "{host}"
+CONTAINER_NAME = "{container}"
+HF_CACHE = "{hf_home}"
+CONTEXT = "{ctx}"
+
+[hardware]
+min_memory_gb = 112
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"

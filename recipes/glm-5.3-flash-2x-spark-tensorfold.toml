@@ -1,0 +1,63 @@
+# Wraps Mia's GLM-5.3-Flash DGX-Sparks-1104 recipe as-is, configured for two
+# Sparks. ./start.sh checks both machines, builds the TensorFold image, sends
+# it to the worker, checks or copies the checkpoint, starts both ranks, waits
+# for the API and exits. lmdeck applies no patches and builds nothing itself.
+#
+# The checkpoint is Mia's EXL3 4 bpw pack (~180 GiB) plus the DFlash2 drafter.
+# WORKER_WEIGHTS defaults to rsync (about 164 GiB over the link); set it to
+# `nfs` in a deck copy to mount the head's copy instead, or `check` when the
+# worker already has it. The API is on the recipe's default port 8020.
+#
+# `[hardware] hosts = 2` makes lmdeck hand the script one worker. The scripts
+# download the weights themselves, so [model] is metadata for the fit screen
+# and `lmdeck pull` is off.
+schema = 1
+display_name = "GLM-5.3 Flash (EXL3, Vision, TensorFold, 2x Spark, 1104)"
+description = "Mia's GLM-5.3-Flash EXL3 4 bpw on two DGX Sparks (TP2) via the 1104 recipe: ~193 GB checkpoint, 1M context, vision, DFlash2 drafts."
+tags = ["glm", "glm-5.3", "exl3", "tensorfold", "vision", "dgx-spark", "multi-node", "2x-spark", "wrapped"]
+
+[source]
+repo = "https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104"
+ref = "80be4d6882837d8e0840827ae2aab6124fd48da3"
+
+# The scripts fetch the checkpoint into their own DATA_DIR; lmdeck only reads
+# the name and size. pull = false keeps lmdeck's downloader and mounts out.
+[model]
+repo = "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold"
+revision = "76c0b5173166d2795dd48860f45d8224817f894c"
+size_gb = 193.0
+pull = false
+
+[quant]
+format = "exl3"
+bits = 4.0
+label = "4.0bpw"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "glm53-spark"
+logs = ["docker", "logs", "-f", "glm53-spark"]
+port = 8020
+ctx = 1048576
+# The first run builds a ~40 GiB image and downloads or copies ~180 GiB.
+ready_timeout = 43200
+
+[engine.env]
+PORT = "{port}"
+HOST = "{host}"
+CONTAINER_NAME = "{container}"
+CONTEXT = "{ctx}"
+# Rank 1, as the CX7 address this Spark reaches it on; current user over ssh.
+WORKER = "{peer_addr}"
+
+[hardware]
+# The scripts drive both Sparks from this one.
+hosts = 2
+min_memory_gb = 100
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"

@@ -38,6 +38,12 @@ pub const BUILTIN_RECIPES: &[(&str, &str)] = &[
     ("gemma-4-12b-it-qat-gguf.toml", include_str!("../recipes/gemma-4-12b-it-qat-gguf.toml")),
     ("qwen3.6-27b-gguf.toml", include_str!("../recipes/qwen3.6-27b-gguf.toml")),
     ("qwen3.6-35b-a3b-nvfp4-spark.toml", include_str!("../recipes/qwen3.6-35b-a3b-nvfp4-spark.toml")),
+    ("qwen3.8-flash-next-spark-tensorfold.toml", include_str!("../recipes/qwen3.8-flash-next-spark-tensorfold.toml")),
+    (
+        "deepseek-v4.1-flash-1017-2x-spark-tensorfold.toml",
+        include_str!("../recipes/deepseek-v4.1-flash-1017-2x-spark-tensorfold.toml"),
+    ),
+    ("glm-5.3-flash-2x-spark-tensorfold.toml", include_str!("../recipes/glm-5.3-flash-2x-spark-tensorfold.toml")),
 ];
 
 /// The first-run wizard's menu: built-in recipe name and the one-line
@@ -49,6 +55,9 @@ pub const STARTER_RECIPES: &[(&str, &str)] = &[
     ("gemma-4-12b-it-qat-gguf", "text/image/audio in, 128K context"),
     ("qwen3.6-27b-gguf", "dense vision+text, 128K context"),
     ("qwen3.6-35b-a3b-nvfp4-spark", "MoE vision+text, 64K context, vLLM"),
+    ("qwen3.8-flash-next-spark-tensorfold", "FP4 vision+text, 262K context, 1 Spark"),
+    ("deepseek-v4.1-flash-1017-2x-spark-tensorfold", "EXL3, vision, 1M context, 2 Sparks"),
+    ("glm-5.3-flash-2x-spark-tensorfold", "EXL3, vision, 1M context, 2 Sparks"),
 ];
 
 pub fn builtin() -> Vec<Found> {

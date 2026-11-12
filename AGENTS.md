@@ -4,7 +4,7 @@ This file tells an agent how lmdeck works and how to author, wrap, and wire
 recipes. `README.md` is the user manual; this is the implementation-aware
 playbook. If you change the recipe format or a launch path, update both.
 
-Verified against lmdeck 0.1.1, schema 1, 2026-11-12.
+Verified against lmdeck 0.1.2, schema 1, 2026-11-12.
 
 ## What lmdeck is
 
@@ -642,7 +642,7 @@ Rules:
 
 ### 4. Built-in recipes (shipped in the binary)
 
-`BUILTIN_RECIPES` in `src/catalog.rs` ships the six starter recipes;
+`BUILTIN_RECIPES` in `src/catalog.rs` ships the nine starter recipes;
 `STARTER_RECIPES` is the first-run wizard's menu (name plus a one-line
 capability note). To ship another:
 

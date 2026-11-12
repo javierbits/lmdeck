@@ -118,3 +118,30 @@ description = "NVIDIA NVFP4 Qwen3.6 35B-A3B (MoE) on vLLM in Docker, tuned for o
 size_gb = 23.5  # three safetensors shards (HF API)
 recipe = "recipes/qwen3.6-35b-a3b-nvfp4-spark.toml"
 tags = { engine = "vllm", model = "Qwen3.6 35B-A3B", family = "qwen3.6", quant = "nvfp4", sparks = 1 }
+
+[[entry]]
+name = "qwen3.8-flash-next-spark-tensorfold"
+repo = "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold"
+ref = "20e15e41f2f514a0d287710f4665ee1b5009ba41"
+description = "Qwen3.8-Flash-Next (125B-A5B), NVIDIA's QAD FP4 checkpoint, on one DGX Spark via Mia's start.sh: 262K context, vision, MTP drafts."
+size_gb = 103.0  # ~96 GiB checkpoint (repo README)
+recipe = "recipes/qwen3.8-flash-next-spark-tensorfold.toml"
+tags = { engine = "tensorfold", model = "Qwen3.8 Flash Next", family = "qwen3.8", quant = "nvfp4", sparks = 1 }
+
+[[entry]]
+name = "deepseek-v4.1-flash-1017-2x-spark-tensorfold"
+repo = "https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks"
+ref = "c7f2b85100f0a7b099c92a4e21825e30d93c9c51"
+description = "Mia's EAQ EXL3 2.9 bpw DeepSeek-V4.1-Flash-1017 on two DGX Sparks (TP2) via start.sh: ~196 GiB checkpoint + ~203 GB Engram tables, 1M context, vision."
+size_gb = 410.0  # checkpoint + Engram tables (repo README)
+recipe = "recipes/deepseek-v4.1-flash-1017-2x-spark-tensorfold.toml"
+tags = { engine = "tensorfold", model = "DeepSeek-V4.1-Flash-1017", family = "deepseek", quant = "exl3", sparks = 2 }
+
+[[entry]]
+name = "glm-5.3-flash-2x-spark-tensorfold"
+repo = "https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104"
+ref = "80be4d6882837d8e0840827ae2aab6124fd48da3"
+description = "Mia's GLM-5.3-Flash EXL3 4 bpw on two DGX Sparks (TP2) via the 1104 recipe: 1M context, vision, DFlash2 drafts."
+size_gb = 193.0  # ~180 GiB checkpoint (repo README)
+recipe = "recipes/glm-5.3-flash-2x-spark-tensorfold.toml"
+tags = { engine = "tensorfold", model = "GLM-5.3-Flash", family = "glm", quant = "exl3", sparks = 2 }

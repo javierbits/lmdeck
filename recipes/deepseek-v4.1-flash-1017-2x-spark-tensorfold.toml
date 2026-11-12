@@ -1,0 +1,68 @@
+# Wraps Mia's two-Spark DeepSeek-V4.1 recipe as-is. ./start.sh runs prepare.sh
+# when the image, checkpoint, Engram tables or worker NFS volume are missing,
+# starts rank 1 on the worker and rank 0 here, waits for the API and exits.
+# lmdeck applies no patches and builds nothing itself.
+#
+# The checkpoint is Mia's EAQ v1 EXL3 2.9 bpw pack (~196 GiB) plus DeepSeek's
+# Engram tables (~203 GB), both in the head's Hugging Face cache. The worker
+# mounts that cache over NFS. `[hardware] hosts = 2` makes lmdeck hand the
+# script one worker; it starts the recipe on the Spark that holds the cache.
+#
+# The API is on port 8889 here so it can coexist with the single-Spark Qwen
+# recipe; the repository's own default is 8888. Set `PORT` in a deck copy to
+# change it.
+schema = 1
+display_name = "DeepSeek V4.1 Flash 1017 (EXL3, Vision, TensorFold, 2x Spark)"
+description = "Mia's EAQ EXL3 2.9 bpw DeepSeek-V4.1-Flash-1017 on two DGX Sparks (TP2) via start.sh: ~196 GiB checkpoint + ~203 GB Engram tables, 1M context, vision, DSpark drafts."
+tags = ["deepseek", "exl3", "tensorfold", "vision", "dgx-spark", "multi-node", "2x-spark", "wrapped"]
+
+[source]
+repo = "https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks"
+ref = "c7f2b85100f0a7b099c92a4e21825e30d93c9c51"
+
+# The scripts download the checkpoint and Engram tables themselves; lmdeck
+# reads repo/revision only to find the Spark that holds the cache.
+[model]
+repo = "Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
+revision = "45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b"
+size_gb = 410.0
+pull = false
+
+[quant]
+format = "exl3"
+bits = 2.9
+label = "EAQ v1 2.9bpw"
+
+[engine]
+name = "custom"
+command = ["./start.sh"]
+stop = ["./stop.sh"]
+detached = true
+container = "dsv41-1017-exl3-tf"
+logs = ["docker", "logs", "-f", "dsv41-1017-exl3-tf"]
+port = 8889
+ctx = 1048576
+# The first run downloads ~400 GB and writes both ranks' weight files.
+ready_timeout = 43200
+
+[engine.env]
+PORT = "{port}"
+HOST = "{host}"
+CONTAINER_NAME = "{container}"
+CONTEXT = "{ctx}"
+# Rank 1, as the CX7 address this Spark reaches it on. The scripts ssh there
+# with the current user; use a deck copy if it needs user@host.
+WORKER = "{peer_addr}"
+# The weights live in the head's Hugging Face cache, which the worker mounts
+# read-only over NFS.
+HF_CACHE = "{hf_home}"
+NFS_PATH = "{hf_home}"
+
+[hardware]
+# The scripts drive both Sparks from this one.
+hosts = 2
+min_memory_gb = 112
+os = ["linux"]
+arch = ["aarch64"]
+accelerator = ["nvidia"]
+min_compute_capability = "10.0"

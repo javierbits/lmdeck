@@ -1601,7 +1601,7 @@ pub(crate) mod tests {
         text.push_str("# keep me\n");
         std::fs::write(&path, &text).unwrap();
 
-        let mut p = Script::new(&["", "", "", "9", "all", "n"]);
+        let mut p = Script::new(&["", "", "", "10", "all", "n"]);
         let out = wiz(&paths, &mut p, &mut MockSsh::default(), vec![]);
         assert!(!out.recipes.contains(&"lfm3-1.7b-gguf".to_string()), "existing deck file is kept");
         assert!(out.recipes.contains(&"javi0.4-4b-gguf".to_string()));

@@ -137,9 +137,10 @@ The first time an interactive lmdeck command starts (`lmdeck`, `tui`, `serve`,
    directory). There is no default source. A model repo with its own start
    scripts isn't a source: run `lmdeck add <url>` for it instead.
 
-5. **Starter recipes**: six recipes are compiled into lmdeck: LFM3 1.7B,
-   LFM3 Omni 2B, Javi0.4 4B, Gemma 4 12B, Qwen3.6 27B and Qwen3.6
-   35B-A3B. The wizard lists each one's size, engine and capabilities, then
+5. **Starter recipes**: nine recipes are compiled into lmdeck: LFM3 1.7B,
+   LFM3 Omni 2B, Javi0.4 4B, Gemma 4 12B, Qwen3.6 27B, Qwen3.6 35B-A3B,
+   Qwen3.8 Flash Next, DeepSeek V4.1 Flash 2x Spark and GLM-5.3 Flash 2x
+   Spark. The wizard lists each one's size, engine and capabilities, then
    imports the ones you pick into your deck. Nothing is downloaded until
    `lmdeck pull <name>`; decline the menu and add one later with
    `lmdeck recipe add builtin/<name>`.
@@ -1123,8 +1124,9 @@ sync = ["opencode", "omp"]
 
 ## Recipes in this repo
 
-lmdeck embeds six starter recipes (LFM3 1.7B, LFM3 Omni 2B, Javi0.4 4B,
-Gemma 4 12B, Qwen3.6 27B and Qwen3.6 35B-A3B). The first-run wizard lists
+lmdeck embeds nine starter recipes (LFM3 1.7B, LFM3 Omni 2B, Javi0.4 4B,
+Gemma 4 12B, Qwen3.6 27B, Qwen3.6 35B-A3B, Qwen3.8 Flash Next, DeepSeek
+V4.1 Flash 2x Spark and GLM-5.3 Flash 2x Spark). The first-run wizard lists
 them with their size and capabilities and can import any selection into your
 deck; `lmdeck recipe add builtin/<name>` does the same later.
 [`recipes/`](recipes/) also holds the recipes [`index.toml`](index.toml)
