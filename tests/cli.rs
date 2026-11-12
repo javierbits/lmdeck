@@ -832,3 +832,21 @@ fn stop_stops_a_server_lmdeck_did_not_start_with_the_recipes_stop_command() {
     assert!(out.contains("stopped adoptme (it was running outside lmdeck)"), "{out}");
     assert!(marker.exists(), "the recipe's stop command ran");
 }
+
+#[test]
+fn missing_llama_cpp_names_the_managed_install() {
+    let e = Env::new();
+    let recipe = QWEN_TOML.replace("port = 8090", &format!("port = {}", free_port()));
+    write(&e.path("home/config/recipes"), "qwen.toml", &recipe);
+    write(&e.path("home/config"), "config.toml", "[engines]\nllama_server = \"/nonexistent/llama-server\"\n");
+    e.cmd()
+        .args(["use", "qwen", "--no-install"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lmdeck engine install llama.cpp"));
+    e.cmd()
+        .args(["engine", "install", "vllm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no managed installer"));
+}

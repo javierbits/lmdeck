@@ -4,7 +4,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use lmdeck::catalog::{self, Catalog, BUILTIN, DECK};
@@ -157,6 +157,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Install an inference engine into lmdeck's own cache (no sudo).
+    Engine {
+        #[command(subcommand)]
+        cmd: EngineCmd,
+    },
     /// Colour themes for the TUI and web dashboard (Omarchy's, plus omp).
     #[command(subcommand)]
     Theme(ThemeCmd),
@@ -301,6 +306,12 @@ struct UseArgs {
     /// Print the launch plan without starting anything.
     #[arg(long)]
     dry_run: bool,
+    /// Install a missing engine without asking.
+    #[arg(long)]
+    yes: bool,
+    /// Never install or pull anything missing; fail with the command to run.
+    #[arg(long)]
+    no_install: bool,
     /// Run on this host (a hosts.toml name, or `local`). The weights stay on
     /// their home and are mounted read-only over NFS on the CX7 link.
     #[arg(long, value_name = "HOST")]
@@ -309,6 +320,18 @@ struct UseArgs {
     /// there is no ConnectX-7 link.
     #[arg(long)]
     allow_slow_link: bool,
+}
+
+#[derive(Subcommand)]
+enum EngineCmd {
+    /// Install a managed engine build. Currently llama.cpp.
+    Install {
+        /// Engine name (llama.cpp).
+        engine: String,
+        /// Reinstall even when the managed build is already present.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -534,6 +557,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Cmd::Source(c)) => source_cmd(ctx, c),
         Some(Cmd::Host(c)) => host_cmd(&ctx, c),
         Some(Cmd::Doctor { json }) => doctor(&ctx, json),
+        Some(Cmd::Engine { cmd }) => engine_cmd(&ctx, cmd),
         Some(Cmd::Harness { cmd }) => harness_cmd(&ctx, cmd),
         Some(Cmd::Init { models_dir, force }) => init(ctx, models_dir, force),
         Some(Cmd::Setup) => {
@@ -1425,6 +1449,84 @@ fn print_report(rep: &Report) {
     }
 }
 
+/// Offers to install llama.cpp when a recipe needs it and the machine has no
+/// `llama-server`. `--yes` accepts without a terminal; `--no-install` leaves
+/// the failure to `can_launch`, whose message names the command.
+fn engine_fix(r: &Recipe) -> Option<String> {
+    match r.engine.name {
+        Engine::LlamaCpp => Some("lmdeck engine install llama.cpp".into()),
+        Engine::Vllm | Engine::Sglang | Engine::LmDeploy => {
+            r.engine.image.as_ref().map(|image| format!("docker pull {image}"))
+        }
+        _ => None,
+    }
+}
+
+fn use_preflight(ctx: &Ctx, r: &Recipe, a: &UseArgs, inv: &mut Inventory) -> Result<()> {
+    if a.dry_run || a.no_install || inv.can_launch(r).is_ok() {
+        return Ok(());
+    }
+    if r.engine.name != Engine::LlamaCpp || lmdeck::engine_install::current_asset().is_err() {
+        return Ok(());
+    }
+    let interactive = std::io::stdin().is_terminal();
+    if !a.yes && !interactive {
+        return Ok(());
+    }
+    if !a.yes {
+        println!();
+        println!("{} {} needs llama.cpp, which is not installed.", yellow("!"), bold(&r.name));
+        if !lmdeck::setup::ask_yes(&mut lmdeck::setup::Terminal, "  install a managed llama.cpp build (~19 MB)?", true)
+        {
+            return Ok(());
+        }
+    }
+    let mut say = |line: &str| println!("  {line}");
+    lmdeck::engine_install::install_llama_cpp(&ctx.paths, false, &mut say)?;
+    *inv = Inventory::detect(&ctx.cfg);
+    Ok(())
+}
+
+/// Offers to `docker pull` a recipe's image when it is not local. Docker would
+/// pull on `run` anyway; asking first keeps multi-GB downloads explicit.
+fn ensure_docker_image(ctx: &Ctx, r: &Recipe, a: &UseArgs) -> Result<()> {
+    let Some(image) = r.engine.image.as_deref() else { return Ok(()) };
+    if a.dry_run || a.no_install {
+        return Ok(());
+    }
+    let docker = ctx.docker();
+    if which(&docker).is_none() || docker_image_present(&docker, image) {
+        return Ok(());
+    }
+    let interactive = std::io::stdin().is_terminal();
+    if !a.yes && !interactive {
+        return Ok(());
+    }
+    if !a.yes {
+        println!();
+        println!("{} image {} is not local.", yellow("!"), bold(image));
+        if !lmdeck::setup::ask_yes(&mut lmdeck::setup::Terminal, "  pull it now?", true) {
+            return Ok(());
+        }
+    }
+    println!("{} pulling {}", cyan("↓"), bold(image));
+    let status =
+        Command::new(&docker).args(["pull", image]).status().with_context(|| format!("running {docker} pull"))?;
+    if !status.success() {
+        bail!("docker pull {image} failed");
+    }
+    Ok(())
+}
+
+fn docker_image_present(docker: &str, image: &str) -> bool {
+    Command::new(docker)
+        .args(["image", "inspect", image])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
     let cat = ctx.catalog();
     let found = resolve(&cat, &a.target)?;
@@ -1457,7 +1559,8 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         None => format!("here ({})", p.why),
     });
     let hw = Hardware::detect();
-    let inv = Inventory::detect(&ctx.cfg);
+    let mut inv = Inventory::detect(&ctx.cfg);
+    use_preflight(ctx, r, a, &mut inv)?;
     let p = ctx.presence(r);
     let rep = compat::check(r, &hw, Some(&inv), p.present().then_some(p.size))
         .with_fleet(r, || lmdeck::hosts::fleet(&ctx.paths, &hw.platform));
@@ -1483,6 +1586,11 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
             println!("  where: {h}");
         }
         print_report(&rep);
+        if inv.can_launch(r).is_err() {
+            if let Some(fix) = engine_fix(r) {
+                println!("  fix:  {fix}");
+            }
+        }
         for pre in &plan.pre {
             println!("  pre:  {}", shlex::try_join(pre.iter().map(String::as_str)).unwrap_or_default());
         }
@@ -1571,6 +1679,7 @@ fn use_recipe(ctx: &Ctx, a: &UseArgs) -> Result<()> {
         }
         eprintln!("{} {why}", yellow("warning:"));
     }
+    ensure_docker_image(ctx, r, a)?;
     let missing = if r.engine.name.needs_local_weights() { !p.local } else { !p.present() };
     if r.engine.name.needs_downloaded_weights() && missing && !a.force {
         bail!("{}'s weights are not on disk yet; run `lmdeck pull {}` first", r.name, r.name);
@@ -2769,6 +2878,42 @@ fn fetch_source(ctx: &Ctx, name: &str, spec: &SourceSpec) -> Result<()> {
 
 // ───────────────────────────── doctor / init ─────────────────────────────
 
+fn engine_cmd(ctx: &Ctx, c: EngineCmd) -> Result<()> {
+    match c {
+        EngineCmd::Install { engine, force } => {
+            let engine: Engine = engine.parse()?;
+            match engine {
+                Engine::LlamaCpp => {
+                    let mut say = |line: &str| println!("  {line}");
+                    let bin = lmdeck::engine_install::install_llama_cpp(&ctx.paths, force, &mut say)?;
+                    let v = lmdeck::engine_install::version(&bin);
+                    println!(
+                        "{} {} {}",
+                        green("✓"),
+                        bold("llama.cpp"),
+                        dim(&v.unwrap_or_else(|| bin.display().to_string()))
+                    );
+                    Ok(())
+                }
+                other => {
+                    let how = match other {
+                        Engine::Vllm | Engine::Sglang | Engine::LmDeploy => {
+                            "use a Docker recipe, or install it in a Python environment and set engines.<name>"
+                        }
+                        Engine::TabbyApi => "clone TabbyAPI and set engines.tabbyapi_dir",
+                        Engine::LmStudio => "install LM Studio and its `lms` CLI",
+                        Engine::Mlx => "pip install mlx-lm, or set engines.mlx_server",
+                        Engine::TensorFold => "run TensorFold's install.sh, or set engines.tensorfold",
+                        Engine::Custom => "nothing to install",
+                        Engine::LlamaCpp => unreachable!(),
+                    };
+                    bail!("{other} has no managed installer; {how}")
+                }
+            }
+        }
+    }
+}
+
 fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
     let hw = Hardware::detect();
     let inv = Inventory::detect(&ctx.cfg);
@@ -2837,6 +2982,9 @@ fn doctor(ctx: &Ctx, json_out: bool) -> Result<()> {
     for s in inv.engines.values().chain(inv.tools.values()) {
         let mark = if s.available { green("✓") } else { dim("✗") };
         println!("  {mark} {:<14} {}", s.name, dim(&s.detail));
+    }
+    if !inv.engine(Engine::LlamaCpp).is_some_and(|s| s.available) && lmdeck::engine_install::current_asset().is_ok() {
+        println!("  {} install with `lmdeck engine install llama.cpp` (managed, ~19 MB)", dim("→"));
     }
 
     println!("\n{}", bold("paths"));
@@ -2971,6 +3119,8 @@ fn home(ctx: &Ctx) -> Result<()> {
                     no_wait: false,
                     force: false,
                     dry_run: false,
+                    yes: false,
+                    no_install: false,
                     on: None,
                     allow_slow_link: false,
                 },

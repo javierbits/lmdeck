@@ -62,6 +62,7 @@ supported.
 
 ```sh
 lmdeck doctor                 # hardware, engines, and which recipes fit
+lmdeck engine install llama.cpp   # managed llama-server in lmdeck's cache
 lmdeck browse                 # the recipe index
 lmdeck add <name>             # install an index entry into your deck
 lmdeck source add github:someone/recipes   # optional: more recipes
@@ -520,14 +521,15 @@ column and Machine panel there still describe that VM.
 | `lmdeck add <name>` | Installs an index entry by name: its native recipe if it has one, otherwise the repo's own `lmdeck.toml`, otherwise it wraps the repo like `add <repo>`. A typo gets `did you mean: …`. |
 | `lmdeck add <repo> [--name N] [--ref R] [--force]` | Adds a repo to the deck. If the repo has a `lmdeck.toml` at its root, that native recipe is installed; otherwise a repo with root `start.sh` and `stop.sh` is cloned, its scripts read, and a wrapper recipe written. `<repo>` is `owner/repo`, a GitHub or git URL, or a local directory. See [Wrapped recipes](#wrapped-recipes) and [A repo's own recipe](#a-repos-own-recipe). |
 | `lmdeck logs <ref> [-n N] [--on HOST] [--node N]` | Prints the tail of the server log (of another host, or one node of a multi-node recipe). |
-| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. `--on local` (or this machine's `[node] name`) runs it here, the way `use` without `--on` did before it followed the weights: nothing is placed or mounted, and the engine or the recipe's scripts fetch the weights if they need them. |
+| `lmdeck use\|switch\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only over NFS on the CX7 link, never copied; without a CX7 link this is refused unless `--allow-slow-link`. A wrapped recipe's peers (`[hardware] hosts`) are picked here, around that host (see "Recipe format"). `--dry-run` prints the plan. `--on local` (or this machine's `[node] name`) runs it here, the way `use` without `--on` did before it followed the weights: nothing is placed or mounted, and the engine or the recipe's scripts fetch the weights if they need them. A missing llama.cpp is offered as a managed install; `--yes` installs without asking, `--no-install` only fails with the command to run. Docker recipes offer `docker pull` when the image is not local. |
 | `lmdeck weights [--refresh] [--json]` | Which host has which weights (each `serve` reports its own). |
 | `lmdeck hosts topology [--json] [--no-verify]` | Hosts and the links between them: CX7 cables, LAN, Tailscale, with a ping / TCP check. |
 | `lmdeck recipe search [words] [--engine E] [--quant Q] [--compatible] [--source S] [--json]` | Searches the deck and every source, with a fit column (✓ ok, ! warning, ✗ won't fit). |
 | `lmdeck recipe add <ref\|file\|url> [--name N] [--force]` | Copies a recipe into your deck as TOML. |
 | `lmdeck recipe list [--source S]` / `show <ref> [--toml]` / `run <ref>` / `remove <name>` | Lists, inspects, runs or removes recipes. `run` starts a recipe without adding it to the deck. |
 | `lmdeck source add <spec> [--name N] [--no-fetch]` / `list` / `update [name]` / `remove <name>` | Manages recipe sources. |
-| `lmdeck doctor [--json]` | Shows the platform (GB10, Apple Silicon, NVIDIA, CPU), memory, GPUs and compute capability, which engines are installed, paths, sources, and a per-recipe fit table. |
+| `lmdeck doctor [--json]` | Shows the platform (GB10, Apple Silicon, NVIDIA, CPU), memory, GPUs and compute capability, which engines are installed, paths, sources, and a per-recipe fit table. Missing engines get the exact install command. |
+| `lmdeck engine install llama.cpp [--force]` | Downloads the pinned llama.cpp release for this platform into `~/.cache/lmdeck/engines/llama.cpp/`, verifies its SHA-256, and unpacks it beside its shared libraries. No sudo, no PATH change. |
 | `lmdeck init [--models-dir DIR]` | Writes `~/.config/lmdeck/config.toml`. |
 | `lmdeck tui [--theme T] [--nerd] [-a]` | Opens the full-screen TUI. A bare `lmdeck` does the same in a terminal; `--plain` turns that off. `--theme` overrides the saved theme for this run. |
 | `lmdeck theme list` / `set <name>` / `show [name]` / `sync-omarchy` / `reset` | Lists, saves or inspects the colour theme used by the TUI and the web dashboard (see [Themes](#themes)). |

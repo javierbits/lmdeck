@@ -4,7 +4,7 @@ This file tells an agent how lmdeck works and how to author, wrap, and wire
 recipes. `README.md` is the user manual; this is the implementation-aware
 playbook. If you change the recipe format or a launch path, update both.
 
-Verified against lmdeck 0.1.0, schema 1, 2026-11-03.
+Verified against lmdeck 0.1.1, schema 1, 2026-11-12.
 
 ## What lmdeck is
 
@@ -65,6 +65,7 @@ one explicitly. Keep names unique.
 | `src/recipe.rs` | Recipe structs, parsing, validation, name/port rules |
 | `src/recipe/nodes.rs` | `[[nodes]]` and `[cluster]` |
 | `src/engine.rs` | Builds argv/env/cwd for every engine; resolves placeholders |
+| `src/engine_install.rs` | Managed llama.cpp download: pinned release, SHA-256, unpacked into the lmdeck cache |
 | `src/runner.rs` | Spawns, probes readiness, stops, captures logs |
 | `src/catalog.rs` | Merges deck/builtin/peers/remote/sources; `add_to_deck` |
 | `src/deck.rs` | Live snapshot, status, port planning |

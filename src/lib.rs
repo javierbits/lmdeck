@@ -10,6 +10,7 @@ pub mod compat;
 pub mod config;
 pub mod deck;
 pub mod engine;
+pub mod engine_install;
 pub mod fabric;
 pub mod hardware;
 pub mod harness;

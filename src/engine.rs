@@ -65,7 +65,16 @@ impl Inventory {
         }
         match self.engine(r.engine.name) {
             Some(s) if s.available => Ok(()),
-            Some(s) => Err(format!("{} not installed ({})", r.engine.name, s.detail)),
+            Some(s) => {
+                let fix = match r.engine.name {
+                    Engine::LlamaCpp => "; install with `lmdeck engine install llama.cpp`",
+                    Engine::Vllm | Engine::Sglang | Engine::LmDeploy if r.engine.image.is_some() => {
+                        "; install Docker or pull the image"
+                    }
+                    _ => "",
+                };
+                Err(format!("{} not installed ({}){fix}", r.engine.name, s.detail))
+            }
             None => Err(format!("{} not detected", r.engine.name)),
         }
     }
@@ -213,12 +222,14 @@ pub(crate) fn find_llama_server(o: &EngineOverrides) -> Option<PathBuf> {
     if let Some(b) = &o.llama_server {
         return which(b);
     }
-    which("llama-server").or_else(|| {
-        let h = home_dir();
-        [h.join("llama.cpp/build/bin/llama-server"), h.join("utils/llama.cpp/build/bin/llama-server")]
-            .into_iter()
-            .find(|p| which(&p.to_string_lossy()).is_some())
-    })
+    which("llama-server")
+        .or_else(|| {
+            let h = home_dir();
+            [h.join("llama.cpp/build/bin/llama-server"), h.join("utils/llama.cpp/build/bin/llama-server")]
+                .into_iter()
+                .find(|p| which(&p.to_string_lossy()).is_some())
+        })
+        .or_else(crate::engine_install::managed_llama_server)
 }
 
 pub(crate) fn find_tabbyapi(o: &EngineOverrides) -> Option<PathBuf> {

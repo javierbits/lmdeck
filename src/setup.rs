@@ -129,6 +129,11 @@ pub trait Prompt {
     fn secret(&mut self, prompt: &str) -> Option<String> {
         self.line(prompt)
     }
+    /// Whether this prompt can ask a side-effect question (install an engine).
+    /// Tests use a script and skip it; a terminal answers yes.
+    fn interactive(&self) -> bool {
+        true
+    }
 }
 
 /// Reads from stdin, printing the prompt first.
@@ -367,6 +372,9 @@ pub fn run_wizard(
     }
 
     let recipes = starter_step(paths, p);
+    if p.interactive() {
+        offer_llama_cpp(paths, cfg, p);
+    }
 
     println!("{}", crate::ui::bold("usage statistics"));
     println!(
@@ -614,7 +622,7 @@ fn free_space_note(path: &std::path::Path) -> Option<String> {
     crate::hardware::free_gb(path).map(crate::hardware::human_gb)
 }
 
-pub(crate) fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {
+pub fn ask_yes(p: &mut dyn Prompt, prompt: &str, default: bool) -> bool {
     let hint = if default { "Y/n" } else { "y/N" };
     match p.line(&format!("{prompt} [{hint}] > ")) {
         None => default,
@@ -701,6 +709,33 @@ fn starter_step(paths: &Paths, p: &mut dyn Prompt) -> Vec<String> {
         );
     }
     added
+}
+
+/// Offers the managed llama.cpp build when a starter recipe in the deck needs
+/// it and no `llama-server` is installed. Never aborts the wizard: a failed
+/// download is reported and the user can rerun `lmdeck engine install`.
+fn offer_llama_cpp(paths: &Paths, cfg: &Config, p: &mut dyn Prompt) {
+    let uses = crate::catalog::builtin().iter().any(|f| {
+        f.recipe.engine.name == crate::recipe::Engine::LlamaCpp
+            && paths.recipes_dir().join(format!("{}.toml", f.recipe.name)).exists()
+    });
+    if !uses
+        || crate::engine::find_llama_server(&cfg.engines).is_some()
+        || crate::engine_install::current_asset().is_err()
+    {
+        return;
+    }
+    println!("\n{}", crate::ui::bold("inference engine"));
+    println!("  llama.cpp is not installed, and the starter recipes need llama-server.");
+    if !ask_yes(p, "  install a managed llama.cpp build (~19 MB)?", true) {
+        println!("{}", crate::ui::dim("  skipped; `lmdeck engine install llama.cpp` later."));
+        return;
+    }
+    let mut say = |line: &str| println!("  {line}");
+    match crate::engine_install::install_llama_cpp(paths, false, &mut say) {
+        Ok(bin) => println!("  {} {}", crate::ui::green("✓"), crate::ui::dim(&bin.display().to_string())),
+        Err(e) => println!("  {} {e:#}", crate::ui::yellow("!")),
+    }
 }
 
 /// `all`, `none`, or one or more 1-based numbers (`1,3` / `1 3`). An empty
@@ -1352,6 +1387,10 @@ pub(crate) mod tests {
     impl Prompt for Script {
         fn line(&mut self, _prompt: &str) -> Option<String> {
             self.0.pop_front()
+        }
+
+        fn interactive(&self) -> bool {
+            false
         }
     }
 
