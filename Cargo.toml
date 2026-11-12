@@ -3,6 +3,7 @@ name = "lmdeck"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+authors = ["Javier <jvr0x@proton.me>"]
 resolver = "3"
 description = "One CLI to manage local AI model recipes: quant, engine and hardware configs from Hugging Face, GitHub and friends."
 license = "MIT"
