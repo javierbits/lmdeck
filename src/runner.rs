@@ -108,10 +108,16 @@ impl RunRecord {
         match &self.container {
             Some(c) => container_running("docker", c),
             None => {
-                // Alive while anything answers, ready or still loading.
-                self.start_exit() == Some(0)
-                    && (probe(self.port, Duration::from_millis(800), None) != Probe::Down
-                        || self.start_exited_within(DETACHED_GRACE))
+                // Alive while anything answers, ready or still loading. A
+                // wrapper that exited without leaving a readable exit file is
+                // still ours when its port answers (macOS can show the pid
+                // gone before the file is visible).
+                let up = probe(self.port, Duration::from_millis(800), None) != Probe::Down;
+                match self.start_exit() {
+                    Some(0) => up || self.start_exited_within(DETACHED_GRACE),
+                    None => up,
+                    Some(_) => false,
+                }
             }
         }
     }
