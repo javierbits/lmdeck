@@ -207,7 +207,7 @@ enum ThemeCmd {
     Show { name: Option<String> },
     /// Use the theme Omarchy is currently set to, if it is one lmdeck has.
     SyncOmarchy,
-    /// Forget the saved theme (back to omp).
+    /// Forget the saved theme (back to the default, Retro 82).
     Reset,
 }
 

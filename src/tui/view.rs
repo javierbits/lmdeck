@@ -1196,7 +1196,7 @@ fn draw_theme_picker(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("● current", Style::new().fg(t.ok)),
     ]);
     let src = Line::from(Span::styled(
-        if all[app.theme_cursor].slug == crate::theme::DEFAULT {
+        if all[app.theme_cursor].slug == "omp" {
             "lmdeck's own palette".to_string()
         } else {
             "palette from Omarchy (MIT) · omarchy.org".to_string()

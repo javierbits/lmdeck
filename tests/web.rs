@@ -398,7 +398,7 @@ fn themes_api_lists_and_saves_to_config() {
     });
     let j = s.get("/api/themes").unwrap();
     assert_eq!(j["current"], "nord");
-    assert_eq!(j["default"], "omp");
+    assert_eq!(j["default"], "retro-82");
     let themes = j["themes"].as_array().unwrap();
     assert!(themes.len() >= 23, "{}", themes.len());
     assert_eq!(themes[0]["slug"], "omp");

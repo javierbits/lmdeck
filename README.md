@@ -233,9 +233,10 @@ draws rounded powerline caps on the pills. Themes are covered [below](#themes).
 
 ## Themes
 
-lmdeck has 24 themes: its own `omp` (the default, the oh-my-pi palette) and
-every theme that ships with [Omarchy](https://omarchy.org/): Catppuccin,
-Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Gruvbox, Hackerman,
+lmdeck has 24 themes: Retro 82 is the default; its own `omp` (the oh-my-pi
+palette) and every theme that ships with
+[Omarchy](https://omarchy.org/): Catppuccin, Catppuccin Latte, Ethereal,
+Everforest, Flexoki Light, Gruvbox, Hackerman,
 Kanagawa, Last Horizon, Lumon, Lupine, Matte Black, Miasma, Nord, Osaka Jade,
 Retro 82, Ristretto, Rosé Pine, Solitude, Starship, Tokyo Night, Vantablack
 and White. The TUI and the web dashboard use the same theme.
@@ -245,7 +246,7 @@ lmdeck theme list               # every theme with swatches; ● marks the curre
 lmdeck theme set rose-pine      # saved as `theme = "rose-pine"` in config.toml
 lmdeck theme show [name]        # its colours, by role, and where they come from
 lmdeck theme sync-omarchy       # use the theme Omarchy is currently on
-lmdeck theme reset              # back to omp
+lmdeck theme reset              # back to the default (Retro 82)
 ```
 
 Theme names are forgiving: `"Rosé Pine"`, `rose-pine`, `ROSE PINE` and `rose`
@@ -1123,7 +1124,7 @@ The tests use this. macOS uses the same XDG layout.
 # ~/.config/lmdeck/config.toml
 models_dir = "~/models"
 host = "0.0.0.0"
-theme = "tokyo-night"     # lmdeck theme set …; omp when unset
+theme = "tokyo-night"     # lmdeck theme set …; retro-82 when unset
 
 [engines]                 # only needed when auto-detection misses something
 # llama_server = "~/llama.cpp/build/bin/llama-server"

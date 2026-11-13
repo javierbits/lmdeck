@@ -366,7 +366,7 @@ fn host_add_list_remove() {
 #[test]
 fn theme_set_list_show_and_sync() {
     let e = Env::new();
-    assert!(e.run(&["theme", "show"]).contains("omp (oh-my-pi)"));
+    assert!(e.run(&["theme", "show"]).contains("Retro 82 (retro-82"));
     let list = e.run(&["theme", "list"]);
     for slug in ["omp", "catppuccin", "catppuccin-latte", "rose-pine", "tokyo-night", "white", "vantablack"] {
         assert!(list.contains(slug), "{slug} missing from\n{list}");
@@ -403,7 +403,7 @@ fn theme_set_list_show_and_sync() {
     e.cmd().args(["theme", "sync-omarchy"]).env("HOME", &home).assert().success();
     assert!(e.run(&["theme", "show"]).contains("Everforest"));
     e.run(&["theme", "reset"]);
-    assert!(e.run(&["theme", "show"]).contains("omp (oh-my-pi)"));
+    assert!(e.run(&["theme", "show"]).contains("Retro 82 (retro-82"));
 }
 
 #[test]

@@ -100,7 +100,7 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
   - `lmdeck browse [words] [-t tag] [--sort name|sparks|speed] [--fits] [--refresh|--offline] [--json]`; `lmdeck add <name>` resolves through the index (native recipe link, else wraps the repo) with "did you mean".
   - Fit for an index entry: sparks needed vs machines (this one + hosts.toml), the built-in recipe's compat report if it ships with lmdeck, `size_gb` vs memory.
 - **Themes** (`src/theme/`, `scripts/import-omarchy-themes.py`):
-  - 24 themes: `omp` (the default), the 22 Omarchy themes Javier listed, and Starship.
+  - 24 themes: Retro 82 is the default; `omp` is lmdeck's own, plus the 22 Omarchy themes Javier listed and Starship.
   - Colours are taken from `omacom/omarchy` `themes/<slug>/colors.toml` at commit 967bbdd. The repo moved there from basecamp/omarchy.
   - Contrast is tested. The theme is saved in `~/.config/lmdeck/config.toml`. `--theme` and `LMDECK_THEME` override it.
   - Omarchy's MIT licence is in `licenses/omarchy-MIT.txt`.

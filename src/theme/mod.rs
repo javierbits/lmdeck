@@ -1,7 +1,8 @@
 //! Colour themes, shared by the TUI, the web dashboard and `lmdeck theme`.
 //!
-//! `omp` (the oh-my-pi palette) is the default. Every other theme is one of
-//! Omarchy's (<https://omarchy.org>, MIT): `omarchy.rs` is generated from
+//! `retro-82` (Retro 82) is the default. `omp` is lmdeck's own hand-tuned
+//! palette; every other theme is one of Omarchy's (<https://omarchy.org>, MIT):
+//! `omarchy.rs` is generated from
 //! `themes/<slug>/colors.toml` by `scripts/import-omarchy-themes.py`, colours
 //! verbatim. [`Palette::from_omarchy`] maps those colours onto lmdeck's roles.
 //! For each role it takes the first palette colour that is readable against
@@ -58,6 +59,8 @@ pub struct Palette {
     pub bg: u32,
     /// Panels and cards, a step off the background.
     pub panel: u32,
+    /// A lighter panel surface (the top of a card's gradient).
+    pub panel2: u32,
     pub fg: u32,
     /// Secondary text: labels, hints.
     pub muted: u32,
@@ -83,7 +86,10 @@ pub struct Palette {
     pub blue: u32,
 }
 
-pub const DEFAULT: &str = "omp";
+pub const DEFAULT: &str = "retro-82";
+
+/// The one palette that ships with lmdeck itself; `omp` keeps its original dashboard surfaces.
+const OMP_SLUG: &str = "omp";
 
 const OMP: Palette = Palette {
     slug: "omp",
@@ -91,6 +97,7 @@ const OMP: Palette = Palette {
     light: false,
     bg: 0x18181e,
     panel: 0x1e1e24,
+    panel2: 0x24242c,
     fg: 0xd4d4d4,
     muted: 0x777d88,
     dim: 0x5f6673,
@@ -161,6 +168,7 @@ impl Palette {
             light: o.light,
             bg,
             panel: o.dark_background,
+            panel2: o.lighter_background,
             fg,
             muted: pick(bg, 3.0, &[o.dark_foreground, o.muted, o.light_foreground, fg]),
             dim: pick(bg, 2.0, &[o.muted, o.dark_foreground, o.light_foreground, fg]),
@@ -188,7 +196,7 @@ impl Palette {
 
     /// Where the colours come from.
     pub fn source(&self) -> String {
-        if self.slug == DEFAULT {
+        if self.slug == OMP_SLUG {
             "lmdeck (the oh-my-pi palette)".into()
         } else {
             format!("omarchy (github.com/omacom/omarchy) themes/{}/colors.toml", self.slug)
@@ -200,7 +208,6 @@ impl Palette {
         [self.bg, self.fg, self.accent, self.ok, self.warn, self.err, self.info, self.magenta]
     }
 
-    /// CSS custom properties for the web dashboard.
     /// The text colour (background or foreground) that reads best on `c`.
     pub fn on(&self, c: u32) -> u32 {
         if contrast(self.bg, c) >= contrast(self.fg, c) {
@@ -213,14 +220,14 @@ impl Palette {
     /// CSS custom properties for the web dashboard.
     pub fn css_vars(&self) -> Vec<(&'static str, String)> {
         let h = |c: u32| format!("#{c:06x}");
-        // The dashboard's original surfaces, kept exactly for the default theme.
-        let (top, page, card, card2, line, line2) = if self.slug == DEFAULT {
+        // The dashboard's original surfaces, kept exactly for the omp theme.
+        let (top, page, card, card2, line, line2) = if self.slug == OMP_SLUG {
             (0x121217, 0x18181e, 0x1e1e24, 0x24242c, 0x2e3038, 0x3d424a)
         } else {
-            (self.bar_bg, self.bg, self.panel, self.selected_bg, self.gauge_bg, self.border)
+            (self.bar_bg, self.bg, self.panel, self.panel2, self.gauge_bg, self.border)
         };
-        let fg = if self.slug == DEFAULT { 0xe4e4e7 } else { self.fg };
-        let muted = if self.slug == DEFAULT { 0x9aa0aa } else { self.muted };
+        let fg = if self.slug == OMP_SLUG { 0xe4e4e7 } else { self.fg };
+        let muted = if self.slug == OMP_SLUG { 0x9aa0aa } else { self.muted };
         vec![
             ("--bg", h(top)),
             ("--page", h(page)),
@@ -265,7 +272,7 @@ pub fn all() -> &'static [Palette] {
 }
 
 pub fn default_palette() -> &'static Palette {
-    &ALL[0]
+    ALL.iter().find(|p| p.slug == DEFAULT).unwrap_or(&ALL[0])
 }
 
 /// Lower-case, accents folded, anything else non-alphanumeric as `-`:
@@ -344,8 +351,8 @@ pub fn unknown(name: &str) -> anyhow::Error {
 }
 
 /// The theme to use: an explicit choice (`--theme` / `LMDECK_THEME`), else
-/// the config file's `theme`, else `omp`. An unknown explicit name is an
-/// error; an unknown name in the config falls back to `omp`.
+/// the config file's `theme`, else the default. An unknown explicit name is an
+/// error; an unknown name in the config falls back to the default.
 pub fn resolve(explicit: Option<&str>, configured: Option<&str>) -> anyhow::Result<&'static Palette> {
     if let Some(n) = explicit.filter(|n| !n.trim().is_empty()) {
         return by_name(n).ok_or_else(|| unknown(n));
@@ -398,7 +405,7 @@ mod tests {
         assert_eq!(slug(""), None);
         for p in all() {
             assert_eq!(slug(p.slug), Some(p.slug));
-            if p.slug != DEFAULT {
+            if p.slug != OMP_SLUG {
                 assert_eq!(slug(p.name), Some(p.slug), "display name {}", p.name);
             }
         }
@@ -545,10 +552,11 @@ mod tests {
 
     #[test]
     fn resolve_prefers_explicit_then_config() {
-        assert_eq!(resolve(None, None).unwrap().slug, "omp");
+        assert_eq!(resolve(None, None).unwrap().slug, "retro-82");
+        assert_eq!(default_palette().slug, "retro-82");
         assert_eq!(resolve(None, Some("nord")).unwrap().slug, "nord");
         assert_eq!(resolve(Some("Rosé Pine"), Some("nord")).unwrap().slug, "rose-pine");
-        assert_eq!(resolve(None, Some("gone")).unwrap().slug, "omp");
+        assert_eq!(resolve(None, Some("gone")).unwrap().slug, "retro-82");
         assert!(resolve(Some("gone"), None).unwrap_err().to_string().contains("rose-pine"));
     }
 

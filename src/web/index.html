@@ -8,12 +8,12 @@
 <style>
 :root{
   color-scheme:dark;
-  --on-pill:#121212; --on-accent:#121212; --on-ok:#121212; --on-warn:#121212; --on-info:#121212; --shadow:#00000066;
-  --seg1:#d787af; --seg2:#00afaf; --seg3:#8787af; --seg4:#5faf5f;
-  --bg:#121217; --page:#18181e; --card:#1e1e24; --card2:#24242c; --line:#2e3038; --line2:#3d424a;
-  --fg:#e4e4e7; --muted:#9aa0aa; --dim:#5f6673;
-  --accent:#febc38; --blue:#178fb9; --cyan:#00afaf; --sky:#0088fa;
-  --ok:#89d281; --warn:#e4c00f; --err:#fc3a4b; --pink:#d787af; --violet:#8787af; --purple:#b281d6;
+  --on-pill:#05182e; --on-accent:#05182e; --on-ok:#05182e; --on-warn:#05182e; --on-info:#05182e; --shadow:#00000066;
+  --seg1:#3f8f8a; --seg2:#8cbfb8; --seg3:#3f8f8a; --seg4:#028391;
+  --bg:#020c17; --page:#05182e; --card:#031222; --card2:#0a2540; --line:#134e5a; --line2:#2a6b78;
+  --fg:#f6dcac; --muted:#3f8f8a; --dim:#2a6b78;
+  --accent:#faa968; --blue:#3f8f8a; --cyan:#8cbfb8; --sky:#faa968;
+  --ok:#028391; --warn:#e97b3c; --err:#f85525; --pink:#3f8f8a; --violet:#3f8f8a; --purple:#3f8f8a;
   --mono:"JetBrains Mono","DejaVu Sans Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   --sans:Inter,"Geist","Segoe UI",system-ui,-apple-system,sans-serif;
 }
@@ -320,7 +320,15 @@ try { const c = JSON.parse(localStorage.getItem("lmdeck-theme") || "null");
 <body>
 <header class="top">
   <div class="brand">
-    <svg viewBox="0 0 64 64"><path d="M32 4 60 32 32 60 4 32Z" style="fill:var(--accent)"/><path d="M32 19 45 32 32 45 19 32Z" style="fill:var(--page)"/></svg>
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <g transform="translate(32 32)">
+        <g transform="translate(-13 3) rotate(-30)"><rect x="-8" y="-11" width="16" height="22" rx="3" fill="var(--line2)"/></g>
+        <g transform="translate(-7 1) rotate(-13)"><rect x="-8" y="-11" width="16" height="22" rx="3" fill="var(--muted)"/></g>
+        <rect x="-8" y="-11" width="16" height="22" rx="3" fill="var(--accent)"/>
+        <path d="M-2.5 -2 L0.5 1 L-2.5 4" fill="none" stroke="var(--page)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="2.5" y="3.4" width="4" height="1.6" rx="0.8" fill="var(--page)"/>
+      </g>
+    </svg>
     lmdeck <span class="ver" id="ver">v…</span>
   </div>
   <div class="segs" id="segs"></div>
