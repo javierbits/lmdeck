@@ -385,6 +385,12 @@ from a CDN.
 
 ![web dashboard with the live log drawer](docs/screenshots/web-logs.png)
 
+| | |
+|---|---|
+| ![Library: the recipe index, install and add](docs/screenshots/web-library.png) | ![Stats: recorded token usage](docs/screenshots/web-stats.png) |
+| ![Weights: which host holds which checkpoint](docs/screenshots/web-weights.png) | ![Sources: add, update and remove recipe repos](docs/screenshots/web-sources.png) |
+| ![Doctor: hardware, engines, recipe errors and harness settings](docs/screenshots/web-doctor.png) | |
+
 Across machines (details in [docs/MULTIHOST.md](docs/MULTIHOST.md)): host cards
 have `≡` logs and `■` stop per model and a **run here** picker; recipe cards
 show **⛁ weights on disk: …**, `×N nodes` with the start order for multi-node
@@ -394,8 +400,8 @@ section draws the hosts and their CX7 / LAN / Tailscale links as an SVG.
 
 | | |
 |---|---|
-| ![run on another host: the NFS plan (single-VM test rig)](docs/screenshots/web-run-on.png) | ![topology switch8 DEMO DATA](docs/screenshots/web-topology-switch8.png) |
-| ![host cards with remote stop / logs (test rig)](docs/screenshots/web-hosts-controls.png) | ![TUI topology switch8 DEMO DATA](docs/screenshots/tui-topology-switch8.png) |
+| ![run on another host: the NFS plan (demo data)](docs/screenshots/web-run-on.png) | ![topology switch8 DEMO DATA](docs/screenshots/web-topology-switch8.png) |
+| ![host cards with remote logs and stop (demo data)](docs/screenshots/web-hosts-controls.png) | ![TUI topology switch8 DEMO DATA](docs/screenshots/tui-topology-switch8.png) |
 
 > [!WARNING]
 > **Binding to anything other than localhost (for example `--host 0.0.0.0`)
@@ -459,8 +465,8 @@ curl -s -X POST -H 'X-Lmdeck: 1' localhost:7979/api/switch/qwen3-4b-gguf
 curl -N localhost:7979/api/logs/qwen3-4b-gguf/stream
 ```
 
-The screenshots come from a CPU-only Linux VM. The running recipe is a small
-`custom` stub server, and its log lines are synthetic.
+The screenshots use `LMDECK_DEMO=1` (synthetic telemetry and hosts) and a demo
+deck with recipes from several labs; see [Demo mode](#demo-mode).
 
 ## Hosts and telemetry
 
@@ -538,11 +544,13 @@ container isn't in lmdeck's process tree.
 "spark1", spark2 (busy), spark3 (idle) and an offline Mac. It exists for
 screenshots and UI work. The TUI header, the Hosts strip, `lmdeck host list`,
 the dashboard and every JSON document (`"demo": true`) say **DEMO DATA**
-while it's on. The Hosts and deck-telemetry screenshots above, and the
-dashboard one below, were taken in demo mode on a CPU-only VM. The fit
-column and Machine panel there still describe that VM.
+while it's on. The screenshots use demo mode with a demo deck spanning
+DeepSeek, GLM, LiquidAI, Qwen, javierbits, NVIDIA Nemotron, Gemma and GPT-OSS,
+plus a small `custom` stub server whose log lines are synthetic. The fit
+column and Machine panel describe the Spark-class machine they were captured
+on.
 
-![web dashboard hosts row (LMDECK_DEMO=1 data)](docs/screenshots/web-hosts.png)
+![Hosts tab (LMDECK_DEMO=1 data)](docs/screenshots/web-hosts.png)
 
 ## Commands
 

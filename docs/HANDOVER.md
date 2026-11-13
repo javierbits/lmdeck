@@ -145,7 +145,6 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
    - Docker recipes have no RSS.
    - MLX and LM Studio have no tok/s.
    - Tiny local models show "0M" in the size column.
-   - The older screenshots (`tui-deck`, `tui-machine`, `web-dashboard`) still show the 3-tab header.
 7. **Launch prep:** Javier plans a public launch of lmdeck and is growing his X audience (@javierbits, formerly @jvr0x) for it. The repo is private until he decides. Don't make it public, publish to crates.io, or post anything without his go-ahead.
 
 ## Working rules

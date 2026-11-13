@@ -285,6 +285,7 @@ select.runon:hover{border-color:var(--violet)}
 .hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;align-items:end;height:110px;padding-top:6px}
 .hours i{display:block;background:linear-gradient(180deg,var(--cyan),color-mix(in srgb,var(--cyan) 40%,transparent));border-radius:3px 3px 0 0;min-height:2px}
 .hourlbl{display:grid;grid-template-columns:repeat(24,1fr);font:9px var(--mono);color:var(--dim);text-align:center}
+.hourlbl span{visibility:hidden}
 .hourlbl span:nth-child(3n+1){visibility:visible}
 .utable{width:100%;border-collapse:collapse;font:12px var(--mono);table-layout:fixed}
 .utable th,.utable td{padding:5px 8px;border-top:1px solid var(--line);text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0}
@@ -1658,7 +1659,7 @@ function renderWeights(){
   $("#weightsmeta").textContent = `${models.size} model${models.size === 1 ? "" : "s"} · ${hosts.length} host${hosts.length === 1 ? "" : "s"}${w.demo ? " · DEMO DATA" : ""}${w.at ? " · indexed " + ago(w.at) + " ago" : ""}`;
   $("#weightstable").innerHTML = models.size ? `<div class="tablewrap"><table class="utable"><tr><th style="width:30%">model</th><th style="width:16%">host</th><th style="width:11%">size</th><th style="width:10%">kind</th><th>path</th></tr>` +
     [...models.values()].map(m => m.rows.map((r, i) => `<tr><td class="${i ? "" : "n"}" title="${esc(m.model)}">${i ? "" : esc(m.model)}</td>
-      <td>${r.size ? (r.size < 1073741824 ? Math.round(r.size / 1048576) + " MB" : gb(r.size / 1073741824)) : "?"}</td><td>${esc(r.kind || "")}</td><td title="${esc(r.path || "")}">${esc(r.path || "")}</td></tr>`).join("")).join("") + `</table></div>`
+      <td>${esc(r.host)}</td><td>${r.size ? (r.size < 1073741824 ? Math.round(r.size / 1048576) + " MB" : gb(r.size / 1073741824)) : "?"}</td><td>${esc(r.kind || "")}</td><td title="${esc(r.path || "")}">${esc(r.path || "")}</td></tr>`).join("")).join("") + `</table></div>`
     : `<div class="empty">No weights indexed yet.<br><span class="dim">Run <span class="mono">lmdeck weights</span> or pull a recipe.</span></div>`;
 }
 $("#weightsrefresh").onclick = () => refreshWeights(true);
