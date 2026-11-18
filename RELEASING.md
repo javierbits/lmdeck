@@ -55,9 +55,12 @@ that does not equal `v<Cargo.toml version>`.
 
 Before tagging:
 
-- the CI run for the release commit is green on both Linux and macOS
+- the CI run for the release commit is green on Linux
   (`gh run list --workflow ci.yml`). The release workflow builds but does not
-  run tests; a red `main` ships broken;
+  run tests; a red `main` ships broken. The macOS job may still fail on
+  `add_wraps_a_repo_and_runs_it_detached`, the known intermittent
+  "my-server exited during startup" (see `docs/HANDOVER.md`); investigate any
+  other macOS failure;
 - `Cargo.toml` and `Cargo.lock` carry the release version, committed;
 - the local gates pass: `cargo fmt --all --check`, `cargo clippy --all-targets
   --locked -- -D warnings`, `cargo test --locked`;
