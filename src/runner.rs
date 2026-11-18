@@ -120,7 +120,10 @@ impl RunRecord {
         let up = answer != Probe::Down;
         match self.start_exit() {
             Some(0) => up || self.start_exited_within(DETACHED_GRACE),
-            None => up,
+            // No exit code yet and no answer: a start this young is still
+            // starting. The harness sync asks the status right after the
+            // spawn, and the server has not had time to open its port.
+            None => up || now_secs().saturating_sub(self.started_at) < DETACHED_GRACE.as_secs(),
             Some(_) => false,
         }
     }
@@ -299,8 +302,16 @@ pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u
         // status below: one timed-out probe must not both drop the record and
         // report the port as someone else's server.
         let alive = if rec.awaits_port() {
-            let answer = cache.get(&rec.port).cloned().unwrap_or_else(|| probe_detached(rec.port, None));
-            cache.insert(rec.port, answer.clone());
+            // Retry only after a clean exit: then the server should answer, so
+            // one slow answer is worth a second look. While the start is still
+            // running, its port legitimately may not be open yet.
+            let answer = cache.get(&rec.port).cloned().unwrap_or_else(|| {
+                let established = rec.start_exit() == Some(0) && !rec.start_exited_within(DETACHED_GRACE);
+                let answer =
+                    if established { probe_detached(rec.port, None) } else { probe(rec.port, PROBE_WAIT, None) };
+                cache.insert(rec.port, answer.clone());
+                answer
+            });
             rec.detached_alive(answer)
         } else {
             rec.alive()
@@ -707,6 +718,40 @@ mod tests {
     #[test]
     fn probe_down_on_closed_port() {
         assert_eq!(probe(free_port(), Duration::from_millis(300), None), Probe::Down);
+    }
+
+    /// A detached start whose wrapper is gone before its exit file is visible
+    /// (macOS) is still starting while it is young; the harness sync asks for
+    /// its status right after the spawn and must not drop the record.
+    #[test]
+    fn a_young_detached_start_without_an_exit_file_stays_loading() {
+        let (_d, paths) = tmp_paths();
+        let port = free_port();
+        let mut done = Command::new("true").spawn().unwrap();
+        let pid = done.id();
+        done.wait().unwrap();
+        let exit = exit_file(&paths, "starting");
+        fs::create_dir_all(exit.parent().unwrap()).unwrap();
+        RunRecord {
+            name: "starting".into(),
+            engine: "custom".into(),
+            pid: Some(pid),
+            container: None,
+            port,
+            started_at: now_secs(),
+            log: paths.log_dir().join("starting.log"),
+            argv: vec![],
+            stop: None,
+            oneshot: false,
+            cwd: None,
+            env: BTreeMap::new(),
+            detached: true,
+            exit_file: Some(exit),
+        }
+        .save(&paths)
+        .unwrap();
+        assert_eq!(status(&paths, "starting", port), Status::Loading);
+        assert!(RunRecord::load(&paths, "starting").is_some(), "the start is young, not gone");
     }
 
     /// A detached server that is slow to answer one status request is still
