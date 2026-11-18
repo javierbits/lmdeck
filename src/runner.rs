@@ -763,12 +763,15 @@ mod tests {
         use std::io::Write as _;
         let (_d, paths) = tmp_paths();
         let port = free_port();
-        // 1.2 s per request: past the first probe's wait, inside the retry's.
+        // One slow answer (just past the first probe's wait), then an immediate
+        // one: the retry is what must succeed, not a second slow answer.
         let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..2 {
+            for i in 0..2 {
                 let (mut s, _) = listener.accept().unwrap();
-                std::thread::sleep(Duration::from_millis(1200));
+                if i == 0 {
+                    std::thread::sleep(Duration::from_millis(1000));
+                }
                 let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
             }
         });
@@ -805,6 +808,8 @@ mod tests {
         .unwrap();
         assert_eq!(status(&paths, "slow", port), Status::Loaded);
         assert!(RunRecord::load(&paths, "slow").is_some(), "a slow answer keeps the record");
+        // If the first probe was answered, the server never saw a retry.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
         server.join().unwrap();
     }
 
