@@ -306,7 +306,8 @@ pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u
             // one slow answer is worth a second look. While the start is still
             // running, its port legitimately may not be open yet.
             let answer = cache.get(&rec.port).cloned().unwrap_or_else(|| {
-                let established = rec.start_exit() == Some(0) && !rec.start_exited_within(DETACHED_GRACE);
+                let established = rec.start_exit() == Some(0)
+                    && now_secs().saturating_sub(rec.started_at) >= DETACHED_GRACE.as_secs();
                 let answer =
                     if established { probe_detached(rec.port, None) } else { probe(rec.port, PROBE_WAIT, None) };
                 cache.insert(rec.port, answer.clone());
@@ -764,37 +765,37 @@ mod tests {
         let (_d, paths) = tmp_paths();
         let port = free_port();
         // One slow answer (just past the first probe's wait), then an immediate
-        // one: the retry is what must succeed, not a second slow answer.
+        // one: the retry is what must succeed, not a second slow answer. Each
+        // connection gets its own thread so a stuck write cannot delay the
+        // next accept.
         let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
         let server = std::thread::spawn(move || {
             for i in 0..2 {
                 let (mut s, _) = listener.accept().unwrap();
-                if i == 0 {
-                    std::thread::sleep(Duration::from_millis(1000));
-                }
-                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
+                std::thread::spawn(move || {
+                    if i == 0 {
+                        std::thread::sleep(Duration::from_millis(1000));
+                    }
+                    let _ =
+                        s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
+                });
             }
         });
-        // A wrapper that is gone, with a clean exit long past the grace period.
+        // A wrapper that is gone, with a clean exit and a start old enough
+        // that the detached grace no longer applies.
         let mut done = Command::new("true").spawn().unwrap();
         let pid = done.id();
         done.wait().unwrap();
         let exit = exit_file(&paths, "slow");
         fs::create_dir_all(exit.parent().unwrap()).unwrap();
         fs::write(&exit, "0").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&exit)
-            .unwrap()
-            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
-            .unwrap();
         RunRecord {
             name: "slow".into(),
             engine: "custom".into(),
             pid: Some(pid),
             container: None,
             port,
-            started_at: now_secs(),
+            started_at: now_secs() - 60,
             log: paths.log_dir().join("slow.log"),
             argv: vec![],
             stop: None,
@@ -806,7 +807,8 @@ mod tests {
         }
         .save(&paths)
         .unwrap();
-        assert_eq!(status(&paths, "slow", port), Status::Loaded);
+        let saved = RunRecord::load(&paths, "slow").unwrap();
+        assert_eq!(status(&paths, "slow", port), Status::Loaded, "record {saved:?}");
         assert!(RunRecord::load(&paths, "slow").is_some(), "a slow answer keeps the record");
         // If the first probe was answered, the server never saw a retry.
         let _ = std::net::TcpStream::connect(("127.0.0.1", port));
