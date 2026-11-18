@@ -771,26 +771,28 @@ mod tests {
     /// timeout and then reported the answering port as `port-busy`.
     #[test]
     fn a_single_slow_probe_does_not_drop_a_detached_server() {
-        use std::io::Write as _;
+        use std::io::{Read as _, Write as _};
         std::env::set_var("LMDECK_DEBUG", "1");
         let (_d, paths) = tmp_paths();
         let port = free_port();
         // One slow answer (just past the first probe's wait), then an immediate
         // one: the retry is what must succeed, not a second slow answer. Each
         // connection gets its own thread so a stuck write cannot delay the
-        // next accept.
+        // next accept, and the request is read before answering: a server that
+        // closes with the request unread makes macOS send a RST, which ureq
+        // reports as a header error.
         let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
         let server = std::thread::spawn(move || {
             for i in 0..2 {
                 let (mut s, _) = listener.accept().unwrap();
-                eprintln!("test server: accepted connection {i}");
                 std::thread::spawn(move || {
+                    let mut req = [0u8; 1024];
+                    let _ = s.read(&mut req);
                     if i == 0 {
                         std::thread::sleep(Duration::from_millis(1000));
                     }
-                    let wrote =
+                    let _ =
                         s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
-                    eprintln!("test server: answered {i}: {wrote:?}");
                 });
             }
         });
