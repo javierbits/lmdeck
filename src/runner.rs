@@ -101,7 +101,7 @@ impl RunRecord {
     /// The detached start wrapper has exited and no container is named: only
     /// the port can say whether the server it handed off is still there.
     fn awaits_port(&self) -> bool {
-        self.detached && self.container.is_none() && !self.pid.is_some_and(pid_alive)
+        self.detached && self.container.is_none() && self.pid.is_some_and(|pid| !pid_alive(pid))
     }
 
     /// Exit code of a detached start command, once it has exited.
