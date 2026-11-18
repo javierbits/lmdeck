@@ -173,8 +173,18 @@ const PROBE_RETRY_WAIT: Duration = Duration::from_secs(2);
 /// The port's answer for a detached server, retried once with a longer wait
 /// before a failed probe is taken as "nothing is listening".
 fn probe_detached(port: u16, key: Option<&str>) -> Probe {
-    match probe(port, PROBE_WAIT, key) {
-        Probe::Down => probe(port, PROBE_RETRY_WAIT, key),
+    let first = probe(port, PROBE_WAIT, key);
+    if std::env::var_os("LMDECK_DEBUG").is_some() {
+        eprintln!("lmdeck: probe :{port} first {first:?}");
+    }
+    match first {
+        Probe::Down => {
+            let again = probe(port, PROBE_RETRY_WAIT, key);
+            if std::env::var_os("LMDECK_DEBUG").is_some() {
+                eprintln!("lmdeck: probe :{port} retry {again:?}");
+            }
+            again
+        }
         up => up,
     }
 }
@@ -762,6 +772,7 @@ mod tests {
     #[test]
     fn a_single_slow_probe_does_not_drop_a_detached_server() {
         use std::io::Write as _;
+        std::env::set_var("LMDECK_DEBUG", "1");
         let (_d, paths) = tmp_paths();
         let port = free_port();
         // One slow answer (just past the first probe's wait), then an immediate
@@ -772,12 +783,14 @@ mod tests {
         let server = std::thread::spawn(move || {
             for i in 0..2 {
                 let (mut s, _) = listener.accept().unwrap();
+                eprintln!("test server: accepted connection {i}");
                 std::thread::spawn(move || {
                     if i == 0 {
                         std::thread::sleep(Duration::from_millis(1000));
                     }
-                    let _ =
+                    let wrote =
                         s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
+                    eprintln!("test server: answered {i}: {wrote:?}");
                 });
             }
         });
