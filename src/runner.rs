@@ -89,10 +89,19 @@ impl RunRecord {
     pub fn alive(&self) -> bool {
         match self.pid {
             Some(pid) if pid_alive(pid) => true,
-            Some(_) if self.detached => self.detached_alive(),
+            Some(_) if self.detached => match &self.container {
+                Some(c) => container_running("docker", c),
+                None => self.detached_alive(probe_detached(self.port, None)),
+            },
             Some(_) => false,
             None => self.oneshot,
         }
+    }
+
+    /// The detached start wrapper has exited and no container is named: only
+    /// the port can say whether the server it handed off is still there.
+    fn awaits_port(&self) -> bool {
+        self.detached && self.container.is_none() && !self.pid.is_some_and(pid_alive)
     }
 
     /// Exit code of a detached start command, once it has exited.
@@ -100,25 +109,19 @@ impl RunRecord {
         fs::read_to_string(self.exit_file.as_ref()?).ok()?.trim().parse().ok()
     }
 
-    /// A detached server whose start command has exited: its container is
-    /// running, or (without a container) the start succeeded and the port
-    /// answers. A script that backgrounds the server (`nohup … &`) exits
+    /// A detached server whose start command has exited: `answer` is the
+    /// port's (retried) answer, since without a container the port is the
+    /// evidence. A script that backgrounds the server (`nohup … &`) exits
     /// before the port opens, so the first seconds after it exits count too.
-    fn detached_alive(&self) -> bool {
-        match &self.container {
-            Some(c) => container_running("docker", c),
-            None => {
-                // Alive while anything answers, ready or still loading. A
-                // wrapper that exited without leaving a readable exit file is
-                // still ours when its port answers (macOS can show the pid
-                // gone before the file is visible).
-                let up = probe(self.port, Duration::from_millis(800), None) != Probe::Down;
-                match self.start_exit() {
-                    Some(0) => up || self.start_exited_within(DETACHED_GRACE),
-                    None => up,
-                    Some(_) => false,
-                }
-            }
+    fn detached_alive(&self, answer: Probe) -> bool {
+        // Alive while anything answers, ready or still loading. A wrapper that
+        // exited without leaving a readable exit file is still ours when its
+        // port answers (macOS can show the pid gone before the file is visible).
+        let up = answer != Probe::Down;
+        match self.start_exit() {
+            Some(0) => up || self.start_exited_within(DETACHED_GRACE),
+            None => up,
+            Some(_) => false,
         }
     }
 
@@ -157,7 +160,21 @@ impl RunRecord {
 /// after its start script exits.
 const DETACHED_GRACE: Duration = Duration::from_secs(15);
 
-impl RunRecord {}
+/// A status probe's wait. Kept short: status is polled by the TUI and web
+/// dashboard.
+const PROBE_WAIT: Duration = Duration::from_millis(800);
+/// Second chance for a detached server whose start exited cleanly. A loaded
+/// machine can stall one status request; that is not a stopped server.
+const PROBE_RETRY_WAIT: Duration = Duration::from_secs(2);
+
+/// The port's answer for a detached server, retried once with a longer wait
+/// before a failed probe is taken as "nothing is listening".
+fn probe_detached(port: u16, key: Option<&str>) -> Probe {
+    match probe(port, PROBE_WAIT, key) {
+        Probe::Down => probe(port, PROBE_RETRY_WAIT, key),
+        up => up,
+    }
+}
 
 fn exit_file(paths: &Paths, name: &str) -> PathBuf {
     paths.run_dir().join(format!("{name}.exit"))
@@ -276,14 +293,23 @@ pub fn status(paths: &Paths, name: &str, port: u16) -> Status {
 
 /// Like [`status`], probing each port at most once per `cache`.
 pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u16, Probe>) -> Status {
-    let wait = Duration::from_millis(800);
-    let mut probe_port = |p: u16| cache.entry(p).or_insert_with(|| probe(p, wait, None)).clone();
     if let Some(rec) = RunRecord::load(paths, name) {
-        if rec.alive() {
+        // A detached server whose wrapper has exited is alive only while its
+        // port answers. Ask once and keep that answer in the cache for the
+        // status below: one timed-out probe must not both drop the record and
+        // report the port as someone else's server.
+        let alive = if rec.awaits_port() {
+            let answer = cache.get(&rec.port).cloned().unwrap_or_else(|| probe_detached(rec.port, None));
+            cache.insert(rec.port, answer.clone());
+            rec.detached_alive(answer)
+        } else {
+            rec.alive()
+        };
+        if alive {
             // A server behind a key is asked with its own key, not through the shared cache.
             let answer = match rec.api_key() {
-                Some(k) => probe(rec.port, wait, Some(&k)),
-                None => probe_port(rec.port),
+                Some(k) => probe(rec.port, PROBE_WAIT, Some(&k)),
+                None => cache.entry(rec.port).or_insert_with(|| probe(rec.port, PROBE_WAIT, None)).clone(),
             };
             return match answer {
                 Probe::Up(ids) if !rec.oneshot || ids.iter().any(|i| i == name) => Status::Loaded,
@@ -296,7 +322,8 @@ pub fn status_cached(paths: &Paths, name: &str, port: u16, cache: &mut HashMap<u
         }
         RunRecord::remove(paths, name);
     }
-    match probe_port(port) {
+    let answer = cache.entry(port).or_insert_with(|| probe(port, PROBE_WAIT, None)).clone();
+    match answer {
         Probe::Down => Status::Stopped,
         Probe::Up(ids) if ids.iter().any(|i| i == name) => Status::External,
         Probe::Up(_) | Probe::NotReady(_) => Status::PortBusy,
@@ -680,6 +707,60 @@ mod tests {
     #[test]
     fn probe_down_on_closed_port() {
         assert_eq!(probe(free_port(), Duration::from_millis(300), None), Probe::Down);
+    }
+
+    /// A detached server that is slow to answer one status request is still
+    /// ours: the failed probe is retried, and the record survives. Before the
+    /// retry, `list` ran the probe twice, dropped the record on the first
+    /// timeout and then reported the answering port as `port-busy`.
+    #[test]
+    fn a_single_slow_probe_does_not_drop_a_detached_server() {
+        use std::io::Write as _;
+        let (_d, paths) = tmp_paths();
+        let port = free_port();
+        // 1.2 s per request: past the first probe's wait, inside the retry's.
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                std::thread::sleep(Duration::from_millis(1200));
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}");
+            }
+        });
+        // A wrapper that is gone, with a clean exit long past the grace period.
+        let mut done = Command::new("true").spawn().unwrap();
+        let pid = done.id();
+        done.wait().unwrap();
+        let exit = exit_file(&paths, "slow");
+        fs::create_dir_all(exit.parent().unwrap()).unwrap();
+        fs::write(&exit, "0").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&exit)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        RunRecord {
+            name: "slow".into(),
+            engine: "custom".into(),
+            pid: Some(pid),
+            container: None,
+            port,
+            started_at: now_secs(),
+            log: paths.log_dir().join("slow.log"),
+            argv: vec![],
+            stop: None,
+            oneshot: false,
+            cwd: None,
+            env: BTreeMap::new(),
+            detached: true,
+            exit_file: Some(exit),
+        }
+        .save(&paths)
+        .unwrap();
+        assert_eq!(status(&paths, "slow", port), Status::Loaded);
+        assert!(RunRecord::load(&paths, "slow").is_some(), "a slow answer keeps the record");
+        server.join().unwrap();
     }
 
     #[test]
