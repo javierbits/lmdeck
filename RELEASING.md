@@ -51,6 +51,23 @@ Bump `version` in `Cargo.toml` and `Cargo.lock` (`cargo check` refreshes the
 lock), commit it, and wait for CI on `main`. The release workflow rejects a tag
 that does not equal `v<Cargo.toml version>`.
 
+## Preflight
+
+Before tagging:
+
+- the CI run for the release commit is green on both Linux and macOS
+  (`gh run list --workflow ci.yml`). The release workflow builds but does not
+  run tests; a red `main` ships broken;
+- `Cargo.toml` and `Cargo.lock` carry the release version, committed;
+- the local gates pass: `cargo fmt --all --check`, `cargo clippy --all-targets
+  --locked -- -D warnings`, `cargo test --locked`;
+- `gh secret list` shows `CARGO_REGISTRY_TOKEN` and `HOMEBREW_TAP_TOKEN`, and
+  `gh variable list` shows `HOMEBREW_TAP`. Without the tap token the Homebrew
+  job prints a skip and the tap keeps the old formula;
+- the repository is public, or every channel that fetches release assets and
+  raw files anonymously is broken: `curl …/releases/latest/download/install.sh`,
+  `cargo binstall`, and `lmdeck browse` (its default index URL is a raw file).
+
 ## Release
 
 ```sh

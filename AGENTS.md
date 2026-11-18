@@ -4,7 +4,7 @@ This file tells an agent how lmdeck works and how to author, wrap, and wire
 recipes. `README.md` is the user manual; this is the implementation-aware
 playbook. If you change the recipe format or a launch path, update both.
 
-Verified against lmdeck 0.1.3, schema 1, 2026-11-12.
+Verified against lmdeck 0.1.5, schema 1, 2026-11-18.
 
 ## What lmdeck is
 
