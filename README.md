@@ -1,5 +1,7 @@
 ![lmdeck — local LLM deck](docs/brand/lmdeck-banner.svg)
 
+![RepoBeagle](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/javierbits/lmdeck/repobeagle/badge.json)
+
 **lmdeck** is a single-binary CLI for running local LLMs from *recipes*. A recipe
 says which model to use, which quant, which engine, and what hardware it
 needs. lmdeck shows what's downloaded and what's loaded, starts and stops
