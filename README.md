@@ -61,6 +61,7 @@ supported.
 ## Quick start
 
 ```sh
+lmdeck setup                  # machine, models dir, CX7 peers, sources (reruns the wizard)
 lmdeck doctor                 # hardware, engines, and which recipes fit
 lmdeck engine install llama.cpp   # managed llama-server in lmdeck's cache
 lmdeck browse                 # the recipe index
