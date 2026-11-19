@@ -52,6 +52,12 @@ CONTAINER_NAME = "{container}"
 CONTEXT = "{ctx}"
 # Rank 1, as the CX7 address this Spark reaches it on; current user over ssh.
 WORKER = "{peer_addr}"
+# A bare CX7 address has no ssh alias, so ssh decides the identity itself; with
+# an unlocked agent it offers the agent's key first and `BatchMode` cannot fix
+# a key the agent fails to sign (sign_and_send_pubkey: agent refused operation).
+# The scripts read this hook (scripts/config.sh), so the hop uses the key files
+# ssh's own config names for that address instead.
+SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none"
 
 [hardware]
 # The scripts drive both Sparks from this one.
