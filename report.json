@@ -15,16 +15,16 @@
     "mode": "docker (--network none, read-only)",
     "profile": "balanced",
     "files": 212,
-    "seconds": 10.6,
+    "seconds": 7.2,
     "tools": {
       "gitleaks": {
         "findings": 0,
-        "seconds": 0.5,
+        "seconds": 0.4,
         "ok": true
       },
       "semgrep": {
         "findings": 0,
-        "seconds": 1.6,
+        "seconds": 1.4,
         "ok": true
       },
       "guarddog": {
@@ -39,22 +39,22 @@
       },
       "agent-checks": {
         "findings": 31,
-        "seconds": 1.4,
+        "seconds": 1.2,
         "ok": true,
         "files": 212
       },
       "osv-scanner": {
         "findings": 5,
-        "seconds": 0.7,
+        "seconds": 0.6,
         "ok": true
       }
     },
     "image_ref": "ghcr.io/javierbits/repobeagle:v1.1.0",
     "image_digest": "ghcr.io/javierbits/repobeagle@sha256:98e110e94cb5aaf010561667ec847076ccb8f2a76aa695d2b16e5b8ed86c0527",
     "toolchain_ref": "main",
-    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45462884617",
+    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45463017400",
     "scanned_repo": "javierbits/lmdeck",
-    "scanned_sha": "36728852e9b5595d56837e5c16aa1db76973a1aa"
+    "scanned_sha": "d7f67fec21267f4826d1957c7a4598a1cd7026d1"
   },
   "ai_review": null,
   "findings": [
@@ -74,15 +74,6 @@
       "line": 30,
       "title": "Download-and-execute (pipe to shell)",
       "snippet": "curl --proto '=https' --tlsv1.2 -fsSL https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh",
-      "meaning": "Runs whatever a remote server returns, with no review."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "high",
-      "file": "AGENTS.md",
-      "line": 56,
-      "title": "Download-and-execute (pipe to shell)",
-      "snippet": "| Installer | `install.sh` (`curl \\| sh`, verifies the release checksum) |",
       "meaning": "Runs whatever a remote server returns, with no review."
     },
     {
@@ -115,6 +106,15 @@
     {
       "tool": "agent-checks",
       "severity": "high",
+      "file": "AGENTS.md",
+      "line": 56,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "| Installer | `install.sh` (`curl \\| sh`, verifies the release checksum) |",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
       "file": "src/engine.rs",
       "line": 196,
       "title": "Download-and-execute (pipe to shell)",
@@ -138,15 +138,6 @@
       "title": "Asks the agent to act silently / without consent",
       "snippet": "| `lmdeck use\\|switch\\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only ov",
       "meaning": "Instructions aimed at AI agents reading this file."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "high",
-      "file": "src/setup.rs",
-      "line": 930,
-      "title": "Code reads sensitive credential files",
-      "snippet": "/// A name for a machine ssh couldn't log in to: an alias in ~/.ssh/config",
-      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
     },
     {
       "tool": "agent-checks",
@@ -227,6 +218,15 @@
       "line": 381,
       "title": "Code reads sensitive credential files",
       "snippet": "/// Returns `key` as the wizard prints it: `~/.ssh/id_ed25519` for one under",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/setup.rs",
+      "line": 930,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// A name for a machine ssh couldn't log in to: an alias in ~/.ssh/config",
       "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
     },
     {
@@ -349,24 +349,6 @@
     {
       "tool": "agent-checks",
       "severity": "low",
-      "file": ".github/workflows/repobeagle.yml",
-      "line": 11,
-      "title": "gha-write-permissions: workflow token has write permissions",
-      "snippet": "contents: write # publishes the repobeagle badge branch",
-      "meaning": "A compromised step can push code or publish packages."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "low",
-      "file": ".github/workflows/release.yml",
-      "line": 13,
-      "title": "gha-write-permissions: workflow token has write permissions",
-      "snippet": "contents: write",
-      "meaning": "A compromised step can push code or publish packages."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "low",
       "file": ".github/workflows/badge-test.yml",
       "line": 9,
       "title": "gha-write-permissions: workflow token has write permissions",
@@ -385,8 +367,26 @@
     {
       "tool": "agent-checks",
       "severity": "low",
-      "file": ".github/workflows/repobeagle.yml",
+      "file": ".github/workflows/release.yml",
       "line": 13,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "contents: write",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/repobeagle.yml",
+      "line": 11,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "contents: write # publishes the repobeagle badge branch",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/badge-test.yml",
+      "line": 12,
       "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
       "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
       "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
@@ -394,8 +394,8 @@
     {
       "tool": "agent-checks",
       "severity": "low",
-      "file": ".github/workflows/badge-test.yml",
-      "line": 12,
+      "file": ".github/workflows/repobeagle.yml",
+      "line": 13,
       "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
       "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
       "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
