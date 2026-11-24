@@ -1,0 +1,19 @@
+name: badge-test
+on:
+  push:
+    branches: [badge-test]
+jobs:
+  withperms:
+    permissions:
+      contents: write
+      statuses: write
+    uses: javierbits/repobeagle/.github/workflows/scan.yml@main
+    with:
+      profile: balanced
+      fail-on-red: false
+  noperms:
+    uses: javierbits/repobeagle/.github/workflows/scan.yml@main
+    with:
+      profile: balanced
+      fail-on-red: false
+      badge-branch: ""
