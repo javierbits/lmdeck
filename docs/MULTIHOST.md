@@ -20,7 +20,7 @@ What this mirrors (read, not modified, not copied):
   weights live once on their home Spark; the other Spark mounts the Hugging
   Face cache read-only over the CX7 link as a docker NFS volume at
   `/root/.cache/huggingface`, after a `test -f` / `find -L` preflight.
-- **lmswitch's `vllm-dual`** (`jvr0x/lmswitch`, read only): CX7 IPs as
+- **lmswitch's `vllm-dual`** (`javierbits/lmswitch`, read only): CX7 IPs as
   `master_addr` / `worker_ip`, NCCL pinned to the CX7 interface
   (`NCCL_SOCKET_IFNAME`), RDMA device (`NCCL_IB_HCA`) and RoCE GID index
   (`NCCL_IB_GID_INDEX`), and per-node compile caches kept **off** NFS.

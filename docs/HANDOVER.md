@@ -26,7 +26,7 @@ lmdeck is a Rust CLI, terminal UI, and web dashboard for running local LLMs from
 
 lmdeck checks whether the current machine fits a recipe, builds the exact launch command, starts and stops servers, and shows their status and logs.
 
-It is the successor to Javier's older Python tool **`jvr0x/lmswitch`**, which is public. **Do not modify lmswitch.** lmdeck used to import lmswitch YAML recipes; that was removed on Javier's call ("get rid of yaml, let's just do the toml parser").
+It is the successor to Javier's older Python tool **`javierbits/lmswitch`**, which is public. **Do not modify lmswitch.** lmdeck used to import lmswitch YAML recipes; that was removed on Javier's call ("get rid of yaml, let's just do the toml parser").
 
 ### Design decision: wrap-only
 lmdeck **never applies patches or builds engines**. Repos that need a patched engine (e.g. Mia's Ornith/TensorFold repo) are *wrapped*: lmdeck clones the repo, runs its own `start.sh`/`stop.sh` with settings as env vars, and watches/stops the server. A `[patches]` / `[engine.scripts]` / `[model.draft]` design was drafted and dropped; don't reintroduce it.
@@ -44,7 +44,7 @@ lmdeck **never applies patches or builds engines**. Repos that need a patched en
 - **Sources** (`src/sources.rs`): `lmdeck source add|list|update|remove`.
   - Supported forms: `github:o/r[/subdir][@ref]`, `hf:o/r`, `hf:datasets/o/r`, a local folder.
   - Fetched over public HTTPS only. Mirrored to `~/.cache/lmdeck/sources/<name>/`.
-  - Only `.toml` files are recipes. There is **no default source** any more: `jvr0x/ai-models` is all lmswitch YAML. Existing configs that still list it simply get 0 recipes from it.
+  - Only `.toml` files are recipes. There is **no default source** any more: `javierbits/ai-models` is all lmswitch YAML. Existing configs that still list it simply get 0 recipes from it.
 - **Engines** (`src/engine.rs`, `src/runner.rs`): llama.cpp, vLLM (native or Docker), SGLang, LMDeploy (native or Docker; `lmdeploy serve api_server <model> --model-name --server-name --server-port --session-len [--revision]`, port 23333, aliases `lm-deploy`/`turbomind`, override `engines.lmdeploy`), TabbyAPI (EXL3), LM Studio (`lms`), MLX, TensorFold ([ashhart/TensorFold](https://github.com/ashhart/TensorFold)), and `custom`.
 - **Wrapped recipes** (`custom` + `src/checkout.rs`, `src/wrap.rs`, `src/runner.rs`):
   - `[source] repo/ref` is cloned to `~/.cache/lmdeck/checkouts/<recipe>/` on first `use` (TUI/web start too), fetched + re-checked-out on `pull`. Refuses to update over tracked local changes; untracked files (`.env`) survive. `engine.dir` defaults to the checkout; a relative `dir` resolves inside it.
@@ -140,7 +140,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
 4a. **Four Sparks on real cables:** run `lmdeck hosts topology` on the folded ring and on the plain ring and check the fabric line and order; then `lmdeck use deepseek-v4.1-flash-1017-4x-spark-tensorfold --dry-run` (expect `./start-switchless.sh`). Before the first real start, check that the plan's `env:` lines give `WORKER`, `WORKER2`, `WORKER3` in cabled order (on the folded ring: `spark2`, `spark4`, `spark3`, at the CX7 addresses spark1 reaches them on) and that spark1 can ssh to each address.
 4b. **Rebuild the installed binary** on each Spark (`cargo build --release` or `cargo install --path .`) so it carries the ring support and the wizard.
 4c. **Run the Ornith wrapper on a Spark** (`lmdeck use ornith-1.5-122b-tensorfold`), check the detached/container/logs path, and tune `ready_timeout`.
-4d. **Convert `jvr0x/ai-models` to TOML** if Javier wants a default source again (that repo needs his OK; don't touch lmswitch).
+4d. **Convert `javierbits/ai-models` to TOML** if Javier wants a default source again (that repo needs his OK; don't touch lmswitch).
 5. **llama-swap config export** (`lmdeck export llama-swap`).
 6. **Smaller fixes:**
    - Docker recipes have no RSS.
