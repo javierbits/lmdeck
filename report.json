@@ -1,0 +1,441 @@
+{
+  "version": "1.1.0",
+  "verdict": "YELLOW",
+  "why": "No critical issues; 19 high, 9 medium, 13 low findings worth a look",
+  "counts": {
+    "critical": 0,
+    "high": 19,
+    "medium": 9,
+    "low": 13,
+    "info": 0
+  },
+  "meta": {
+    "target": ".",
+    "fetched_via": "local path (copied)",
+    "mode": "docker (--network none, read-only)",
+    "profile": "balanced",
+    "files": 212,
+    "seconds": 8.2,
+    "tools": {
+      "gitleaks": {
+        "findings": 0,
+        "seconds": 0.6,
+        "ok": true
+      },
+      "semgrep": {
+        "findings": 0,
+        "seconds": 2.1,
+        "ok": true
+      },
+      "guarddog": {
+        "findings": 0,
+        "seconds": 0.0,
+        "ok": true
+      },
+      "bandit": {
+        "findings": 5,
+        "seconds": 0.3,
+        "ok": true
+      },
+      "agent-checks": {
+        "findings": 31,
+        "seconds": 1.9,
+        "ok": true,
+        "files": 212
+      },
+      "osv-scanner": {
+        "findings": 5,
+        "seconds": 0.7,
+        "ok": true
+      }
+    },
+    "image_ref": "ghcr.io/javierbits/repobeagle:v1.1.0",
+    "image_digest": "ghcr.io/javierbits/repobeagle@sha256:98e110e94cb5aaf010561667ec847076ccb8f2a76aa695d2b16e5b8ed86c0527",
+    "toolchain_ref": "main",
+    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45462745399",
+    "scanned_repo": "javierbits/lmdeck",
+    "scanned_sha": "eee949fb6ebe7b8f5a3ad0782bda5118a7041e82"
+  },
+  "ai_review": null,
+  "findings": [
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "install.sh",
+      "line": 4,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "# curl --proto '=https' --tlsv1.2 -fsSL https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "install.sh",
+      "line": 30,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "curl --proto '=https' --tlsv1.2 -fsSL https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "AGENTS.md",
+      "line": 56,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "| Installer | `install.sh` (`curl \\| sh`, verifies the release checksum) |",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "README.md",
+      "line": 28,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "curl --proto '=https' --tlsv1.2 -fsSL https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "README.md",
+      "line": 30,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "wget -qO- https://github.com/javierbits/lmdeck/releases/latest/download/install.sh | sh",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "README.md",
+      "line": 873,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "- **Install:** `curl -fsSL https://tensorfold.dev/install.sh | sh` puts it in",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/engine.rs",
+      "line": 196,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "\"tensorfold / tensorfold-native not found (curl -fsSL https://tensorfold.dev/install.sh | sh, \\",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/deck.rs",
+      "line": 387,
+      "title": "Download-and-execute (pipe to shell)",
+      "snippet": "\"TensorFold was not found (curl -fsSL https://tensorfold.dev/install.sh | sh, or on a Mac \\",
+      "meaning": "Runs whatever a remote server returns, with no review."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "README.md",
+      "line": 583,
+      "title": "Asks the agent to act silently / without consent",
+      "snippet": "| `lmdeck use\\|switch\\|stop <ref> --on HOST [--allow-slow-link]` | Runs or stops it on another host. If the weights live elsewhere they are mounted read-only ov",
+      "meaning": "Instructions aimed at AI agents reading this file."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/setup.rs",
+      "line": 930,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// A name for a machine ssh couldn't log in to: an alias in ~/.ssh/config",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 168,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// keeps those and the rest of `~/.ssh` that [`usable_keys`] accepts.",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 177,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// Runs ssh-keygen at `~/.ssh/id_ed25519`, or `~/.ssh/id_ed25519_lmdeck`",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 273,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// The first alias in `~/.ssh/config` whose `Host` line lists `ip`, skipping",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 292,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// [`config_alias`] against this user's `~/.ssh/config`.",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 294,
+      "title": "Code reads sensitive credential files",
+      "snippet": "let text = std::fs::read_to_string(crate::paths::home_dir().join(\".ssh/config\")).ok()?;",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/ssh.rs",
+      "line": 337,
+      "title": "Code reads sensitive credential files",
+      "snippet": "let g = \"user jvr0x\\nidentitiesonly yes\\nidentityfile ~/.ssh/id_ed25519_cluster\\nidentityfile /etc/ssh/spark0\\nidentityfile %d/.ssh/id_rsa\\nidentityfile ~/.ssh/",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/peers.rs",
+      "line": 235,
+      "title": "Code reads sensitive credential files",
+      "snippet": "\" {} {label} ({ip}) still refuses {copied}; check ~/.ssh/authorized_keys there\",",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/peers.rs",
+      "line": 242,
+      "title": "Code reads sensitive credential files",
+      "snippet": "\" {} {label} ({ip}) shows a different SSH host key than ~/.ssh/known_hosts has. If it was reinstalled: ssh-keygen -R {ip}, then `lmdeck setup`\",",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "high",
+      "file": "src/peers.rs",
+      "line": 381,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// Returns `key` as the wizard prints it: `~/.ssh/id_ed25519` for one under",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers."
+    },
+    {
+      "tool": "bandit",
+      "severity": "medium",
+      "file": "scripts/import-omarchy-themes.py",
+      "line": 80,
+      "title": "Bandit B108: hardcoded_tmp_directory",
+      "snippet": "79 if __name__ == \"__main__\": 80 main(sys.argv[1] if len(sys.argv) > 1 else \"/tmp/omarchy\")",
+      "meaning": "Probable insecure usage of temp file/directory."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "medium",
+      "file": "README.md",
+      "line": 1,
+      "title": "md-alt-title-instruction: Image alt/title text carries agent instructions",
+      "snippet": "![lmdeck \u2014 local LLM deck]",
+      "meaning": "Alt/title text is rarely seen by humans but is read by agents."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "medium",
+      "file": "tests/ssh_keys.rs",
+      "line": 4,
+      "title": "Code reads sensitive credential files",
+      "snippet": "//! and ssh only offers the keys `~/.ssh/config` names for an address. On a",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers. (test path: often benign fixtures)"
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "medium",
+      "file": "tests/ssh_keys.rs",
+      "line": 7,
+      "title": "Code reads sensitive credential files",
+      "snippet": "//! `ssh-copy-id` (which picks the newest `~/.ssh/id*.pub` and found it",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers. (test path: often benign fixtures)"
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "medium",
+      "file": "tests/ssh_keys.rs",
+      "line": 36,
+      "title": "Code reads sensitive credential files",
+      "snippet": "/// The keys in the peer's `~/.ssh/authorized_keys`.",
+      "meaning": "Accessing SSH keys, .env, tokens, cookies or wallets is a hallmark of credential stealers. (test path: often benign fixtures)"
+    },
+    {
+      "tool": "osv-scanner",
+      "severity": "medium",
+      "file": "Cargo.lock",
+      "line": 0,
+      "title": "Vulnerable dependency: paste@1.0.15",
+      "snippet": "RUSTSEC-2024-0436",
+      "meaning": "1 known advisories"
+    },
+    {
+      "tool": "osv-scanner",
+      "severity": "medium",
+      "file": "Cargo.lock",
+      "line": 0,
+      "title": "Vulnerable dependency: rustix@1.1.5",
+      "snippet": "RUSTSEC-2026-0486",
+      "meaning": "1 known advisories"
+    },
+    {
+      "tool": "osv-scanner",
+      "severity": "medium",
+      "file": "Cargo.lock",
+      "line": 0,
+      "title": "Vulnerable dependency: unsafe-libyaml@0.2.11",
+      "snippet": "RUSTSEC-2024-0449",
+      "meaning": "1 known advisories"
+    },
+    {
+      "tool": "osv-scanner",
+      "severity": "medium",
+      "file": "Cargo.lock",
+      "line": 0,
+      "title": "Vulnerable dependency: url@2.5.8",
+      "snippet": "RUSTSEC-2026-0592",
+      "meaning": "1 known advisories"
+    },
+    {
+      "tool": "bandit",
+      "severity": "low",
+      "file": "scripts/import-omarchy-themes.py",
+      "line": 12,
+      "title": "Bandit B404: blacklist",
+      "snippet": "11 import os 12 import subprocess 13 import sys",
+      "meaning": "Consider possible security implications associated with the subprocess module."
+    },
+    {
+      "tool": "bandit",
+      "severity": "low",
+      "file": "scripts/import-omarchy-themes.py",
+      "line": 37,
+      "title": "Bandit B101: assert_used",
+      "snippet": "36 s = s.strip().lstrip(\"#\") 37 assert len(s) == 6, s 38 return \"0x\" + s.lower()",
+      "meaning": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "tool": "bandit",
+      "severity": "low",
+      "file": "scripts/import-omarchy-themes.py",
+      "line": 42,
+      "title": "Bandit B607: start_process_with_partial_path",
+      "snippet": "41 def main(root): 42 sha = subprocess.run([\"git\", \"-C\", root, \"rev-parse\", \"HEAD\"], capture_output=True, text=True).stdout.strip() 43 themes = os.path.join(roo",
+      "meaning": "Starting a process with a partial executable path"
+    },
+    {
+      "tool": "bandit",
+      "severity": "low",
+      "file": "scripts/import-omarchy-themes.py",
+      "line": 42,
+      "title": "Bandit B603: subprocess_without_shell_equals_true",
+      "snippet": "41 def main(root): 42 sha = subprocess.run([\"git\", \"-C\", root, \"rev-parse\", \"HEAD\"], capture_output=True, text=True).stdout.strip() 43 themes = os.path.join(roo",
+      "meaning": "subprocess call - check for execution of untrusted input."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/repobeagle.yml",
+      "line": 11,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "contents: write # publishes the repobeagle badge branch",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/release.yml",
+      "line": 13,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "contents: write",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/badge-test.yml",
+      "line": 8,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "contents: write",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/badge-test.yml",
+      "line": 10,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "id-token: write",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/repobeagle.yml",
+      "line": 13,
+      "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
+      "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
+      "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/badge-test.yml",
+      "line": 11,
+      "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
+      "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
+      "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/release.yml",
+      "line": 39,
+      "title": "gha-unpinned-action: 9 action(s) on a tag/branch, not a commit SHA",
+      "snippet": "- uses: actions/checkout@v4",
+      "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
+      "file": ".github/workflows/ci.yml",
+      "line": 21,
+      "title": "gha-unpinned-action: 6 action(s) on a tag/branch, not a commit SHA",
+      "snippet": "- uses: actions/checkout@v4",
+      "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
+    },
+    {
+      "tool": "osv-scanner",
+      "severity": "low",
+      "file": "Cargo.lock",
+      "line": 0,
+      "title": "Vulnerable dependency: lru@0.12.5",
+      "snippet": "GHSA-rhfx-m35p-ff5j, RUSTSEC-2026-0002, RUSTSEC-2026-0253",
+      "meaning": "3 known advisories (max CVSS 2.7)"
+    }
+  ],
+  "raw_findings_count": 41,
+  "notes": [
+    "guarddog: no python/npm package manifest at repo root (skipped)",
+    "AI review skipped (set BEAGLE_LLM_URL to enable; REPO_GUARD_LLM_URL also accepted)"
+  ],
+  "recommended_actions": [
+    "Read the listed findings before trusting it; most may be benign, but confirm each.",
+    "Install only in an isolated environment (container/VM/throwaway user) with no secrets present.",
+    "Don't let an AI agent auto-run its install steps or MCP servers without reviewing them."
+  ]
+}
