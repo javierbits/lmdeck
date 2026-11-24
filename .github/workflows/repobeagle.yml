@@ -10,6 +10,7 @@ jobs:
     permissions:
       contents: write   # publishes the repobeagle badge branch
       statuses: write   # sets the repobeagle/scan commit status
+      id-token: write   # keyless-signs the report with Sigstore
     uses: javierbits/repobeagle/.github/workflows/scan.yml@main
     with:
       profile: balanced
