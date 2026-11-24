@@ -521,6 +521,21 @@ fn run(cli: Cli) -> Result<()> {
     ) {
         first_run(&mut ctx);
     }
+    // Plain CLI commands (the TUI shows the same notice as a pill instead):
+    // a one-line new-version notice on stderr, like opencode.
+    let in_tui = match &cli.cmd {
+        None => {
+            !cli.plain
+                && std::io::stdin().is_terminal()
+                && std::io::stdout().is_terminal()
+                && std::env::var("TERM").map_or(true, |t| t != "dumb")
+        }
+        Some(Cmd::Tui(a)) => !(a.render_html.is_some() || a.render_text),
+        _ => false,
+    };
+    if !in_tui {
+        print_update_notice(&ctx);
+    }
     match cli.cmd {
         None if !cli.plain
             && std::io::stdin().is_terminal()
@@ -998,6 +1013,20 @@ fn tui(ctx: Ctx, a: TuiArgs) -> Result<()> {
         return Ok(());
     }
     lmdeck::tui::run(deck, opts)
+}
+
+/// One dim line on stderr when a newer lmdeck release exists — read from the
+/// cached check when it is fresh, else fetched once a day. Never touches
+/// stdout, so it cannot corrupt `--json` output.
+fn print_update_notice(ctx: &Ctx) {
+    let Some(v) = lmdeck::selfupdate::latest_if_newer(&ctx.paths, env!("CARGO_PKG_VERSION"), true) else {
+        return;
+    };
+    eprintln!(
+        "{} {}",
+        yellow("⬆ new lmdeck version available"),
+        dim(&format!("v{v} — run cargo install lmdeck or brew upgrade lmdeck"))
+    );
 }
 
 // ───────────────────────────── theme ─────────────────────────────

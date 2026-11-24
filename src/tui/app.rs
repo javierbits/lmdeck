@@ -161,6 +161,13 @@ pub struct App {
     /// Stats tab: selected day (days since 1970-01-01); `None` opens on the
     /// latest day with activity, else today.
     pub stats_day: Option<i64>,
+    /// A mouse-drag selection of the logs pane, in inner-pane cell
+    /// coordinates: `(first_line, first_col, last_line, last_col)`, ordered
+    /// either way. Kept across frames so a redraw leaves the highlight alone.
+    pub selection: Option<(u16, u16, u16, u16)>,
+    /// A newer lmdeck release, when the update check found one (shown as a
+    /// status-bar pill).
+    pub update_available: Option<String>,
 }
 
 impl Default for App {
@@ -193,6 +200,8 @@ impl Default for App {
             remote_log: None,
             log_from: None,
             stats_day: None,
+            selection: None,
+            update_available: None,
         }
     }
 }
@@ -715,6 +724,76 @@ impl App {
         self.clamp();
         Action::None
     }
+
+    /// The trailing `inner_height` lines the logs pane actually renders.
+    pub fn visible_log_lines(&self, inner_height: usize) -> Vec<&str> {
+        let end = self.logs.len().saturating_sub(self.log_scroll);
+        let start = end.saturating_sub(inner_height);
+        self.logs[start..end].iter().map(|l| l.as_str()).collect()
+    }
+
+    /// Starts a selection at the absolute terminal cell `(x, y)`.
+    pub fn start_selection(&mut self, inner: ratatui::layout::Rect, x: u16, y: u16) {
+        let r = y.saturating_sub(inner.y);
+        let c = x.saturating_sub(inner.x);
+        self.selection = Some((r, c, r, c));
+    }
+
+    /// Extends the current selection to the absolute terminal cell `(x, y)`.
+    pub fn extend_selection(&mut self, inner: ratatui::layout::Rect, x: u16, y: u16) {
+        let Some((r0, c0, _, _)) = self.selection else { return };
+        let r = y.saturating_sub(inner.y);
+        let c = x.saturating_sub(inner.x);
+        let (ar, ac, br, bc) = if r < r0 || (r == r0 && c < c0) { (r, c, r0, c0) } else { (r0, c0, r, c) };
+        self.selection = Some((ar, ac, br, bc));
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// The text the current selection covers, or `None` when nothing is picked.
+    pub fn selected_log_text(&self, inner_height: usize) -> Option<String> {
+        let (r0, c0, r1, c1) = self.selection?;
+        let lines = self.visible_log_lines(inner_height);
+        if r0 >= lines.len() as u16 {
+            return None;
+        }
+        let r1 = r1.min(lines.len() as u16 - 1);
+        let mut out: Vec<String> = vec![];
+        for i in r0..=r1 {
+            let line = lines[i as usize];
+            let w = unicode_width::UnicodeWidthStr::width(line);
+            let from = if i == r0 { c0 as usize } else { 0 }.min(w);
+            let to = if i == r1 { (c1 as usize + 1).min(w) } else { w };
+            if to <= from {
+                continue;
+            }
+            out.push(sub_cells(line, from, to));
+        }
+        if out.is_empty() {
+            return None;
+        }
+        Some(out.join("\n"))
+    }
+}
+
+/// Extracts the cell range `[from, to)` from `s` (a log line), or the empty
+/// string when the range is outside the line.
+pub(crate) fn sub_cells(s: &str, from: usize, to: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0usize;
+    for ch in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col >= to {
+            break;
+        }
+        if col + w > from {
+            out.push(ch);
+        }
+        col += w;
+    }
+    out
 }
 
 /// Subsequence fuzzy match; every whitespace-separated word of `query` has to

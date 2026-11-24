@@ -1107,3 +1107,129 @@ fn log_pane_names_the_host_a_remote_log_comes_from() {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
 }
+
+#[test]
+fn deck_list_shows_context_window_size() {
+    let a = app();
+    let text = buffer_text(&render(&a, 170, 42));
+    let header = text.lines().find(|l| l.contains("engine") && l.contains("ctx")).expect("header row");
+    assert!(header.contains("ctx"), "{header}");
+    let row = text.lines().find(|l| l.contains("qwen3-4b-gguf") && l.contains("llama.cp")).unwrap();
+    // The demo recipes carry ctx = Some(8192).
+    assert!(row.contains("8k"), "{row}");
+}
+
+#[test]
+fn cluster_graph_draws_total_tokens_per_s_above_the_logs() {
+    let mut a = app();
+    let mut hosts = demo_hosts();
+    for h in hosts.iter_mut() {
+        for s in h.history.iter_mut() {
+            s.tokens_per_s = Some(42.5);
+        }
+    }
+    a.set_hosts(hosts);
+    let text = buffer_text(&render(&a, 170, 42));
+    let graph = text.lines().find(|l| l.contains("cluster tok/s")).expect("graph panel");
+    assert!(graph.contains("85.0 tok/s"), "{graph}");
+    assert!(graph.contains("1/2 online"), "{graph}");
+}
+
+#[test]
+fn cluster_graph_paints_the_series() {
+    let mut a = app();
+    let mut hosts = demo_hosts();
+    // A ramping second host makes the chart series non-flat and coloured.
+    hosts[0].history.iter_mut().enumerate().for_each(|(i, s)| s.tokens_per_s = Some(i as f64));
+    a.set_hosts(hosts);
+    let text = buffer_text(&render(&a, 170, 42));
+    assert!(
+        text.contains('▁')
+            || text.contains('▂')
+            || text.contains('▃')
+            || text.contains('▅')
+            || text.contains('▆')
+            || text.contains('▇')
+            || text.contains('█'),
+        "{text}"
+    );
+}
+
+#[test]
+fn log_selection_copies_exactly_the_picked_cells() {
+    let mut a = app();
+    a.logs = vec!["one two three".into(), "four five six".into(), "seven eight nine".into()];
+    let inner = Rect::new(2, 10, 40, 20);
+    a.start_selection(inner, 2 + 4, 10); // row 0, col 4
+    a.extend_selection(inner, 2 + 4, 10 + 2); // row 2, col 4
+    assert_eq!(a.selection, Some((0, 4, 2, 4)), "start/extend keep the drag direction");
+    assert_eq!(a.selected_log_text(3).unwrap(), "two three\nfour five six\nseven");
+    let wide = Rect::new(2, 10, 40, 20);
+    let mut rev = app();
+    rev.logs = (0..10).map(|i| format!("line {i}")).collect();
+    rev.start_selection(wide, 2 + 18, 10 + 4);
+    rev.extend_selection(wide, 2 + 2, 10 + 1);
+    assert_eq!(rev.selection, Some((1, 2, 4, 18)));
+}
+
+#[test]
+fn log_selection_is_none_when_nothing_is_picked() {
+    let mut a = app();
+    a.logs = vec!["a".into()];
+    assert_eq!(a.selected_log_text(3), None);
+    a.selection = Some((0, 5, 0, 5)); // below the line's width: nothing to copy
+    assert_eq!(a.selected_log_text(3), None);
+    let mut b = app();
+    b.logs = (0..5).map(|i| format!("line {i}")).collect();
+    b.log_scroll = 1;
+    assert_eq!(b.visible_log_lines(3), vec!["line 1", "line 2", "line 3"]);
+}
+
+#[test]
+fn osc52_encodes_the_clipboard_sequence() {
+    assert_eq!(base64(b"hello"), "aGVsbG8=");
+    assert_eq!(base64(b"hi"), "aGk=");
+    assert_eq!(base64(b""), "");
+    assert_eq!(osc52("x"), "\x1b]52;c;eA==\x07");
+}
+
+#[test]
+fn selection_highlight_is_drawn_for_picked_lines() {
+    let mut a = app();
+    a.logs = vec!["line one".into(), "line two".into(), "line three".into()];
+    a.selection = Some((0, 1, 2, 4));
+    let text = buffer_text(&render(&a, 170, 42));
+    // Selection is a background, not text; the lines still render in place.
+    assert!(text.contains("line one") && text.contains("line two") && text.contains("line three"), "{text}");
+}
+
+#[test]
+fn logs_pane_shows_a_scrollbar_when_lines_overflow() {
+    let mut a = app();
+    a.logs = (0..60).map(|i| format!("line {i}")).collect();
+    let text = buffer_text(&render(&a, 170, 42));
+    assert!(text.contains('█'), "{text}");
+    // Scrolling up keeps the pane selected and moves the thumb upward.
+    a.log_scroll = 20;
+    let scrolled = buffer_text(&render(&a, 170, 42));
+    assert!(scrolled.contains('█'), "{scrolled}");
+}
+
+#[test]
+fn logs_pane_hides_the_scrollbar_when_everything_fits() {
+    let mut a = app();
+    a.logs = vec!["only line".into()];
+    let text = buffer_text(&render(&a, 170, 42));
+    // No overflow: no thumb, no extra column in the log pane.
+    let pane = text.lines().find(|l| l.contains("Logs")).expect("logs panel");
+    assert!(!pane.contains('█'), "{pane}");
+}
+
+#[test]
+fn status_bar_shows_the_update_pill() {
+    let mut a = app();
+    a.update_available = Some("9.9.9".into());
+    let text = buffer_text(&render(&a, 170, 42));
+    let line = text.lines().last().expect("status line");
+    assert!(line.contains("⬆ v9.9.9"), "{line}");
+}

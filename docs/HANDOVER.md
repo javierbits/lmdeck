@@ -13,8 +13,8 @@
   - the handover update after it
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass on the Spark (`spark.local`). `add_wraps_a_repo_and_runs_it_detached` in `tests/cli.rs` fails now and then there ("my-server exited during startup"), also when run alone; the test predates these commits and passes on a re-run.
 - macOS CI note: the runners now have Homebrew Python 3.15, and a fresh `python3 -m http.server` there has taken ~40 s to answer. Tests that use it have long ready timeouts, and `free_port()` never hands out the same port twice.
-- Crate `lmdeck` v0.1.5, Rust edition with `rust-version = "1.85"`. 0.1.0-0.1.5 are
-  published on crates.io and as GitHub releases (v0.1.0-v0.1.5).
+- Crate `lmdeck` v0.2.0, Rust edition with `rust-version = "1.85"`. 0.1.0-0.2.0 are
+  published on crates.io and as GitHub releases (v0.1.0-v0.2.0).
 - Nothing has been published to PyPI or npm.
 
 ## What lmdeck is
@@ -146,7 +146,7 @@ Development happened on a CPU-only Linux VM. Nothing has been tested on a real S
    - Docker recipes have no RSS.
    - MLX and LM Studio have no tok/s.
    - Tiny local models show "0M" in the size column.
-7. **Launch prep:** Javier plans a public launch of lmdeck and is growing his X audience (@javierbits, formerly @jvr0x) for it. The repo is still private, which breaks anonymous `install.sh`, release-asset, and raw `index.toml` fetches; making it public is his launch decision. Publishing to crates.io and cutting GitHub releases was already approved (0.1.0-0.1.5 are out).
+7. **Launch prep:** Javier plans a public launch of lmdeck and is growing his X audience (@javierbits, formerly @jvr0x) for it. The repo is still private, which breaks anonymous `install.sh`, release-asset, and raw `index.toml` fetches; making it public is his launch decision. Publishing to crates.io and cutting GitHub releases was already approved (0.1.0-0.2.0 are out).
 
 ## Working rules
 - Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` before every push. Keep MSRV 1.85 building.

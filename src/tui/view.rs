@@ -162,6 +162,23 @@ fn size_text(r: &RecipeView) -> String {
     }
 }
 
+/// The recipe's context window as a compact label (`1M`, `262k`, `8k`).
+fn ctx_text(ctx: Option<u64>) -> String {
+    match ctx {
+        Some(c) if c >= 1_000_000 => {
+            let m = c as f64 / 1_000_000.0;
+            if c % 1_000_000 == 0 {
+                format!("{}M", m as u64)
+            } else {
+                format!("{m:.1}M")
+            }
+        }
+        Some(c) if c >= 1_000 => format!("{}k", (c as f64 / 1_000.0).round() as u64),
+        Some(c) => c.to_string(),
+        None => String::new(),
+    }
+}
+
 pub(super) fn kv<'a>(k: &str, v: impl Into<String>, t: &Theme) -> Line<'a> {
     Line::from(vec![Span::styled(format!("{k:<10}"), Style::new().fg(t.muted)), Span::styled(v.into(), t.fg)])
 }
@@ -245,6 +262,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if app.only_fit {
         segs.push(("fits".into(), t.seg[1]));
     }
+    if let Some(v) = &app.update_available {
+        segs.push((format!("⬆ v{v} available"), t.accent));
+    }
     let mut spans = segments(&segs, t.bar_bg, t, app.nerd);
     let query = &app.query;
     if app.mode == Mode::Search || !query.is_empty() {
@@ -299,28 +319,108 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 // ───────────────────────── deck tab ─────────────────────────
 
-fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+/// Height of the cluster tokens/s strip above the logs pane.
+const GRAPH_H: u16 = 3;
+
+fn list_width(app: &App, area: Rect) -> u16 {
     // 55% for the list, widened (up to 62%) to fit an update badge and host
     // tags next to the recipe name.
     let base = area.width * 55 / 100;
     let want =
         app.visible().iter().map(|r| name_cell_width(r, app.theme()) as u16 + LIST_FIXED_COLS + 14).max().unwrap_or(0);
-    let lw = want.clamp(base, (area.width * 62 / 100).max(base));
+    want.clamp(base, (area.width * 62 / 100).max(base))
+}
+
+/// The text area of the logs pane: the pane's inner rect, narrowed by one
+/// cell for the scrollbar when the buffer does not fit.
+pub(crate) fn logs_text_area(app: &App, body: Rect) -> Option<Rect> {
+    let outer = logs_area(app, body)?;
+    let inner = Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2));
+    let pane_h = inner.height as usize;
+    let overflow = app.logs.len() > pane_h && pane_h > 0;
+    Some(Rect::new(inner.x, inner.y, if overflow { inner.width.saturating_sub(1) } else { inner.width }, inner.height))
+}
+
+/// The rect the logs pane occupies in the Deck tab's body area.
+pub(crate) fn logs_area(app: &App, body: Rect) -> Option<Rect> {
+    if app.tab != Tab::Deck {
+        return None;
+    }
+    let lw = list_width(app, body);
+    let [_, right] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(0)]).areas(body);
+    let bottom = if app.logs_max {
+        right
+    } else {
+        let [_, bottom] = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(right);
+        bottom
+    };
+    let [_, logs] = Layout::vertical([Constraint::Length(GRAPH_H), Constraint::Min(0)]).areas(bottom);
+    Some(logs)
+}
+
+fn draw_deck(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
+    let lw = list_width(app, area);
     let [left, right] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(0)]).areas(area);
     draw_list(f, app, s, left);
     if app.logs_max {
-        draw_logs(f, app, right, true);
+        let [graph, logs] = Layout::vertical([Constraint::Length(GRAPH_H), Constraint::Min(0)]).areas(right);
+        draw_graph(f, app, graph);
+        draw_logs(f, app, logs, true);
     } else {
         let [top, bottom] = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(right);
         draw_details(f, app, top);
-        draw_logs(f, app, bottom, false);
+        let [graph, logs] = Layout::vertical([Constraint::Length(GRAPH_H), Constraint::Min(0)]).areas(bottom);
+        draw_graph(f, app, graph);
+        draw_logs(f, app, logs, false);
     }
 }
 
+/// Total tokens/s across every watched host, one entry per sample time.
+fn cluster_series(app: &App) -> Vec<Option<f64>> {
+    let mut by_at: std::collections::BTreeMap<u64, f64> = std::collections::BTreeMap::new();
+    for h in &app.hosts {
+        for s in &h.history {
+            if let Some(v) = s.tokens_per_s {
+                *by_at.entry(s.at).or_default() += v;
+            }
+        }
+    }
+    by_at.into_values().map(Some).collect()
+}
+
+/// The cluster's total tokens/s: every host's latest reading, summed.
+fn cluster_latest(app: &App) -> f64 {
+    app.hosts.iter().filter_map(|h| h.history.last().and_then(|s| s.tokens_per_s)).sum()
+}
+
+fn draw_graph(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let series = cluster_series(app);
+    let online = app.hosts.iter().filter(|h| h.online).count();
+    let total = app.hosts.len();
+    let extra = if series.is_empty() {
+        Some("no telemetry".to_string())
+    } else {
+        let latest = cluster_latest(app);
+        let hosts = if online < total { format!("{online}/{total} online") } else { format!("{total} hosts") };
+        Some(format!("{latest:.1} tok/s · {hosts}"))
+    };
+    let block = panel(title("♥", "cluster tok/s", extra, t), t, false);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if series.is_empty() || inner.height == 0 {
+        f.render_widget(Paragraph::new(Span::styled("no telemetry yet", Style::new().fg(t.dim))), inner);
+        return;
+    }
+    let w = inner.width as usize;
+    let line = Line::from(crate::tui::hostsview::spark_spans(&series, Metric::Tokens, w, t, false));
+    f.render_widget(Paragraph::new(vec![line]), inner);
+}
+
 /// Deck list columns other than status and recipe: borders and padding (4),
-/// the highlight symbol (1), engine/quant/size/tok per second/dl/fit (40) and
-/// seven gaps.
-const LIST_FIXED_COLS: u16 = 4 + 1 + 10 + 11 + 7 + 7 + 2 + 8 + 7;
+/// the highlight symbol (1), engine/quant/ctx/size/tok per second/dl/fit
+/// (46) and eight gaps.
+const LIST_FIXED_COLS: u16 = 4 + 1 + 8 + 11 + 4 + 5 + 6 + 2 + 8 + 8;
 
 fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
     let t = app.theme();
@@ -372,12 +472,14 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
             .filter(|v| *v >= 0.0)
             .map(|v| if v >= 100.0 { format!("{v:.0}") } else { format!("{v:.1}") })
             .unwrap_or_default();
+        let ctx = ctx_text(r.ctx);
         rows.push(
             Row::new(vec![
                 Cell::from(Line::from(pill(label, color(t), t, app.nerd))),
                 Cell::from(name),
                 Cell::from(Span::styled(r.engine.clone(), Style::new().fg(t.info))),
                 Cell::from(Span::styled(r.quant.clone(), Style::new().fg(t.seg[0]))),
+                Cell::from(Line::from(Span::styled(ctx, Style::new().fg(t.muted))).alignment(Alignment::Right)),
                 Cell::from(
                     Line::from(Span::styled(size_text(r), Style::new().fg(t.muted))).alignment(Alignment::Right),
                 ),
@@ -393,7 +495,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
             }),
         );
     }
-    let header = Row::new(["status", "recipe", "engine", "quant", "size", "tok/s", "dl", "fit"])
+    let header = Row::new(["status", "recipe", "engine", "quant", "ctx", "size", "tok/s", "dl", "fit"])
         .style(Style::new().fg(t.dim))
         .bottom_margin(0);
     let table = Table::new(
@@ -401,10 +503,11 @@ fn draw_list(f: &mut Frame, app: &App, s: &Snapshot, area: Rect) {
         [
             Constraint::Length(14),
             Constraint::Min(14),
-            Constraint::Length(10),
+            Constraint::Length(8),
             Constraint::Length(11),
-            Constraint::Length(7),
-            Constraint::Length(7),
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(2),
             Constraint::Length(8),
         ],
@@ -826,7 +929,13 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         (None, None, _) => None,
     };
     let block = panel(title("≡", format!("Logs {name}"), extra, t), t, focused);
-    let inner_h = block.inner(area).height as usize;
+    let inner = block.inner(area);
+    let inner_h = inner.height as usize;
+    let total = app.logs.len();
+    let overflow = total > inner_h && inner_h > 0;
+    let text_area =
+        Rect::new(inner.x, inner.y, if overflow { inner.width.saturating_sub(1) } else { inner.width }, inner.height);
+    f.render_widget(block, area);
     let lines: Vec<Line> = if app.logs.is_empty() {
         let empty = match from {
             Some((h, _)) => format!("asking {h} for its log…"),
@@ -834,11 +943,12 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         };
         vec![Line::from(Span::styled(empty, Style::new().fg(t.dim).italic()))]
     } else {
-        let end = app.logs.len().saturating_sub(app.log_scroll);
-        let start = end.saturating_sub(inner_h);
-        app.logs[start..end]
+        let lines = app.visible_log_lines(inner_h);
+        lines
             .iter()
-            .map(|l| {
+            .copied()
+            .enumerate()
+            .map(|(i, l)| {
                 let low = l.to_ascii_lowercase();
                 let color = if low.contains("error") || low.contains("traceback") || low.contains("fatal") {
                     t.err
@@ -849,11 +959,58 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect, focused: bool) {
                 } else {
                     t.muted
                 };
-                Line::from(Span::styled(l.clone(), Style::new().fg(color)))
+                let mut spans: Vec<Span> = vec![];
+                if let Some((r0, c0, r1, c1)) = app.selection {
+                    let w = UnicodeWidthStr::width(l);
+                    let i = i as u16;
+                    if i >= r0 && i <= r1 {
+                        let from = if i == r0 { c0 as usize } else { 0 }.min(w);
+                        let to = if i == r1 { (c1 as usize + 1).min(w) } else { w };
+                        if to > from {
+                            if from > 0 {
+                                spans
+                                    .push(Span::styled(crate::tui::app::sub_cells(l, 0, from), Style::new().fg(color)));
+                            }
+                            spans.push(Span::styled(
+                                crate::tui::app::sub_cells(l, from, to),
+                                Style::new().fg(color).bg(t.selected_bg),
+                            ));
+                            if to < w {
+                                spans.push(Span::styled(crate::tui::app::sub_cells(l, to, w), Style::new().fg(color)));
+                            }
+                        }
+                    }
+                }
+                if spans.is_empty() {
+                    spans.push(Span::styled(l.to_string(), Style::new().fg(color)));
+                }
+                Line::from(spans)
             })
             .collect()
     };
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    f.render_widget(Paragraph::new(lines), text_area);
+    if overflow {
+        draw_scrollbar(f, app, inner, t);
+    }
+}
+
+/// A one-cell scrollbar on the logs pane's right edge: `│` track, `█` thumb.
+fn draw_scrollbar(f: &mut Frame, app: &App, inner: Rect, t: &Theme) {
+    let total = app.logs.len();
+    let pane_h = inner.height as usize;
+    let max_scroll = total.saturating_sub(pane_h);
+    let scroll = app.log_scroll.min(max_scroll);
+    let top_line = total.saturating_sub(scroll).saturating_sub(pane_h);
+    let thumb_h = (pane_h * pane_h / total).max(1).min(pane_h);
+    let thumb_top = (top_line * pane_h / total).min(pane_h.saturating_sub(thumb_h));
+    let mut spans = Vec::with_capacity(pane_h);
+    for i in 0..pane_h {
+        let thumb = i >= thumb_top && i < thumb_top + thumb_h;
+        let (ch, color) = if thumb { ('█', t.accent) } else { ('│', t.dim) };
+        spans.push(Line::from(Span::styled(ch.to_string(), Style::new().fg(color))));
+    }
+    let sb_area = Rect::new(inner.x + inner.width.saturating_sub(1), inner.y, 1, inner.height);
+    f.render_widget(Paragraph::new(spans), sb_area);
 }
 
 // ───────────────────────── machine tab ─────────────────────────
@@ -1038,6 +1195,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("u", "take a ⬆ update (moves a pinned ref)"),
     ("l", "expand / collapse the live log"),
     ("wheel", "scroll the live log on the deck; move elsewhere"),
+    ("mouse drag", "select the live log — it is copied to the clipboard"),
     ("o", "run on…: pick the host (weights stay home)"),
     ("hosts ↵ s", "run the deck's pick on the selected host"),
     ("hosts ← →", "pick one of that host's servers"),

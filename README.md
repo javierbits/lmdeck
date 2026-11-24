@@ -170,9 +170,13 @@ pills, rounded panels, and a status bar with key hints.
   download state (✓ on disk, ↓ pulling, · not yet) and fit (✓ fits, ! tight,
   ✗ no fit). The list groups models by family under `── Qwen ──`-style
   separators (`F` toggles it; the web dashboard has a Group families button).
-  Running recipes show their live tok/s in the list next to the size. Next to
+  The list also shows the context window size (`1M`, `262k`, …) and, above the
+  log pane, a graph of the cluster's combined tokens/s. Running recipes show
+  their live tok/s in the list next to the size. Next to
   the list are a details pane with the checks and the exact
-  launch command, and the live log of the selected recipe. A running recipe
+  launch command, and the live log of the selected recipe — a scrollbar
+  shows where you are in it (`j k` scroll), and drag the mouse across the
+  pane to select text, which is copied to the clipboard automatically. A running recipe
   also shows its process RSS and share of RAM, VRAM on discrete GPUs, tok/s
   when the engine exposes metrics, and GPU / power / temperature sparklines.
 - **Hosts**: live telemetry for this machine and every host in `hosts.toml`
@@ -203,6 +207,12 @@ The screen refreshes every 2 s in the background. Starting, stopping and
 pulling run off the UI thread, so nothing freezes while a server loads.
 Quitting leaves servers running.
 
+On startup the deck asks GitHub for the latest lmdeck release (cached for 6
+hours, silently offline). When a newer version exists, an `⬆ vX` pill appears
+in the status bar, a toast reports how to upgrade, and the plain CLI prints the
+same one-line notice on stderr instead (JSON output is never touched):
+`cargo install lmdeck`, `brew upgrade lmdeck`, or the newest `install.sh`.
+
 | key | action |
 |---|---|
 | `↑ ↓` / `j k`, `PgUp PgDn`, `g G` | move |
@@ -214,6 +224,7 @@ Quitting leaves servers running.
 | `u` | take a `⬆` upstream update; for a pinned wrapped recipe this also moves the pin (`pull --latest`) |
 | `l` | expand the log pane (`j k` then scroll it) |
 | mouse wheel | scroll the live log on the deck; on other tabs it moves the list |
+| mouse drag in the log | select the log; the selection is copied to the clipboard |
 | `/` | fuzzy search (`↵` keeps the filter, `esc` clears it) |
 | `f` | only recipes that fit this machine |
 | `a` | deck ↔ every known recipe |

@@ -12,10 +12,11 @@ pub mod topoview;
 pub mod view;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind};
 use crossterm::execute;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -149,12 +150,29 @@ pub struct Options {
     pub run_on: bool,
 }
 
+/// The toast text for an available lmdeck update.
+fn update_toast(v: &str) -> String {
+    format!("update available: v{v} — run cargo install lmdeck or brew upgrade lmdeck")
+}
+
 enum Msg {
     Snapshot(Box<Snapshot>),
-    Done { name: String, result: std::result::Result<String, String> },
+    Done {
+        name: String,
+        result: std::result::Result<String, String>,
+    },
     Topology(Box<crate::topology::Topology>),
-    Plans { reference: String, rows: Vec<app::RunOnRow> },
-    RemoteLogs { host: String, name: String, lines: std::result::Result<Vec<String>, String> },
+    Plans {
+        reference: String,
+        rows: Vec<app::RunOnRow>,
+    },
+    RemoteLogs {
+        host: String,
+        name: String,
+        lines: std::result::Result<Vec<String>, String>,
+    },
+    /// The latest lmdeck release, when newer than this build.
+    Update(Option<String>),
 }
 
 enum Work {
@@ -199,6 +217,14 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
     let _ = work_tx.send(Work::Refresh { inventory: false });
     // New commits upstream of wrapped recipes (cache only; checks run off-thread).
     crate::updates::spawn_background(deck.paths.clone(), deck.cfg.clone());
+    // A newer lmdeck release (cached; the check runs off-thread).
+    {
+        let (paths, tx) = (deck.paths.clone(), msg_tx.clone());
+        std::thread::spawn(move || {
+            let l = crate::selfupdate::latest_if_newer(&paths, env!("CARGO_PKG_VERSION"), true);
+            let _ = tx.send(Msg::Update(l));
+        });
+    }
     // Telemetry for this machine and every hosts.toml entry, on its own thread.
     let sampler = Sampler::spawn(deck.paths.clone(), true);
     // The fabric picture (CX7 links, management paths) for the Topology tab.
@@ -249,6 +275,12 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
                         match result {
                             Ok(t) => app.notify(t, Level::Ok),
                             Err(e) => app.notify(e, Level::Fail),
+                        }
+                    }
+                    Msg::Update(v) => {
+                        app.update_available = v.clone();
+                        if let Some(v) = v {
+                            app.notify(update_toast(&v), Level::Ok);
                         }
                     }
                     Msg::Topology(t) => app.topology = Some(*t),
@@ -306,11 +338,7 @@ pub fn run(deck: Deck, opts: Options) -> Result<()> {
             let k = match event::read()? {
                 Event::Key(k) => k,
                 Event::Mouse(m) => {
-                    match m.kind {
-                        MouseEventKind::ScrollUp => app.scroll(true),
-                        MouseEventKind::ScrollDown => app.scroll(false),
-                        _ => {}
-                    }
+                    handle_mouse(&mut app, m);
                     continue;
                 }
                 _ => continue,
@@ -392,6 +420,80 @@ fn spawn_job(
     });
 }
 
+/// The inner rect of the logs pane in the current body area, if any.
+fn logs_inner(app: &App) -> Option<Rect> {
+    let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let area = Rect::new(0, 0, w, h);
+    let [_, body, _] = Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)]).areas(area);
+    view::logs_text_area(app, body)
+}
+
+/// Handles a mouse event: scrolls, or selects/copies the logs pane.
+fn handle_mouse(app: &mut App, m: crossterm::event::MouseEvent) {
+    match m.kind {
+        MouseEventKind::ScrollUp => app.scroll(true),
+        MouseEventKind::ScrollDown => app.scroll(false),
+        MouseEventKind::Down(MouseButton::Left) if app.mode == Mode::Normal => {
+            let Some(inner) = logs_inner(app) else {
+                app.clear_selection();
+                return;
+            };
+            if inner.contains(ratatui::layout::Position::new(m.column, m.row)) {
+                app.start_selection(inner, m.column, m.row);
+            } else {
+                app.clear_selection();
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.mode == Mode::Normal => {
+            if let Some(inner) = logs_inner(app) {
+                app.extend_selection(inner, m.column, m.row);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.mode == Mode::Normal => {
+            if let Some(inner) = logs_inner(app) {
+                if let Some(text) = app.selected_log_text(inner.height as usize) {
+                    copy_to_clipboard(&text);
+                    let n = text.lines().count();
+                    app.notify(format!("copied {n} line{} to clipboard", if n == 1 { "" } else { "s" }), Level::Ok);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Writes `text` to the terminal's clipboard as an OSC 52 sequence.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(osc52(text).as_bytes());
+    let _ = out.flush();
+}
+
+/// The OSC 52 escape sequence that puts `text` on the terminal's clipboard.
+fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let a = chunk[0] as u32;
+        let b = chunk.get(1).copied().unwrap_or(0) as u32;
+        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (a << 16) | (b << 8) | c;
+        out.push(T[(n >> 18) as usize & 0x3f] as char);
+        out.push(T[(n >> 12) as usize & 0x3f] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 0x3f] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 0x3f] as char } else { '=' });
+    }
+    out
+}
+
 /// Renders one frame of `app` off-screen.
 pub fn render(app: &App, width: u16, height: u16) -> Buffer {
     let mut term = ratatui::Terminal::new(TestBackend::new(width, height)).expect("test backend");
@@ -403,6 +505,10 @@ pub fn render(app: &App, width: u16, height: u16) -> Buffer {
 pub fn render_snapshot(deck: &Deck, opts: &Options, width: u16, height: u16, tab: Tab) -> Result<Buffer> {
     let mut app = initial_app(opts, deck)?;
     app.tab = tab;
+    app.update_available = crate::selfupdate::latest_if_newer(&deck.paths, env!("CARGO_PKG_VERSION"), false);
+    if let Some(v) = &app.update_available {
+        app.notify(update_toast(v), Level::Ok);
+    }
     app.set_snapshot(deck.snapshot(false));
     let views = snapshot_once(&deck.paths, true);
     app.set_hosts(views.clone());
