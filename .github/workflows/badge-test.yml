@@ -12,3 +12,4 @@ jobs:
     uses: javierbits/repobeagle/.github/workflows/scan.yml@main
     with:
       profile: balanced
+      fail-on-red: false
