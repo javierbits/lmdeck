@@ -1,12 +1,12 @@
 {
   "version": "1.1.0",
   "verdict": "YELLOW",
-  "why": "No critical issues; 19 high, 9 medium, 13 low findings worth a look",
+  "why": "No critical issues; 19 high, 9 medium, 11 low findings worth a look",
   "counts": {
     "critical": 0,
     "high": 19,
     "medium": 9,
-    "low": 13,
+    "low": 11,
     "info": 0
   },
   "meta": {
@@ -14,8 +14,8 @@
     "fetched_via": "local path (copied)",
     "mode": "docker (--network none, read-only)",
     "profile": "balanced",
-    "files": 212,
-    "seconds": 12.1,
+    "files": 211,
+    "seconds": 8.1,
     "tools": {
       "gitleaks": {
         "findings": 0,
@@ -38,23 +38,23 @@
         "ok": true
       },
       "agent-checks": {
-        "findings": 31,
-        "seconds": 1.5,
+        "findings": 29,
+        "seconds": 1.9,
         "ok": true,
-        "files": 212
+        "files": 211
       },
       "osv-scanner": {
         "findings": 5,
-        "seconds": 0.8,
+        "seconds": 0.7,
         "ok": true
       }
     },
     "image_ref": "ghcr.io/javierbits/repobeagle:v1.1.0",
     "image_digest": "ghcr.io/javierbits/repobeagle@sha256:98e110e94cb5aaf010561667ec847076ccb8f2a76aa695d2b16e5b8ed86c0527",
     "toolchain_ref": "main",
-    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45463326924",
+    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45463622054",
     "scanned_repo": "javierbits/lmdeck",
-    "scanned_sha": "cd07f75805790529ed84c969caa76f1ace86c821"
+    "scanned_sha": "5245810149e450717e594750f76412cba23a4e7f"
   },
   "ai_review": null,
   "findings": [
@@ -358,6 +358,15 @@
     {
       "tool": "agent-checks",
       "severity": "low",
+      "file": ".github/workflows/repobeagle.yml",
+      "line": 13,
+      "title": "gha-write-permissions: workflow token has write permissions",
+      "snippet": "id-token: write # keyless-signs the report with Sigstore",
+      "meaning": "A compromised step can push code or publish packages."
+    },
+    {
+      "tool": "agent-checks",
+      "severity": "low",
       "file": ".github/workflows/release.yml",
       "line": 13,
       "title": "gha-write-permissions: workflow token has write permissions",
@@ -367,35 +376,8 @@
     {
       "tool": "agent-checks",
       "severity": "low",
-      "file": ".github/workflows/badge-test.yml",
-      "line": 8,
-      "title": "gha-write-permissions: workflow token has write permissions",
-      "snippet": "contents: write",
-      "meaning": "A compromised step can push code or publish packages."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "low",
-      "file": ".github/workflows/badge-test.yml",
-      "line": 10,
-      "title": "gha-write-permissions: workflow token has write permissions",
-      "snippet": "id-token: write",
-      "meaning": "A compromised step can push code or publish packages."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "low",
       "file": ".github/workflows/repobeagle.yml",
-      "line": 13,
-      "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
-      "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
-      "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
-    },
-    {
-      "tool": "agent-checks",
-      "severity": "low",
-      "file": ".github/workflows/badge-test.yml",
-      "line": 11,
+      "line": 14,
       "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
       "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
       "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
@@ -428,7 +410,7 @@
       "meaning": "3 known advisories (max CVSS 2.7)"
     }
   ],
-  "raw_findings_count": 41,
+  "raw_findings_count": 39,
   "notes": [
     "guarddog: no python/npm package manifest at repo root (skipped)",
     "AI review skipped (set BEAGLE_LLM_URL to enable; REPO_GUARD_LLM_URL also accepted)"
