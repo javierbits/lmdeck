@@ -15,16 +15,16 @@
     "mode": "docker (--network none, read-only)",
     "profile": "balanced",
     "files": 212,
-    "seconds": 8.2,
+    "seconds": 10.6,
     "tools": {
       "gitleaks": {
         "findings": 0,
-        "seconds": 0.6,
+        "seconds": 0.5,
         "ok": true
       },
       "semgrep": {
         "findings": 0,
-        "seconds": 2.1,
+        "seconds": 1.6,
         "ok": true
       },
       "guarddog": {
@@ -34,12 +34,12 @@
       },
       "bandit": {
         "findings": 5,
-        "seconds": 0.3,
+        "seconds": 0.2,
         "ok": true
       },
       "agent-checks": {
         "findings": 31,
-        "seconds": 1.9,
+        "seconds": 1.4,
         "ok": true,
         "files": 212
       },
@@ -52,9 +52,9 @@
     "image_ref": "ghcr.io/javierbits/repobeagle:v1.1.0",
     "image_digest": "ghcr.io/javierbits/repobeagle@sha256:98e110e94cb5aaf010561667ec847076ccb8f2a76aa695d2b16e5b8ed86c0527",
     "toolchain_ref": "main",
-    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45462745399",
+    "run_url": "https://github.com/javierbits/lmdeck/actions/runs/45462884617",
     "scanned_repo": "javierbits/lmdeck",
-    "scanned_sha": "eee949fb6ebe7b8f5a3ad0782bda5118a7041e82"
+    "scanned_sha": "36728852e9b5595d56837e5c16aa1db76973a1aa"
   },
   "ai_review": null,
   "findings": [
@@ -368,7 +368,7 @@
       "tool": "agent-checks",
       "severity": "low",
       "file": ".github/workflows/badge-test.yml",
-      "line": 8,
+      "line": 9,
       "title": "gha-write-permissions: workflow token has write permissions",
       "snippet": "contents: write",
       "meaning": "A compromised step can push code or publish packages."
@@ -377,7 +377,7 @@
       "tool": "agent-checks",
       "severity": "low",
       "file": ".github/workflows/badge-test.yml",
-      "line": 10,
+      "line": 11,
       "title": "gha-write-permissions: workflow token has write permissions",
       "snippet": "id-token: write",
       "meaning": "A compromised step can push code or publish packages."
@@ -395,7 +395,7 @@
       "tool": "agent-checks",
       "severity": "low",
       "file": ".github/workflows/badge-test.yml",
-      "line": 11,
+      "line": 12,
       "title": "gha-unpinned-action: 1 action(s) on a tag/branch, not a commit SHA",
       "snippet": "uses: javierbits/repobeagle/.github/workflows/scan.yml@main",
       "meaning": "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025)."
