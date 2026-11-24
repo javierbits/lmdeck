@@ -2,6 +2,7 @@ name: badge-test
 on:
   push:
     branches: [badge-test]
+    tags: ["v*"]
 jobs:
   scan:
     permissions:
